@@ -1,0 +1,19 @@
+name: User Story
+description: Create a new user story or feature request
+title: "[Story]: As a user, I want to..."
+labels: ["story"]
+body:
+  - type: textarea
+    id: story
+    attributes:
+      label: User Story
+      description: Describe who needs what and why
+      placeholder: As a [type of user], I want [what?] so that [why?]
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Additional Details
+      description: Any extra information that helps explain this story
+      placeholder: Add any helpful details or notes here
