@@ -1,6 +1,6 @@
 name: User Story
 description: Create a new user story or feature request
-title: "[Story]: As a user, I want to..."
+title: "[Story]: "
 labels: ["story"]
 body:
   - type: textarea
@@ -14,6 +14,15 @@ body:
   - type: textarea
     id: details
     attributes:
-      label: Additional Details
+      label: Additional Details (Include Tasks with - [])
       description: Any extra information that helps explain this story
       placeholder: Add any helpful details or notes here
+        attributes:  
+- type: checkboxes  
+    id: reminders  
+    attributes:  
+      label: Reminders  
+      description: Check these before marking the issue as done.  
+      options:  
+        - label: Create branch for this issue
+        - label: Create ADR if necessary
