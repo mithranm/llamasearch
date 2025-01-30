@@ -1,7 +1,9 @@
 name: User Story
 description: Create a new user story or feature request
 title: "[Story]: "
-labels: ["story"]
+labels: 
+  - story
+
 body:
   - type: textarea
     id: story
@@ -11,17 +13,19 @@ body:
       placeholder: As a [type of user], I want [what?] so that [why?]
     validations:
       required: true
+
   - type: textarea
     id: tasks
     attributes:
       label: Tasks
       description: Add checkboxes below (copy-paste `- [ ] Task`)
       placeholder: "- [ ] Update CONTRIBUTING.md"
-- type: checkboxes  
-    id: reminders  
-    attributes:  
-      label: Reminders  
-      description: Check these before marking the issue as done.  
-      options:  
+
+  - type: checkboxes
+    id: reminders
+    attributes:
+      label: Reminders
+      description: Check these before marking the issue as done.
+      options:
         - label: Create branch for this issue
         - label: Create ADR if necessary
