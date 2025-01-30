@@ -12,12 +12,11 @@ body:
     validations:
       required: true
   - type: textarea
-    id: details
+    id: tasks
     attributes:
-      label: Additional Details (Include Tasks with - [])
-      description: Any extra information that helps explain this story
-      placeholder: Add any helpful details or notes here
-        attributes:  
+      label: Tasks
+      description: Add checkboxes below (copy-paste `- [ ] Task`)
+      placeholder: "- [ ] Update CONTRIBUTING.md"
 - type: checkboxes  
     id: reminders  
     attributes:  
