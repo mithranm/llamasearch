@@ -28,8 +28,3 @@ python_files = ["test_*.py"]
 addopts = "-ra -v --cov=llamasearch --cov-report=term-missing"
 log_cli = true
 log_cli_level = "INFO"
-
-[tool.flake8]
-max-line-length = 88
-extend-ignore = ["E203"]
-exclude = [".git", "__pycache__", "build", "dist"]
