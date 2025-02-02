@@ -26,7 +26,7 @@ graph TD
   
     subgraph APIs
         D --> E[LAMMA API]
-        D --> F[ChromeDB]
+        D --> F[ChromaDB]
     end
   
     subgraph Features
@@ -38,21 +38,17 @@ graph TD
     end
 
     %% Data flow
-    G --> F[ChromeDB]  
-    H --> F[ChromeDB]
-    I --> F[ChromeDB]
-    J --> F[ChromeDB]
-    K --> F[ChromeDB]
-    L --> F[ChromeDB]
-  
-    %% Ratings and Suggestions
-    L --> M[User Ratings & Suggestions]
+    G --> F[ChromaDB]  
+    H --> F[ChromaDB]
+    I --> F[ChromaDB]
+    J --> F[ChromaDB]
+    K --> F[ChromaDB]
   
     %% Connections
     A[User] --> B[Gradio Interface]
     B --> C[Python Backend]
     C --> D[API Gateway]
     D --> E[LAMMA API]
-    D --> F[ChromeDB]
+    D --> F[ChromaDB]
 
 ```
