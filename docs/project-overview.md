@@ -1,6 +1,6 @@
 # Project Overview - LLAMASEARCH
 
-LLAMASEARCH is an advanced search engine designed to help users find relevant content and answers based on a provided website link. Users can ask questions, and the application will use the LLAMA LLM to generate answers based on the website’s content.
+LLAMASEARCH is an advanced search engine designed to help users find relevant content and answers based on a provided website link. Users can ask questions, and the application will use the Llama LLM to generate answers based on the website’s content.
 
 To enhance the user experience, LLAMASEARCH will offer the following additional features:
 
@@ -10,45 +10,4 @@ To enhance the user experience, LLAMASEARCH will offer the following additional 
     4. A 1-10 rating system for evaluating the trustworthiness and legitimacy of the website/source.
     5. Pop-up feature to ask for feedback and suggestions.
 
-
-# Architecture
-
-```mermaid
-graph TD
-    subgraph Frontend
-        A[User] --> B[Gradio Interface]
-    end
-  
-    subgraph Backend
-        B --> C[Python Backend]
-        C --> D[API Gateway]
-    end
-  
-    subgraph APIs
-        D --> E[LAMMA API]
-        D --> F[ChromaDB]
-    end
-  
-    subgraph Features
-        C --> G[Text Summary Generator]
-        C --> H[File with Content Source]
-        C --> I[Audio File Generator]
-        C --> J[Legitimacy Rating]
-        C --> K[User Feedback Pop-ups]
-    end
-
-    %% Data flow
-    G --> F[ChromaDB]  
-    H --> F[ChromaDB]
-    I --> F[ChromaDB]
-    J --> F[ChromaDB]
-    K --> F[ChromaDB]
-  
-    %% Connections
-    A[User] --> B[Gradio Interface]
-    B --> C[Python Backend]
-    C --> D[API Gateway]
-    D --> E[LAMMA API]
-    D --> F[ChromaDB]
-
-```
+See [ADR-001](./ADRs/001-initial-architecture.md) for more details.
