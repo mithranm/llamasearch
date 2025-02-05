@@ -60,10 +60,9 @@ flowchart TD
     R --> I[Generative Language Model]
   
     I --> K
-    I --> M[Citations]
   
-    R --> M
-  
+    R --> M[Citations]
+    M --> I
     M --> N[Trustworthiness Score]
     N --> K
   
