@@ -22,13 +22,6 @@ UNLIKE ChatGPT Search
 
 OUR PRODUCT respects user privacy and gives more accurate and relevant responses.
 
-After our meeting with the TA, we proposed the following additional features:
-
-1. A file containing citations and highlights of the content that answers the question.
-3. An audio file of the generated answer.
-4. A 1-10 rating system for evaluating the trustworthiness and legitimacy of the website/source.
-5. Pop-up feature to ask for feedback and suggestions.
-
 But we are yet to develop a concrete implementation plan. This ADR hopes to address that.
 
 ## Decision
