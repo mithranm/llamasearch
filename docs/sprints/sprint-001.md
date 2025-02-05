@@ -2,28 +2,30 @@
 
 ## Goal
 
-llamasearch/
-│
-├── llamasearch/
-│   ├── core/
-│   │   ├── __init__.py
-│   │   ├── crawler.py     # Crawls and indexes entire websites
-│   │   ├── extractor.py   # Uses Jina API to scrape indexed URLs
-│   │   └── utils.py       # Utility functions for crawler and extractor
-│   │
-│   ├── ui/
-│   │   ├── __init__.py
-│   │   └── app.py         # UI with search box and scrape button
-│   │
-│   └── __init__.py
-│
-├── tests/
-│   ├── __init__.py
-│   ├── test_crawler.py
-│   ├── test_extractor.py
-│   └── test_utils.py
-│
-└── docs/
+```mermaid
+%%{init: {'theme': 'default'}}%%
+flowchart TD
+    A["llamasearch/"]
+    A --> B["core/"]
+    B --> C["__init__.py"]
+    B --> D["crawler.py"]
+    B --> E["extractor.py"]
+    B --> F["utils.py"]
+    
+    A --> G["ui/"]
+    G --> H["__init__.py"]
+    G --> I["app.py"]
+    
+    A --> J["__init__.py"]
+    
+    A --> K["tests/"]
+    K --> L["__init__.py"]
+    K --> M["test_crawler.py"]
+    K --> N["test_extractor.py"]
+    K --> O["test_utils.py"]
+    
+    A --> P["docs/"]
+```
 
 ## Tasks
 
