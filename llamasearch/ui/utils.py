@@ -71,16 +71,16 @@ def export_to_txt(filename="qa_records.txt") -> None:
 
     print(f"Data exported to {filename}")
 
+if __name__ == "__main__":
+    #test
+    qa_entry = QARecord(question="What is AI?", answer="AI stands for Artificial Intelligence.")
+    save_to_db(qa_entry)
+    print(load_from_db())
 
-#test
-qa_entry = QARecord(question="What is AI?", answer="AI stands for Artificial Intelligence.")
-save_to_db(qa_entry)
-print(load_from_db())
+    delete_all_records()
+    print(load_from_db())
 
-delete_all_records()
-print(load_from_db())
-
-qa_entry = QARecord(question="What is AI?", answer="AI stands for Artificial Intelligence.")
-save_to_db(qa_entry)
-print(load_from_db())
-export_to_txt("conversation.txt")
+    qa_entry = QARecord(question="What is AI?", answer="AI stands for Artificial Intelligence.")
+    save_to_db(qa_entry)
+    print(load_from_db())
+    export_to_txt("conversation.txt")
