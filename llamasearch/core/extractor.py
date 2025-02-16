@@ -66,4 +66,3 @@ if __name__ == "__main__":
         if text:
             file_path = save_to_project_tempdir(f"## {link}\n\n{text}")
             print(f"Extracted content saved at: {file_path}")
-ç

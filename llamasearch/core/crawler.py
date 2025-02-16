@@ -30,37 +30,31 @@ def save_to_project_tempdir(text, filename="links.txt"):
 
     return file_path  # Return the file path for reference
 
-def fetch_links_with_jina(url):
-    """Fetches structured content from Jina AI and extracts only links."""
+def fetch_links_with_jina(url, max_links=50):
+    """Fetches structured content from Jina AI and extracts only links, with an optional limit."""
     try:
         response = requests.get(JINA_API_URL + url, timeout=10)
         response.raise_for_status()
         content = response.text
 
-        # Extract all links from the Jina AI response
-        all_links = set(re.findall(r'https?://[^\s)>\"]+', content))
-        return all_links
+        all_links = list(set(re.findall(r'https?://[^\s)>\"]+', content)))
+
+        return all_links[:max_links]
 
     except requests.RequestException as e:
         print(f"Error fetching from Jina AI: {e}")
         return None
 
 def filter_links_by_structure(original_url, links):
-    """Filters links dynamically based on the structure of the original URL."""
+    """Filters links to only include those from the same domain, while ignoring media files."""
     parsed_url = urlparse(original_url)
-    base_domain = f"{parsed_url.scheme}://{parsed_url.netloc}"
     
-    # Extract meaningful parts from the original URL
-    original_parts = parsed_url.path.strip("/").split("/")
-    if not original_parts:
-        return []  # If no meaningful structure, return empty
-
     filtered_links = []
     
     for link in links:
         parsed_link = urlparse(link)
         
-        # Ignore links from different domains
+        # Allow only links from the same domain
         if parsed_link.netloc != parsed_url.netloc:
             continue
 
@@ -68,14 +62,11 @@ def filter_links_by_structure(original_url, links):
         if re.search(r'\.(jpg|jpeg|png|gif|mp4|webp|svg)$', link):
             continue
 
-        # Extract meaningful parts of the candidate link
-        link_parts = parsed_link.path.strip("/").split("/")
-
-        # Keep only links that share at least one major structure element with the original URL
-        if any(part in link_parts for part in original_parts):
-            filtered_links.append(link)
+        # Add to filtered list without strict path checking
+        filtered_links.append(link)
 
     return filtered_links
+
 
 if __name__ == "__main__":
     url = input("Enter the webpage URL: ").strip()
