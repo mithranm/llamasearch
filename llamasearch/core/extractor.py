@@ -23,7 +23,7 @@ def save_to_project_tempdir(text, filename="extracted_texts.txt"):
     os.makedirs(temp_dir, exist_ok=True)  # Create temp dir if it doesn't exist
     file_path = os.path.join(temp_dir, filename)  # Define full file path
 
-    with open(file_path, "a", encoding="utf-8") as file:  # Append to file
+    with open(file_path, "w", encoding="utf-8") as file:  # Append to file
         file.write(text + "\n\n" + "="*50 + "\n\n")  # Add separator for readability
 
     return file_path  # Return file path for reference
