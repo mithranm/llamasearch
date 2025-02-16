@@ -176,3 +176,8 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+
+#Database and txt files
+qa_data.db
+conversation.txt
