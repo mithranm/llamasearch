@@ -28,11 +28,10 @@ def save_to_db(record: QARecord) -> None:
     cursor.execute("INSERT INTO qa_records (question, answer, rating) VALUES (?, ?, ?)",
                    (record.question, record.answer, record.rating))
     conn.commit()
-
+ 
 def load_from_db() -> List[QARecord]:
     cursor.execute("SELECT question, answer, rating FROM qa_records")
     return [QARecord(question=row[0], answer=row[1], rating=row[2]) for row in cursor.fetchall()]
-
 
 def delete_all_records() -> None:
     conn = sqlite3.connect("qa_data.db")
