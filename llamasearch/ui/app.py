@@ -4,28 +4,21 @@ import gradio as gr
 from gradio import Blocks
 from utils import save_to_db, QARecord, export_to_txt, delete_all_records
 
-
 def generate_response(link, user_input):
     return f"AI response for: {user_input} (Link: {link})"
-
 
 def download_voice():
     return "voice_file.mp3"
 
-
 def download_chat():
     export_to_txt("conversation.txt")
-
 
 def rate_response(rating):
     print(f"You rated: {rating}")
 
-
 def submit_review(review):
     return f"Review submitted: {review}"
 
-<<<<<<< Updated upstream
-=======
 def save_and_clear(question, answer, rating):
     """
     This function creates a QARecord from the inputs, saves it to the database,
@@ -63,25 +56,11 @@ def new_chat():
     )
 
 
->>>>>>> Stashed changes
 
 def create_app() -> Blocks:
     with gr.Blocks() as demo:
         gr.Markdown("# LLAMASEARCH - Next Gen AI Search Assistant")
 
-<<<<<<< Updated upstream
-        link_input = gr.Textbox(
-            label="Enter a Website Link", placeholder="https://example.com"
-        )
-
-        chat_output = gr.Textbox(label="AI Response", interactive=False, lines=15)
-
-        with gr.Row():
-            user_input = gr.Textbox(
-                label="Ask a Question", placeholder="Type your question here..."
-            )
-            submit_btn = gr.Button("Search")
-=======
         link_input = gr.Textbox(label="Enter a Website Link", 
                                 placeholder="https://example.com")
         
@@ -99,7 +78,6 @@ def create_app() -> Blocks:
         chat_output = gr.Textbox(label="AI Response", interactive=False, lines=15)
 
         
->>>>>>> Stashed changes
 
         with gr.Row():
             voice_btn = gr.Button("Download Voice")
@@ -107,14 +85,12 @@ def create_app() -> Blocks:
             rating = gr.Radio(["", "👍", "👎"], label="Rate Response", value="")
             review_btn = gr.Button("Leave a Review")
 
-        review_prompt = gr.Textbox(
-            label="Your Review", visible=False, placeholder="Write your review here..."
-        )
+        review_prompt = gr.Textbox(label="Your Review", visible=False, 
+                                placeholder="Write your review here...")
         submit_review_btn = gr.Button("Submit Review", visible=False)
 
-        submit_btn.click(
-            generate_response, inputs=[link_input, user_input], outputs=chat_output
-        )
+        submit_btn.click(generate_response, inputs=[link_input, user_input], 
+                        outputs=chat_output)
         voice_btn.click(download_voice, outputs=None)
         chat_btn.click(download_chat, outputs=None)
         rating.change(rate_response, inputs=rating, outputs=None)
@@ -138,10 +114,8 @@ def create_app() -> Blocks:
         review_btn.click(show_review_prompt, outputs=[review_prompt, submit_review_btn])
         submit_review_btn.click(submit_review, inputs=review_prompt, outputs=None)
     return demo
-<<<<<<< Updated upstream
-=======
 
 if __name__ == "__main__":
     app = create_app()
     app.launch()
->>>>>>> Stashed changes
+    
