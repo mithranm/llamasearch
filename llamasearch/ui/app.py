@@ -7,8 +7,22 @@ from utils import save_to_db, QARecord, export_to_txt, delete_all_records
 def generate_response(link, user_input):
     return f"AI response for: {user_input} (Link: {link})"
 
-def download_voice():
-    return "voice_file.mp3"
+#def download_voice():
+#    return "voice_file.mp3"
+def listen_answer(answer_text):
+    """
+    Converts the provided answer text to speech using gTTS,
+    saves it as a temporary MP3 file, and returns the file path.
+    """
+    from gtts import gTTS
+    import tempfile
+    if not answer_text.strip():
+        return None
+    tts = gTTS(answer_text)
+    tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+    tmp_file.close()  # Close the file so gTTS can write to it.
+    tts.save(tmp_file.name)
+    return tmp_file.name
 
 def download_chat():
     export_to_txt("conversation.txt")
@@ -36,8 +50,12 @@ def save_and_clear(question, answer, rating):
     record = QARecord(question=question, answer=answer, rating=rating_int)
     save_to_db(record)
     
-    # Clear question and answer; for the radio, try setting to an empty string
-    return gr.update(value=""), gr.update(value=""), gr.update(value=None)
+    return (
+        gr.update(value=""),
+        gr.update(value=""),
+        gr.update(value=""),
+        gr.update(visible=False)
+    )
 
 def new_chat():
     """
@@ -47,12 +65,13 @@ def new_chat():
     print("new_chat() called")
     delete_all_records()
     return (
-        gr.update(value=""),                 # Clear link_input
-        gr.update(value=""),                 # Clear user_input (question)
-        gr.update(value=""),                 # Clear chat_output (answer)
-        gr.update(value=""),                 # Clear rating (set to empty string)
-        gr.update(value="", visible=False),  # Clear and hide review_prompt
-        gr.update(visible=False)             # Hide submit_review_btn
+        gr.update(value=""),
+        gr.update(value=""),
+        gr.update(value=""),
+        gr.update(value=""),
+        gr.update(value="", visible=False),
+        gr.update(visible=False),
+        gr.update(visible=False)
     )
 
 
@@ -80,10 +99,12 @@ def create_app() -> Blocks:
         
 
         with gr.Row():
-            voice_btn = gr.Button("Download Voice")
+            listen_btn = gr.Button("Listen Answer")
             chat_btn = gr.Button("Download Chat History")
             rating = gr.Radio(["", "👍", "👎"], label="Rate Response", value="")
             review_btn = gr.Button("Leave a Review")
+
+        audio_output = gr.Audio(label="Audio Response", interactive=False)
 
         review_prompt = gr.Textbox(label="Your Review", visible=False, 
                                 placeholder="Write your review here...")
@@ -91,21 +112,25 @@ def create_app() -> Blocks:
 
         submit_btn.click(generate_response, inputs=[link_input, user_input], 
                         outputs=chat_output)
-        voice_btn.click(download_voice, outputs=None)
+        listen_btn.click(
+            listen_answer, 
+            inputs=chat_output, 
+            outputs=audio_output
+        )
         chat_btn.click(download_chat, outputs=None)
         rating.change(rate_response, inputs=rating, outputs=None)
         
         new_chat_btn.click(
             new_chat, 
             inputs=[], 
-            outputs=[link_input, user_input, chat_output, rating, review_prompt, submit_review_btn]
+            outputs=[link_input, user_input, chat_output, rating, review_prompt, submit_review_btn, audio_output]
         )
 
 
         next_question_btn.click(
             save_and_clear, 
             inputs=[user_input, chat_output, rating], 
-            outputs=[user_input, chat_output, rating]
+            outputs=[user_input, chat_output, rating, audio_output]
         )
 
         def show_review_prompt():
