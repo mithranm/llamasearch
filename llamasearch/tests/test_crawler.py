@@ -8,7 +8,6 @@ from core.crawler import fetch_links_with_jina, filter_links_by_structure, save_
 JINA_API_URL = "https://r.jina.ai/"
 DUMMY_URL = "https://example.com"
 
-# Mock response for Jina AI link extraction
 MOCK_JINA_RESPONSE = """
 https://example.com/page1
 https://example.com/page2
@@ -60,7 +59,7 @@ def test_save_to_project_tempdir():
 
     with patch("core.crawler.find_project_root", return_value=mock_root):
         with patch("builtins.open", mock_open()) as mock_file:
-            file_path = save_to_project_tempdir(mock_text, "test_links.txt")
+            file_path = save_to_project_tempdir(mock_text, "test_link.md")
 
             assert mock_file.called
-            assert file_path == os.path.join(mock_root, "temp", "test_links.txt")
+            assert file_path == os.path.join(mock_root, "temp", "test_link.md")

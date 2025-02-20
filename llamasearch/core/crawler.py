@@ -17,7 +17,7 @@ def find_project_root():
 
     raise RuntimeError("Could not find project root. Please check your project structure.")
 
-def save_to_project_tempdir(text, filename="links.txt"):
+def save_to_project_tempdir(text, filename="links.md"):
     """Saves text to a `temp` directory inside the project root."""
     project_root = find_project_root()
     temp_dir = os.path.join(project_root, "temp")
@@ -77,7 +77,7 @@ if __name__ == "__main__":
         filtered_links = filter_links_by_structure(url, links)
 
         if filtered_links:
-            file_path = save_to_project_tempdir("\n".join(filtered_links), "links.txt")
+            file_path = save_to_project_tempdir("\n".join(filtered_links), "links.md")
             print(f"\nFiltered links saved at: {file_path}")
         else:
             print("\nNo relevant links found.")

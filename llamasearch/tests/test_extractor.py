@@ -32,10 +32,10 @@ def test_save_to_project_tempdir():
 
     with patch("core.extractor.find_project_root", return_value=mock_root):
         with patch("builtins.open", mock_open()) as mock_file:
-            file_path = save_to_project_tempdir(mock_text, "test_text.txt")
+            file_path = save_to_project_tempdir(mock_text, "test_text.md")
 
             assert mock_file.called
-            assert file_path == os.path.join(mock_root, "temp", "test_text.txt")
+            assert file_path == os.path.join(mock_root, "temp", "test_text.md")
 
 
 def test_read_links_from_temp():

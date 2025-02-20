@@ -1,6 +1,8 @@
 import requests
 import os
 
+file_deleted = False 
+
 JINA_API_URL = "https://r.jina.ai/"
 
 def find_project_root():
@@ -15,15 +17,22 @@ def find_project_root():
 
     raise RuntimeError("Could not find project root. Please check your project structure.")
 
-def save_to_project_tempdir(text, filename="extracted_texts.txt"):
+def save_to_project_tempdir(text, filename="extracted_texts.md"):
     """Saves extracted content to a `temp` directory inside the project root."""
+    global file_deleted
+    
     project_root = find_project_root()
     temp_dir = os.path.join(project_root, "temp")
 
     os.makedirs(temp_dir, exist_ok=True)  # Create temp dir if it doesn't exist
     file_path = os.path.join(temp_dir, filename)  # Define full file path
+    
+    if not file_deleted and os.path.exists(file_path):
+        os.remove(file_path)
+        file_deleted = True 
 
-    with open(file_path, "w", encoding="utf-8") as file:  # Append to file
+    # Write new content to the file
+    with open(file_path, "a", encoding="utf-8") as file:
         file.write(text + "\n\n" + "="*50 + "\n\n")  # Add separator for readability
 
     return file_path  # Return file path for reference
@@ -31,7 +40,7 @@ def save_to_project_tempdir(text, filename="extracted_texts.txt"):
 def read_links_from_temp():
     """Reads URLs from the saved links file."""
     project_root = find_project_root()
-    temp_file = os.path.join(project_root, "temp", "links.txt")
+    temp_file = os.path.join(project_root, "temp", "links.md")
 
     if not os.path.exists(temp_file):
         print("No links found. Run crawler.py first.")
