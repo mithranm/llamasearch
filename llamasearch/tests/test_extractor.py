@@ -1,9 +1,8 @@
-#PYTHONPATH=$(pwd)/llamasearch python3 -m pytest llamasearch/tests/
 import pytest
 import os
 import tempfile
 from unittest.mock import patch, mock_open
-from core.extractor import extract_text_with_jina, save_to_project_tempdir, read_links_from_temp
+from llamasearch.core.extractor import extract_text_with_jina, save_to_project_tempdir, read_links_from_temp
 
 JINA_API_URL = "https://r.jina.ai/"
 DUMMY_URL = "https://example.com"
@@ -30,7 +29,7 @@ def test_save_to_project_tempdir():
     mock_text = "Extracted content"
     mock_root = tempfile.mkdtemp()
 
-    with patch("core.extractor.find_project_root", return_value=mock_root):
+    with patch("llamasearch.core.extractor.find_project_root", return_value=mock_root):
         with patch("builtins.open", mock_open()) as mock_file:
             file_path = save_to_project_tempdir(mock_text, "test_text.md")
 
@@ -43,7 +42,7 @@ def test_read_links_from_temp():
     mock_links = "https://example.com/page1\nhttps://example.com/page2"
     mock_root = tempfile.mkdtemp()
 
-    with patch("core.extractor.find_project_root", return_value=mock_root):
+    with patch("llamasearch.core.extractor.find_project_root", return_value=mock_root):
         with patch("os.path.exists", return_value=True):
             with patch("builtins.open", mock_open(read_data=mock_links)):
                 links = read_links_from_temp()

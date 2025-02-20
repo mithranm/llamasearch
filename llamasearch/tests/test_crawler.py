@@ -3,7 +3,7 @@ import pytest
 import os
 import requests
 from unittest.mock import patch, mock_open
-from core.crawler import fetch_links_with_jina, filter_links_by_structure, save_to_project_tempdir, find_project_root
+from llamasearch.core.crawler import fetch_links_with_jina, filter_links_by_structure, save_to_project_tempdir, find_project_root
 
 JINA_API_URL = "https://r.jina.ai/"
 DUMMY_URL = "https://example.com"
@@ -57,7 +57,7 @@ def test_save_to_project_tempdir():
     mock_root = tempfile.mkdtemp()
 
 
-    with patch("core.crawler.find_project_root", return_value=mock_root):
+    with patch("llamasearch.core.crawler.find_project_root", return_value=mock_root):
         with patch("builtins.open", mock_open()) as mock_file:
             file_path = save_to_project_tempdir(mock_text, "test_link.md")
 
