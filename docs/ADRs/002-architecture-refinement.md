@@ -13,6 +13,10 @@ For P1, we need to begin the creation of concrete UML diagrams describing the be
 
 In order to give the team a clearer picture of LlamaSearch's business logic, I designed the following UML diagrams. I propose that we loosely follow the implementation they describe.
 
+### Use Case Digagram
+
+![](../assets/specialized-use-case.svg)
+
 ### Sequence Diagram
 ```mermaid
 sequenceDiagram
