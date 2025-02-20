@@ -1,4 +1,4 @@
-# ADR-001 Initial Architecture
+# ADR-002 Architecture Refinement
 **Status:** Accepted
 
 **Authors:**
