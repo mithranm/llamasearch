@@ -1,0 +1,78 @@
+<svg viewBox="0 0 1000 800" xmlns="http://www.w3.org/2000/svg">
+    <!-- System Boundary -->
+    <rect x="200" y="50" width="600" height="700" fill="none" stroke="black" stroke-width="2"/>
+    <text x="450" y="80" font-size="16" text-anchor="middle">LLAMASEARCH System</text>
+
+    <!-- Actors - Stick Figures -->
+    <!-- Student -->
+    <g transform="translate(100,200)">
+        <circle cx="0" cy="-10" r="10" fill="none" stroke="black" stroke-width="2"/>
+        <line x1="0" y1="0" x2="0" y2="30" stroke="black" stroke-width="2"/>
+        <line x1="-15" y1="15" x2="15" y2="15" stroke="black" stroke-width="2"/>
+        <line x1="0" y1="30" x2="-10" y2="50" stroke="black" stroke-width="2"/>
+        <line x1="0" y1="30" x2="10" y2="50" stroke="black" stroke-width="2"/>
+        <text x="-20" y="70" font-size="12">Student</text>
+    </g>
+
+    <!-- Professional -->
+    <g transform="translate(100,500)">
+        <circle cx="0" cy="-10" r="10" fill="none" stroke="black" stroke-width="2"/>
+        <line x1="0" y1="0" x2="0" y2="30" stroke="black" stroke-width="2"/>
+        <line x1="-15" y1="15" x2="15" y2="15" stroke="black" stroke-width="2"/>
+        <line x1="0" y1="30" x2="-10" y2="50" stroke="black" stroke-width="2"/>
+        <line x1="0" y1="30" x2="10" y2="50" stroke="black" stroke-width="2"/>
+        <text x="-30" y="70" font-size="12">Professional</text>
+    </g>
+
+    <!-- Core Use Cases -->
+    <!-- Search Website (Base) -->
+    <ellipse cx="400" cy="300" rx="80" ry="35" fill="white" stroke="black" stroke-width="2"/>
+    <text x="400" y="300" text-anchor="middle" font-size="12">Search Website</text>
+
+    <!-- Student-specific cases -->
+    <ellipse cx="650" cy="150" rx="90" ry="35" fill="white" stroke="black" stroke-width="2"/>
+    <text x="650" y="150" text-anchor="middle" font-size="12">Search Course Material</text>
+    <text x="650" y="165" text-anchor="middle" font-size="10" font-style="italic">&lt;&lt;extends&gt;&gt;</text>
+
+    <ellipse cx="650" cy="250" rx="90" ry="35" fill="white" stroke="black" stroke-width="2"/>
+    <text x="650" y="250" text-anchor="middle" font-size="12">Search Academic Papers</text>
+    <text x="650" y="265" text-anchor="middle" font-size="10" font-style="italic">&lt;&lt;extends&gt;&gt;</text>
+
+    <!-- Professional-specific cases -->
+    <ellipse cx="650" cy="450" rx="90" ry="35" fill="white" stroke="black" stroke-width="2"/>
+    <text x="650" y="450" text-anchor="middle" font-size="12">Analyze Competitor Site</text>
+    <text x="650" y="465" text-anchor="middle" font-size="10" font-style="italic">&lt;&lt;extends&gt;&gt;</text>
+
+    <ellipse cx="650" cy="550" rx="90" ry="35" fill="white" stroke="black" stroke-width="2"/>
+    <text x="650" y="550" text-anchor="middle" font-size="12">Research Market Trends</text>
+    <text x="650" y="565" text-anchor="middle" font-size="10" font-style="italic">&lt;&lt;extends&gt;&gt;</text>
+
+    <!-- Additional Features -->
+    <ellipse cx="400" cy="600" rx="80" ry="35" fill="white" stroke="black" stroke-width="2"/>
+    <text x="400" y="600" text-anchor="middle" font-size="12">Export Citations</text>
+
+    <ellipse cx="400" cy="700" rx="80" ry="35" fill="white" stroke="black" stroke-width="2"/>
+    <text x="400" y="700" text-anchor="middle" font-size="12">Generate Summary</text>
+
+    <!-- Association Lines -->
+    <!-- Student Base Associations -->
+    <line x1="115" y1="200" x2="320" y2="300" stroke="black" stroke-width="1"/>
+    
+    <!-- Professional Base Associations -->
+    <line x1="115" y1="500" x2="320" y2="300" stroke="black" stroke-width="1"/>
+
+    <!-- Extension Relationships -->
+    <!-- Student Extensions -->
+    <line x1="480" y1="300" x2="560" y2="150" stroke="black" stroke-width="1" stroke-dasharray="5,5"/>
+    <line x1="480" y1="300" x2="560" y2="250" stroke="black" stroke-width="1" stroke-dasharray="5,5"/>
+
+    <!-- Professional Extensions -->
+    <line x1="480" y1="300" x2="560" y2="450" stroke="black" stroke-width="1" stroke-dasharray="5,5"/>
+    <line x1="480" y1="300" x2="560" y2="550" stroke="black" stroke-width="1" stroke-dasharray="5,5"/>
+
+    <!-- Additional Feature Associations -->
+    <line x1="115" y1="200" x2="320" y2="600" stroke="black" stroke-width="1"/>
+    <line x1="115" y1="500" x2="320" y2="600" stroke="black" stroke-width="1"/>
+    <line x1="115" y1="200" x2="320" y2="700" stroke="black" stroke-width="1"/>
+    <line x1="115" y1="500" x2="320" y2="700" stroke="black" stroke-width="1"/>
+</svg>
