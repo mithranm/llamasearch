@@ -21,6 +21,7 @@ dependencies = [
     "beautifulsoup4>=4.12.0"
     "black>=25.1.0",
     "gradio>=5.16.0",
+    "gTTS>=2.5.4"
 ]
 
 [build-system]
