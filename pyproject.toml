@@ -19,6 +19,8 @@ dependencies = [
      "jina>=3.0.0",
     "requests>=2.31.0",
     "beautifulsoup4>=4.12.0"
+    "black>=25.1.0",
+    "gradio>=5.16.0",
 ]
 
 [build-system]

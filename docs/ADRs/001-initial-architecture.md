@@ -1,6 +1,6 @@
 # ADR-001 Initial Architecture
 
-**Status:** Pending
+**Status:** Accepted
 
 **Authors:**
 
