@@ -2,12 +2,12 @@
 # the code and fixing minor mistakes
 import gradio as gr
 from gradio import Blocks
-from utils import save_to_db, QARecord, export_to_txt, delete_all_records
+from llamasearch.ui.utils import save_to_db, QARecord, export_to_txt, delete_all_records
 
 def generate_response(link, user_input):
     return f"AI response for: {user_input} (Link: {link})"
 
-#def download_voice():
+# def download_voice():
 #    return "voice_file.mp3"
 def listen_answer(answer_text):
     """
@@ -74,8 +74,6 @@ def new_chat():
         gr.update(visible=False)
     )
 
-
-
 def create_app() -> Blocks:
     with gr.Blocks() as demo:
         gr.Markdown("# LLAMASEARCH - Next Gen AI Search Assistant")
@@ -90,13 +88,11 @@ def create_app() -> Blocks:
             )
         
         with gr.Row():
-                submit_btn = gr.Button("Search")
-                next_question_btn = gr.Button("Next Question")
-                new_chat_btn = gr.Button("New Chat")
+            submit_btn = gr.Button("Search")
+            next_question_btn = gr.Button("Next Question")
+            new_chat_btn = gr.Button("New Chat")
 
         chat_output = gr.Textbox(label="AI Response", interactive=False, lines=15)
-
-        
 
         with gr.Row():
             listen_btn = gr.Button("Listen Answer")
@@ -107,11 +103,11 @@ def create_app() -> Blocks:
         audio_output = gr.Audio(label="Audio Response", interactive=False)
 
         review_prompt = gr.Textbox(label="Your Review", visible=False, 
-                                placeholder="Write your review here...")
+                                   placeholder="Write your review here...")
         submit_review_btn = gr.Button("Submit Review", visible=False)
 
         submit_btn.click(generate_response, inputs=[link_input, user_input], 
-                        outputs=chat_output)
+                         outputs=chat_output)
         listen_btn.click(
             listen_answer, 
             inputs=chat_output, 
@@ -125,7 +121,6 @@ def create_app() -> Blocks:
             inputs=[], 
             outputs=[link_input, user_input, chat_output, rating, review_prompt, submit_review_btn, audio_output]
         )
-
 
         next_question_btn.click(
             save_and_clear, 

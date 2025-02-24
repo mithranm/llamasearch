@@ -5,7 +5,7 @@ import sqlite3
 from pydantic import BaseModel
 from typing import Optional, List
 
-#QA - Question and answer
+# QA - Question and answer
 class QARecord(BaseModel):
     question: str
     answer: str
@@ -73,7 +73,7 @@ def export_to_txt(filename="qa_records.txt") -> None:
 
 
 if __name__ == "__main__":
-    #test
+    # test
     qa_entry = QARecord(question="What is AI?", answer="AI stands for Artificial Intelligence.")
     save_to_db(qa_entry)
     print(load_from_db())
