@@ -52,16 +52,19 @@ def fetch_links_with_jina(url, max_links=50):
 
 
 def filter_links_by_structure(original_url, links):
-    """Filters links to only include those from the same domain, while ignoring media files."""
+    """Filters links to only include those from the same domain or subdomains, while ignoring media files."""
     parsed_url = urlparse(original_url)
+    # Get the base domain by splitting on dots and taking the last two parts
+    base_domain = '.'.join(parsed_url.netloc.split('.')[-2:])
 
     filtered_links = []
 
     for link in links:
         parsed_link = urlparse(link)
+        link_base_domain = '.'.join(parsed_link.netloc.split('.')[-2:])
 
-        # Allow only links from the same domain
-        if parsed_link.netloc != parsed_url.netloc:
+        # Allow links from the same base domain (including subdomains)
+        if link_base_domain != base_domain:
             continue
 
         # Ignore media files and social media links
