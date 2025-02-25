@@ -2,12 +2,17 @@ import pytest
 import os
 import tempfile
 from unittest.mock import patch, mock_open
-from llamasearch.core.extractor import extract_text_with_jina, save_to_project_tempdir, read_links_from_temp
+from llamasearch.core.extractor import (
+    extract_text_with_jina,
+    save_to_project_tempdir,
+    read_links_from_temp,
+)
 
 JINA_API_URL = "https://r.jina.ai/"
 DUMMY_URL = "https://example.com"
 
 MOCK_JINA_TEXT = "This is extracted text from the webpage."
+
 
 @pytest.fixture
 def mock_requests_get():
@@ -17,12 +22,14 @@ def mock_requests_get():
         mock_get.return_value.text = MOCK_JINA_TEXT
         yield mock_get
 
+
 def test_extract_text_with_jina(mock_requests_get):
     """Test text extraction using Jina API."""
     text = extract_text_with_jina(DUMMY_URL)
 
     assert mock_requests_get.called
     assert text == MOCK_JINA_TEXT
+
 
 def test_save_to_project_tempdir():
     """Test saving extracted text to a temp directory."""
