@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 
 JINA_API_URL = "https://r.jina.ai/"
 
+
 def find_project_root():
     """Finds the root of the project by looking for `pyproject.toml`."""
     current_dir = os.path.abspath(os.path.dirname(__file__))
@@ -15,7 +16,10 @@ def find_project_root():
 
         current_dir = os.path.dirname(current_dir)
 
-    raise RuntimeError("Could not find project root. Please check your project structure.")
+    raise RuntimeError(
+        "Could not find project root. Please check your project structure."
+    )
+
 
 def save_to_project_tempdir(text, filename="links.md"):
     """Saves text to a `temp` directory inside the project root."""
@@ -30,6 +34,7 @@ def save_to_project_tempdir(text, filename="links.md"):
 
     return file_path  # Return the file path for reference
 
+
 def fetch_links_with_jina(url, max_links=50):
     """Fetches structured content from Jina AI and extracts only links, with an optional limit."""
     try:
@@ -37,7 +42,7 @@ def fetch_links_with_jina(url, max_links=50):
         response.raise_for_status()
         content = response.text
 
-        all_links = list(set(re.findall(r'https?://[^\s)>\"]+', content)))
+        all_links = list(set(re.findall(r"https?://[^\s)>\"]+", content)))
 
         return all_links[:max_links]
 
@@ -45,21 +50,22 @@ def fetch_links_with_jina(url, max_links=50):
         print(f"Error fetching from Jina AI: {e}")
         return None
 
+
 def filter_links_by_structure(original_url, links):
     """Filters links to only include those from the same domain, while ignoring media files."""
     parsed_url = urlparse(original_url)
-    
+
     filtered_links = []
-    
+
     for link in links:
         parsed_link = urlparse(link)
-        
+
         # Allow only links from the same domain
         if parsed_link.netloc != parsed_url.netloc:
             continue
 
         # Ignore media files and social media links
-        if re.search(r'\.(jpg|jpeg|png|gif|mp4|webp|svg)$', link):
+        if re.search(r"\.(jpg|jpeg|png|gif|mp4|webp|svg)$", link):
             continue
 
         # Add to filtered list without strict path checking

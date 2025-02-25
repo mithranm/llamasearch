@@ -29,57 +29,55 @@ cursor.execute(
 
 
 def save_to_db(record: QARecord) -> None:
+    conn = sqlite3.connect("qa_data.db")
+    cursor = conn.cursor()
     cursor.execute(
         "INSERT INTO qa_records (question, answer, rating) VALUES (?, ?, ?)",
         (record.question, record.answer, record.rating),
     )
     conn.commit()
+    conn.close()
 
 
 def load_from_db() -> List[QARecord]:
+    conn = sqlite3.connect("qa_data.db")
+    cursor = conn.cursor()
     cursor.execute("SELECT question, answer, rating FROM qa_records")
-    return [
+    records = [
         QARecord(question=row[0], answer=row[1], rating=row[2])
         for row in cursor.fetchall()
     ]
+    conn.close()
+    return records
 
 
 def delete_all_records() -> None:
     conn = sqlite3.connect("qa_data.db")
     cursor = conn.cursor()
-
     cursor.execute("DELETE FROM qa_records")
-
-    # id back to 0
     cursor.execute("DELETE FROM sqlite_sequence WHERE name='qa_records'")
-
     conn.commit()
     conn.close()
-
     print("All records deleted, and ID counter reset to 1.")
 
 
 def export_to_txt(filename="qa_records.txt") -> None:
     conn = sqlite3.connect("qa_data.db")
     cursor = conn.cursor()
-
     cursor.execute("SELECT * FROM qa_records")
     records = cursor.fetchall()
     conn.close()
 
     rating_map = {1: "Good", -1: "Bad", 0: "N/A"}
-
     with open(filename, "w", encoding="utf-8") as f:
         for record in records:
             record_id, question, answer, rating = record
-            rating_text = rating_map.get(rating, "N/A")  # default is "N/A"
-
+            rating_text = rating_map.get(rating, "N/A")
             f.write(f"ID: {record_id}\n")
             f.write(f"Question: {question}\n")
             f.write(f"Answer: {answer}\n")
             f.write(f"Rating: {rating_text}\n")
             f.write("\n")
-
     print(f"Data exported to {filename}")
 
 
