@@ -54,14 +54,27 @@ def fetch_links_with_jina(url, max_links=50):
 def filter_links_by_structure(original_url, links):
     """Filters links to only include those from the same domain or subdomains, while ignoring media files."""
     parsed_url = urlparse(original_url)
-    # Get the base domain by splitting on dots and taking the last two parts
-    base_domain = '.'.join(parsed_url.netloc.split('.')[-2:])
+    netloc_parts = parsed_url.netloc.split('.')
+    
+    # Handle special TLDs like .co.uk, .com.au, etc.
+    if len(netloc_parts) >= 3 and netloc_parts[-2] in ['co', 'com', 'org', 'net', 'ac', 'gov', 'edu']:
+        # For domains like example.co.uk, take the last three parts
+        base_domain = '.'.join(netloc_parts[-3:])
+    else:
+        # For regular domains like example.com, take the last two parts
+        base_domain = '.'.join(netloc_parts[-2:])
 
     filtered_links = []
 
     for link in links:
         parsed_link = urlparse(link)
-        link_base_domain = '.'.join(parsed_link.netloc.split('.')[-2:])
+        link_parts = parsed_link.netloc.split('.')
+        
+        # Apply the same logic to determine the base domain of the link
+        if len(link_parts) >= 3 and link_parts[-2] in ['co', 'com', 'org', 'net', 'ac', 'gov', 'edu']:
+            link_base_domain = '.'.join(link_parts[-3:])
+        else:
+            link_base_domain = '.'.join(link_parts[-2:])
 
         # Allow links from the same base domain (including subdomains)
         if link_base_domain != base_domain:
