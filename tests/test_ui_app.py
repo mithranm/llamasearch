@@ -1,11 +1,8 @@
 import os
-import tempfile
 import gradio as gr
 from llamasearch.ui.app import (
     generate_response,
     listen_answer,
-    download_chat,
-    rate_response,
     submit_review,
     save_and_clear,
     new_chat,
