@@ -17,21 +17,21 @@ flowchart TD;
 
 1. Create Database
 
-   1. Create seperate folder sources/ under llamasearch/
+   1. Create seperate folder named sources/ under llamasearch/
    2. Find 50-100 website sources that can be considered reliable sources for a wide range of topics
    3. Store as a text file or python file whatever is the most convenient to read from
 
 2. Creating link checker
 
    1. Create a file linkChecker.py that will communicate with the database
-   2. linkChecker.py should recieve a list of links and be able to compare to the database to see if any of the links relatively match
+   2. linkChecker.py should recieve a list of links and be able to compare to the database to identify any relative matches.
    3. linkChecker.py is responsible for checking the links from the output of both crawler.py and authorCrawl.py
-   4. linkChecker.py should be able to give a count or a boolean determining if the associated links are found in the database.
+   4. linkChecker.py should be able to give a count or a boolean indicating that the associated links are found in the database.
 
 3. Create author searching
 
-   1. authorSearch.py should be able to look through the output file from extractor.py and be able to find author names.
-   2. authorCrawl.py should be able to run a search from the authorSearch.py to find link associated with the extracted authors.
+   1. authorSearch.py should be able to look through the output file from extractor.py and to find author names.
+   2. authorCrawl.py should be able to run a search from the output of authorSearch.py to find links associated with the extracted authors.
    3. authorCrawl.py should output a text file containing the links associated to the authors found.
 
 4. Create trustworthiness score protocol 
