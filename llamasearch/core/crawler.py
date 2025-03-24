@@ -50,7 +50,8 @@ def fetch_links_with_jina(url, max_links=50):
         print(f"Error fetching from Jina AI: {e}")
         return None
 
-
+#TODO: Make this match any subdomain, not just www and allow a search into one external link as well. Terminate the search if
+# we hit 50 children on a single node or two external links. Also terminate if we go down to a depth of 3.
 def filter_links_by_structure(original_url, links):
     """Filters links to only include those from the same domain or subdomains, while ignoring media files."""
     parsed_url = urlparse(original_url)
