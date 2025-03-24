@@ -58,6 +58,80 @@ def test_filter_links_by_structure():
     assert "https://example.com/video.mp4" not in filtered
 
 
+def test_filter_links_subdomains():
+    """Test that links from subdomains of the same base domain are kept."""
+    # Test with base domain
+    original_url = "https://example.com"
+    links = [
+        "https://example.com/page1",
+        "https://www.example.com/page2",
+        "https://sub.example.com/page3",
+        "https://other-domain.com/page",
+    ]
+
+    filtered = filter_links_by_structure(original_url, links)
+
+    assert len(filtered) == 3
+    assert "https://example.com/page1" in filtered
+    assert "https://www.example.com/page2" in filtered
+    assert "https://sub.example.com/page3" in filtered
+    assert "https://other-domain.com/page" not in filtered
+
+    # Test with www subdomain
+    original_url = "https://www.example.com"
+
+    filtered = filter_links_by_structure(original_url, links)
+
+    assert len(filtered) == 3
+    assert "https://example.com/page1" in filtered
+    assert "https://www.example.com/page2" in filtered
+    assert "https://sub.example.com/page3" in filtered
+    assert "https://other-domain.com/page" not in filtered
+
+
+def test_real_world_gnu_org():
+    """Test with real-world example of gnu.org and www.gnu.org."""
+    # Test with base domain gnu.org
+    original_url = "https://gnu.org"
+    links = [
+        "https://gnu.org/",
+        "https://gnu.org/#More-GNU",
+        "https://www.gnu.org/distros/free-distros.html",
+        "https://www.gnu.org/gnu/gnu-linux-faq.html",
+        "https://www.gnu.org/home.html",
+    ]
+
+    filtered = filter_links_by_structure(original_url, links)
+
+    assert len(filtered) == 5  # All links should be kept
+
+    # Test with www subdomain
+    original_url = "https://www.gnu.org"
+
+    filtered = filter_links_by_structure(original_url, links)
+
+    assert len(filtered) == 5  # All links should be kept
+
+
+def test_complex_domains():
+    """Test with more complex domain structures."""
+    original_url = "https://sub.example.co.uk"
+    links = [
+        "https://example.co.uk/page1",
+        "https://www.example.co.uk/page2",
+        "https://sub.example.co.uk/page3",
+        "https://other.co.uk/page",
+    ]
+
+    filtered = filter_links_by_structure(original_url, links)
+
+    assert len(filtered) == 3
+    assert "https://example.co.uk/page1" in filtered
+    assert "https://www.example.co.uk/page2" in filtered
+    assert "https://sub.example.co.uk/page3" in filtered
+    assert "https://other.co.uk/page" not in filtered
+
+
 def test_save_to_project_tempdir():
     """Test saving filtered links to a temp directory."""
     mock_text = "https://example.com/page1\nhttps://example.com/page2"
