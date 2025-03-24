@@ -68,20 +68,20 @@ def test_filter_links_subdomains():
         "https://sub.example.com/page3",
         "https://other-domain.com/page",
     ]
-    
+
     filtered = filter_links_by_structure(original_url, links)
-    
+
     assert len(filtered) == 3
     assert "https://example.com/page1" in filtered
     assert "https://www.example.com/page2" in filtered
     assert "https://sub.example.com/page3" in filtered
     assert "https://other-domain.com/page" not in filtered
-    
+
     # Test with www subdomain
     original_url = "https://www.example.com"
-    
+
     filtered = filter_links_by_structure(original_url, links)
-    
+
     assert len(filtered) == 3
     assert "https://example.com/page1" in filtered
     assert "https://www.example.com/page2" in filtered
@@ -100,16 +100,16 @@ def test_real_world_gnu_org():
         "https://www.gnu.org/gnu/gnu-linux-faq.html",
         "https://www.gnu.org/home.html",
     ]
-    
+
     filtered = filter_links_by_structure(original_url, links)
-    
+
     assert len(filtered) == 5  # All links should be kept
-    
+
     # Test with www subdomain
     original_url = "https://www.gnu.org"
-    
+
     filtered = filter_links_by_structure(original_url, links)
-    
+
     assert len(filtered) == 5  # All links should be kept
 
 
@@ -122,9 +122,9 @@ def test_complex_domains():
         "https://sub.example.co.uk/page3",
         "https://other.co.uk/page",
     ]
-    
+
     filtered = filter_links_by_structure(original_url, links)
-    
+
     assert len(filtered) == 3
     assert "https://example.co.uk/page1" in filtered
     assert "https://www.example.co.uk/page2" in filtered
