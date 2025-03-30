@@ -20,7 +20,11 @@ dependencies = [
     "beautifulsoup4>=4.13.3",
     "black>=25.1.0",
     "gradio>=5.18.0",
-    "gTTS>=2.5.4"
+    "gTTS>=2.5.4",
+    "chromadb>=0.6.3",
+    "transformers>=4.50.3",
+    "sentence-transformers>=4.0.1",
+    "sentencepiece>=0.2.0"
 ]
 
 [build-system]
