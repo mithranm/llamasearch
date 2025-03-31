@@ -94,7 +94,7 @@ def test_export_multiple_records(tmp_path):
 def test_export_empty_db(tmp_path):
     # Ensure the database is empty.
     delete_all_records()
-    
+
     # Export records to a temporary file.
     export_file = tmp_path / "export_empty.txt"
     export_to_txt(str(export_file))

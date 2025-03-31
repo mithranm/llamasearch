@@ -33,7 +33,9 @@ def save_to_project_tempdir(text, url):
     file_path = os.path.join(temp_dir, filename)
 
     # Write content to the file
-    with open(file_path, "w", encoding="utf-8") as file:  # Use "w" to create/overwrite each file
+    with open(
+        file_path, "w", encoding="utf-8"
+    ) as file:  # Use "w" to create/overwrite each file
         file.write(f"## {url}\n\n{text}")  # Include URL as a heading in the file
 
     return file_path
@@ -79,5 +81,7 @@ if __name__ == "__main__":
         text = extract_text_with_jina(link)
 
         if text:
-            file_path = save_to_project_tempdir(text, link)  # Pass the URL to save_to_project_tempdir
+            file_path = save_to_project_tempdir(
+                text, link
+            )  # Pass the URL to save_to_project_tempdir
             print(f"Extracted content saved at: {file_path}")

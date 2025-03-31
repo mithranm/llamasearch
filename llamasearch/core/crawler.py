@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 
 JINA_API_URL = "https://r.jina.ai/"
 
+
 def save_to_project_tempdir(text, filename="links.md"):
     """Saves text to a `temp` directory inside the project root."""
     project_root = find_project_root()
@@ -21,7 +22,11 @@ def save_to_project_tempdir(text, filename="links.md"):
     return file_path  # Return the file path for reference
 
 
-def fetch_links(url, max_links=6, user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"):
+def fetch_links(
+    url,
+    max_links=6,
+    user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+):
     """
     Fetches HTML content and extracts links using BeautifulSoup.
 
@@ -38,21 +43,21 @@ def fetch_links(url, max_links=6, user_agent="Mozilla/5.0 (Macintosh; Intel Mac 
         headers = {"User-Agent": user_agent}
         response = requests.get(url, timeout=10, headers=headers)
         response.raise_for_status()
-        soup = BeautifulSoup(response.content, 'html.parser')
-        
+        soup = BeautifulSoup(response.content, "html.parser")
+
         # Find all a tags and extract href attributes
         links = []
-        for a_tag in soup.find_all('a', href=True):
-            href = a_tag['href']
+        for a_tag in soup.find_all("a", href=True):
+            href = a_tag["href"]
             # Convert relative URLs to absolute
-            if href.startswith('http'):
+            if href.startswith("http"):
                 links.append(href)
-            elif href.startswith('/'):
+            elif href.startswith("/"):
                 # Handle relative URLs
                 parsed_url = urlparse(url)
                 base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
                 links.append(base_url + href)
-        
+
         # Remove duplicates and limit to max_links
         return list(set(links))[:max_links]
 
@@ -127,7 +132,7 @@ def crawl(
 
     if all_links is None:
         all_links = []
-    
+
     if depth == 1 and url not in all_links:
         all_links.append(url)
 

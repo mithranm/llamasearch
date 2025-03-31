@@ -11,15 +11,18 @@ from llamasearch.ui.app import (
     upload_files,  # Make sure we import upload_files to test it
 )
 
+
 def test_generate_response():
     link = "https://example.com"
     user_input = "What is AI?"
     expected = "AI response for: What is AI? (Link: https://example.com)"
     assert generate_response(link, user_input) == expected
 
+
 def test_listen_answer_empty():
     result = listen_answer("")
     assert result is None
+
 
 def test_listen_answer_valid():
     result = listen_answer("Hello, this is a test")
@@ -29,10 +32,12 @@ def test_listen_answer_valid():
     # Clean up the temporary file
     os.remove(result)
 
+
 def test_submit_review():
     review_text = "Great service!"
     expected = "Review submitted: Great service!"
     assert submit_review(review_text) == expected
+
 
 def test_save_and_clear():
     # Use "👍" so rating_int should become 1
@@ -44,6 +49,7 @@ def test_save_and_clear():
     for update in outputs[:3]:
         assert update.get("value") == ""
     # Fourth update should hide the audio output (visible set to False)
+
 
 def test_new_chat():
     outputs = new_chat()
@@ -61,6 +67,7 @@ def test_new_chat():
     for update in outputs[5:]:
         assert update.get("visible") is False
 
+
 def test_app_creation():
     app = create_app()
     assert isinstance(app, gr.Blocks)
@@ -68,7 +75,13 @@ def test_app_creation():
     components = [comp for comp in app.blocks.values() if hasattr(comp, "label")]
     labels = [comp.label for comp in components if comp.label]
     # Update expected labels to those that are actually present
-    essential_labels = ["Enter a Website Link", "Ask a Question", "AI Response", "Rate Response", "Audio Response"]
+    essential_labels = [
+        "Enter a Website Link",
+        "Ask a Question",
+        "AI Response",
+        "Rate Response",
+        "Audio Response",
+    ]
     for label in essential_labels:
         assert label in labels
 
