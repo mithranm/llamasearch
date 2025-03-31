@@ -38,10 +38,10 @@ def mock_requests_get():
 def test_fetch_links(mock_requests_get):
     """Test fetching links using Jina API."""
     links = fetch_links(DUMMY_URL, max_links=5)
-    #TODO: Fix this test, I don't think its correct.
     assert mock_requests_get.called
     assert len(links) == 5
     assert "https://example.com/page1" in links
+    # External links are allowed at depth 1
     assert "https://otherdomain.com/notallowed" in links
 
 

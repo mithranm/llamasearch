@@ -21,7 +21,7 @@ class MarkdownChunker:
 
     def __init__(
         self,
-        chunk_size: int = 250,  # Smaller chunk size for better retrieval
+        chunk_size: int = 150,  # Smaller chunk size for better retrieval
         text_embedding_size: int = 512,  # Max tokens for text to be embedded
         min_chunk_size: int = 50,  # Minimum size for chunks
         max_chunks: int = 5000,
@@ -42,19 +42,30 @@ class MarkdownChunker:
         self.always_create_chunks = always_create_chunks
 
         # Regular expressions for content detection
-        self.header_pattern = re.compile(r"^(#{1,6})\s+(.*?)$", re.MULTILINE)
+        self.header_pattern = re.compile(r"^(#{1,6})\s+(.+?)$", re.MULTILINE)
         self.code_block_pattern = re.compile(
-            r"```(?:[a-zA-Z0-9_+-]+)?\n[\s\S]*?\n```", re.MULTILINE
+            r"```(?:[a-zA-Z0-9_+-]*)\n([\s\S]*?)\n```", re.MULTILINE
         )
-        self.list_item_pattern = re.compile(r"^\s*(?:\*|\-|\d+\.)\s+.*?$", re.MULTILINE)
+        self.list_item_pattern = re.compile(r"^\s*(?:[*\-]|\d+\.)\s+(.+?)$", re.MULTILINE)
         self.table_pattern = re.compile(
-            r"^\|(?:.*?\|)+\s*$[\r\n]+\|(?:\s*:?[-]+:?\s*\|)+\s*$", re.MULTILINE
+            r"^\|(?:[^|]*\|)+\s*$(?:\r?\n\|(?:\s*:?[-]+:?\s*\|)+\s*$)?", re.MULTILINE
         )
         self.paragraph_pattern = re.compile(r"\n\s*\n", re.MULTILINE)
-        self.link_pattern = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+        self.link_pattern = re.compile(r"\[([^]]+)\]\(([^)]+)\)")
+        self.name_pattern = re.compile(r'\b[A-Z][a-z]+(?: [A-Z][a-z]+)+\b')
 
         # Pattern to remove navigation elements and non-essential content
         self.nav_pattern = re.compile(r"^\s*\*\s+\[.*?\].*?$", re.MULTILINE)
+        
+        # Pattern to remove video player and media content
+        self.video_player_pattern = re.compile(
+            r'(?s)'  # Enable dot-all mode for the entire pattern
+            r'Video Player.*?End of dialog window|'  # Video player content
+            r'Beginning of dialog window.*?End of dialog window|'  # Dialog content
+            r'Share\s*Settings.*?$|'  # Share settings
+            r'!\[.*?\]\(.*?cdn.*?(?:jpg|png|gif).*?\).*?$',  # CDN media embeds
+            re.MULTILINE
+        )
 
         # Initialize the markdown parser
         self.markdown_extensions = [
@@ -73,20 +84,42 @@ class MarkdownChunker:
         [Link Text](URL) becomes just "Link Text"
         """
         if self.ignore_link_urls:
-            return self.link_pattern.sub(r"\1", text)
+            # Use a lambda function to handle the substitution
+            return self.link_pattern.sub(lambda m: m.group(1), text)
         return text
 
     def _clean_navigation_elements(self, text: str) -> str:
         """
-        Remove navigation elements like menu items and non-essential content
+        Remove navigation elements, video players, and other non-essential content
         """
         # Remove navigation lines (lines that are just links)
         text = self.nav_pattern.sub("", text)
+        
+        # Remove video player and media content
+        text = self.video_player_pattern.sub("", text)
 
         # Remove duplicate empty lines
         text = re.sub(r"\n{3,}", "\n\n", text)
+        
+        # Clean up any remaining empty lines around headers
+        text = re.sub(r'\n+#', '\n#', text)
+        text = re.sub(r'(#.*?)\n\n+', r'\1\n', text)
 
-        return text
+        return text.strip()
+
+    def _clean_overlap_text(self, text: str) -> str:
+        """
+        Clean overlap text by:
+        1. Removing markdown links and keeping only the link text
+        2. Removing whitespace, newlines, and tabs
+        Returns cleaned text that can be used for meaningful overlap calculations.
+        """
+        # First clean markdown links
+        text = self._clean_markdown_links(text)
+        
+        # Then remove whitespace, newlines and tabs
+        cleaned = re.sub(r'[\s\n\t]+', '', text)
+        return cleaned
 
     def _markdown_to_html(self, text: str) -> str:
         """
@@ -98,6 +131,7 @@ class MarkdownChunker:
         """
         Extract sections from HTML content using BeautifulSoup.
         Creates smaller, more focused sections for better retrieval.
+        Now enforces strict chunk size limits.
         """
         soup = BeautifulSoup(html, "html.parser")
         sections = []
@@ -113,19 +147,104 @@ class MarkdownChunker:
                 for i, para in enumerate(paragraphs):
                     para_text = para.get_text().strip()
                     if para_text:  # Only add non-empty paragraphs
-                        sections.append(
-                            {
-                                "content": str(para),
+                        # Check if paragraph exceeds chunk size
+                        if len(para_text) > self.chunk_size:
+                            # Split into sentences
+                            sentences = re.split(r'(?<=[.!?])\s+', para_text)
+                            current_chunk = ""
+                            
+                            for sentence in sentences:
+                                # If adding this sentence would exceed the chunk_size
+                                if len(current_chunk) + len(sentence) > self.chunk_size and current_chunk:
+                                    # Add the current chunk as a section
+                                    sections.append({
+                                        "content": current_chunk,
+                                        "level": 0,
+                                        "title": f"Paragraph {i+1}",
+                                        "path": [f"Paragraph {i+1}"],
+                                    })
+                                    current_chunk = sentence
+                                else:
+                                    # Add to current chunk
+                                    if current_chunk:
+                                        current_chunk += " "
+                                    current_chunk += sentence
+                            
+                            # Add the last chunk if not empty
+                            if current_chunk:
+                                sections.append({
+                                    "content": current_chunk,
+                                    "level": 0,
+                                    "title": f"Paragraph {i+1}",
+                                    "path": [f"Paragraph {i+1}"],
+                                })
+                        else:
+                            # Paragraph fits within chunk size
+                            sections.append({
+                                "content": para_text,
                                 "level": 0,
                                 "title": f"Paragraph {i+1}",
                                 "path": [f"Paragraph {i+1}"],
-                            }
-                        )
+                            })
             else:
-                # If no paragraphs either, treat the whole document as one section
-                sections.append(
-                    {"content": str(soup), "level": 0, "title": "", "path": []}
-                )
+                # If no paragraphs either, split the content by character chunks
+                full_text = soup.get_text().strip()
+                if full_text:
+                    # Split into chunks respecting sentence boundaries where possible
+                    sentences = re.split(r'(?<=[.!?])\s+', full_text)
+                    current_chunk = ""
+                    chunk_count = 0
+                    
+                    for sentence in sentences:
+                        # If this sentence alone exceeds chunk_size, split it
+                        if len(sentence) > self.chunk_size:
+                            # If we have a current chunk, add it first
+                            if current_chunk:
+                                chunk_count += 1
+                                sections.append({
+                                    "content": current_chunk,
+                                    "level": 0,
+                                    "title": f"Section {chunk_count}",
+                                    "path": [f"Section {chunk_count}"],
+                                })
+                                current_chunk = ""
+                            
+                            # Then split this long sentence by character
+                            for j in range(0, len(sentence), self.chunk_size):
+                                chunk_count += 1
+                                sentence_chunk = sentence[j:j+self.chunk_size]
+                                sections.append({
+                                    "content": sentence_chunk,
+                                    "level": 0,
+                                    "title": f"Section {chunk_count}",
+                                    "path": [f"Section {chunk_count}"],
+                                })
+                        # If adding this sentence would exceed chunk_size
+                        elif len(current_chunk) + len(sentence) > self.chunk_size:
+                            # Add current chunk and start a new one
+                            chunk_count += 1
+                            sections.append({
+                                "content": current_chunk,
+                                "level": 0,
+                                "title": f"Section {chunk_count}",
+                                "path": [f"Section {chunk_count}"],
+                            })
+                            current_chunk = sentence
+                        else:
+                            # Add sentence to current chunk
+                            if current_chunk:
+                                current_chunk += " "
+                            current_chunk += sentence
+                    
+                    # Add the last chunk if not empty
+                    if current_chunk:
+                        chunk_count += 1
+                        sections.append({
+                            "content": current_chunk,
+                            "level": 0,
+                            "title": f"Section {chunk_count}",
+                            "path": [f"Section {chunk_count}"],
+                        })
             return sections
 
         # Process each header to create sections
@@ -151,7 +270,6 @@ class MarkdownChunker:
             last_level = level
 
             # Get content until next header
-            # content = ""
             element = header.next_sibling
 
             # Gather all elements until the next header
@@ -181,24 +299,96 @@ class MarkdownChunker:
                 element_text = str(element)
                 element_size = len(element_text)
 
-                # If adding this element would exceed the chunk size and we already have elements
-                if (
-                    current_chunk_elements
-                    and current_chunk_size + element_size > max_chunk_size
-                ):
-                    # Create a section with the current chunk
-                    chunk_content = "".join(str(e) for e in current_chunk_elements)
-                    if chunk_content.strip():  # Only add non-empty chunks
-                        chunk_title = f"{title} (part {len(sections) + 1 - sum(1 for s in sections if s['title'] == title)})"
-                        sections.append(
-                            {
+                # If this single element is larger than max_chunk_size
+                if element_size > max_chunk_size:
+                    # Process current chunk first if it has content
+                    if current_chunk_elements:
+                        chunk_content = "".join(str(e) for e in current_chunk_elements)
+                        if chunk_content.strip():
+                            chunk_title = f"{title} (part {len(sections) + 1 - sum(1 for s in sections if s['title'] == title)})"
+                            sections.append({
                                 "content": chunk_content,
                                 "level": level,
                                 "title": title,
                                 "path": current_path.copy(),
                                 "header": chunk_title,
-                            }
-                        )
+                            })
+                        current_chunk_elements = []
+                        current_chunk_size = 0
+                    
+                    # Split this large element into smaller pieces
+                    element_text = element.get_text() if hasattr(element, "get_text") else str(element)
+                    # Try to split on sentence boundaries
+                    sentences = re.split(r'(?<=[.!?])\s+', element_text)
+                    
+                    current_sentence_chunk = ""
+                    for sentence in sentences:
+                        # If this single sentence is too large
+                        if len(sentence) > max_chunk_size:
+                            # Add current sentence chunk if it exists
+                            if current_sentence_chunk:
+                                chunk_title = f"{title} (part {len(sections) + 1 - sum(1 for s in sections if s['title'] == title)})"
+                                sections.append({
+                                    "content": current_sentence_chunk,
+                                    "level": level,
+                                    "title": title,
+                                    "path": current_path.copy(),
+                                    "header": chunk_title,
+                                })
+                                current_sentence_chunk = ""
+                            
+                            # Split the long sentence by character
+                            for j in range(0, len(sentence), max_chunk_size):
+                                sub_chunk = sentence[j:j+max_chunk_size]
+                                chunk_title = f"{title} (part {len(sections) + 1 - sum(1 for s in sections if s['title'] == title)})"
+                                sections.append({
+                                    "content": sub_chunk,
+                                    "level": level,
+                                    "title": title,
+                                    "path": current_path.copy(),
+                                    "header": chunk_title,
+                                })
+                        # If adding this sentence would exceed chunk size
+                        elif len(current_sentence_chunk) + len(sentence) > max_chunk_size:
+                            # Add current sentence chunk
+                            chunk_title = f"{title} (part {len(sections) + 1 - sum(1 for s in sections if s['title'] == title)})"
+                            sections.append({
+                                "content": current_sentence_chunk,
+                                "level": level,
+                                "title": title,
+                                "path": current_path.copy(),
+                                "header": chunk_title,
+                            })
+                            current_sentence_chunk = sentence
+                        else:
+                            # Add to current sentence chunk
+                            if current_sentence_chunk:
+                                current_sentence_chunk += " "
+                            current_sentence_chunk += sentence
+                    
+                    # Add the last sentence chunk if it exists
+                    if current_sentence_chunk:
+                        chunk_title = f"{title} (part {len(sections) + 1 - sum(1 for s in sections if s['title'] == title)})"
+                        sections.append({
+                            "content": current_sentence_chunk,
+                            "level": level,
+                            "title": title,
+                            "path": current_path.copy(),
+                            "header": chunk_title,
+                        })
+                # If adding this element would exceed the chunk size and we already have elements
+                elif current_chunk_elements and current_chunk_size + element_size > max_chunk_size:
+                    # Create a section with the current chunk
+                    chunk_content = "".join(str(e) for e in current_chunk_elements)
+                    if chunk_content.strip():  # Only add non-empty chunks
+                        chunk_title = f"{title} (part {len(sections) + 1 - sum(1 for s in sections if s['title'] == title)})"
+                        sections.append({
+                            "content": chunk_content,
+                            "level": level,
+                            "title": title,
+                            "path": current_path.copy(),
+                            "header": chunk_title,
+                        })
 
                     # Reset for next chunk
                     current_chunk_elements = [element]
@@ -213,22 +403,68 @@ class MarkdownChunker:
                 chunk_content = "".join(str(e) for e in current_chunk_elements)
                 if chunk_content.strip():  # Only add non-empty chunks
                     chunk_title = f"{title} (part {len(sections) + 1 - sum(1 for s in sections if s['title'] == title)})"
-                    sections.append(
-                        {
-                            "content": chunk_content,
-                            "level": level,
-                            "title": title,
-                            "path": current_path.copy(),
-                            "header": chunk_title,
-                        }
-                    )
+                    sections.append({
+                        "content": chunk_content,
+                        "level": level,
+                        "title": title,
+                        "path": current_path.copy(),
+                        "header": chunk_title,
+                    })
 
-        return sections
+        # Final verification to ensure all chunks are under the maximum size
+        final_sections = []
+        for section in sections:
+            content = section["content"]
+            # If still too large, break it down further
+            if len(content) > self.chunk_size:
+                # Split content by sentences or by characters if needed
+                sentences = re.split(r'(?<=[.!?])\s+', content)
+                current_chunk = ""
+                
+                for sentence in sentences:
+                    # If this sentence alone is too large
+                    if len(sentence) > self.chunk_size:
+                        # Add current chunk first if it exists
+                        if current_chunk:
+                            section_copy = section.copy()
+                            section_copy["content"] = current_chunk
+                            final_sections.append(section_copy)
+                            current_chunk = ""
+                        
+                        # Then split this large sentence into character chunks
+                        for j in range(0, len(sentence), self.chunk_size):
+                            section_copy = section.copy()
+                            section_copy["content"] = sentence[j:j+self.chunk_size]
+                            final_sections.append(section_copy)
+                    # If adding this sentence would exceed chunk size
+                    elif len(current_chunk) + len(sentence) > self.chunk_size:
+                        # Add current chunk and start a new one
+                        section_copy = section.copy()
+                        section_copy["content"] = current_chunk
+                        final_sections.append(section_copy)
+                        current_chunk = sentence
+                    else:
+                        # Add to current chunk
+                        if current_chunk:
+                            current_chunk += " "
+                        current_chunk += sentence
+                
+                # Add the last chunk if it exists
+                if current_chunk:
+                    section_copy = section.copy()
+                    section_copy["content"] = current_chunk
+                    final_sections.append(section_copy)
+            else:
+                # Section is already within size limit
+                final_sections.append(section)
+                
+        return final_sections
 
     def _extract_code_blocks(self, html: str) -> List[Tuple[str, str]]:
         """
         Extract code blocks from HTML content with improved context extraction.
         Returns list of (code_block, context_text) pairs with better semantic relevance.
+        Now enforces strict chunk size limits.
         """
         soup = BeautifulSoup(html, "html.parser")
         code_blocks = []
@@ -332,9 +568,35 @@ class MarkdownChunker:
                             context += elem.get_text().strip() + "\n\n"
                     elif isinstance(elem, str) and elem.strip():
                         context += elem.strip() + "\n\n"
-
-                # Add code block and its context
-                code_blocks.append(("```\n" + code_content + "\n```", context.strip()))
+                
+                # Enforce size limits for code and context
+                if len(code_content) > self.chunk_size:
+                    # If code is too large, break it into smaller chunks
+                    lines = code_content.split("\n")
+                    current_chunk = ""
+                    line_count = 0
+                    
+                    for line in lines:
+                        # If adding this line would exceed chunk size
+                        if len(current_chunk) + len(line) + 1 > self.chunk_size and current_chunk:
+                            # Add current chunk with context
+                            trimmed_context = context[:self.chunk_size] if len(context) > self.chunk_size else context
+                            code_blocks.append((f"```\n{current_chunk}\n```", trimmed_context))
+                            current_chunk = line
+                        else:
+                            # Add to current chunk
+                            if current_chunk:
+                                current_chunk += "\n"
+                            current_chunk += line
+                    
+                    # Add the last chunk if not empty
+                    if current_chunk:
+                        trimmed_context = context[:self.chunk_size] if len(context) > self.chunk_size else context
+                        code_blocks.append((f"```\n{current_chunk}\n```", trimmed_context))
+                else:
+                    # Code fits within chunk size, check context
+                    trimmed_context = context[:self.chunk_size] if len(context) > self.chunk_size else context
+                    code_blocks.append((f"```\n{code_content}\n```", trimmed_context))
 
         return code_blocks
 
@@ -342,6 +604,7 @@ class MarkdownChunker:
         """
         Extract text chunks from HTML content, excluding code blocks.
         Creates smaller, more focused chunks for better retrieval.
+        Now enforces strict chunk size limits.
         """
         soup = BeautifulSoup(html, "html.parser")
 
@@ -368,19 +631,55 @@ class MarkdownChunker:
                 if not para_text:
                     continue
 
+                # If this paragraph is too large by itself
+                if len(para_text) > self.chunk_size:
+                    # Add current chunk first if it's not empty
+                    if current_chunk:
+                        chunks.append(current_chunk)
+                        current_chunk = ""
+                        current_chunk_size = 0
+                    
+                    # Split paragraph into sentences
+                    sentences = re.split(r'(?<=[.!?])\s+', para_text)
+                    current_sentence_chunk = ""
+                    
+                    for sentence in sentences:
+                        # If this single sentence is too large
+                        if len(sentence) > self.chunk_size:
+                            # Add current sentence chunk first
+                            if current_sentence_chunk:
+                                chunks.append(current_sentence_chunk)
+                                current_sentence_chunk = ""
+                            
+                            # Split the sentence into smaller chunks
+                            for i in range(0, len(sentence), self.chunk_size):
+                                sub_chunk = sentence[i:i+self.chunk_size]
+                                chunks.append(sub_chunk)
+                        # If adding this sentence would exceed chunk size
+                        elif len(current_sentence_chunk) + len(sentence) > self.chunk_size:
+                            chunks.append(current_sentence_chunk)
+                            current_sentence_chunk = sentence
+                        else:
+                            # Add to current sentence chunk
+                            if current_sentence_chunk:
+                                current_sentence_chunk += " "
+                            current_sentence_chunk += sentence
+                    
+                    # Add the last sentence chunk if not empty
+                    if current_sentence_chunk:
+                        chunks.append(current_sentence_chunk)
                 # If adding this paragraph would exceed the chunk size
-                if (
-                    current_chunk
-                    and len(current_chunk) + len(para_text) > self.chunk_size
-                ):
+                elif current_chunk and current_chunk_size + len(para_text) > self.chunk_size:
                     # Add current chunk and start a new one
                     chunks.append(current_chunk)
                     current_chunk = para_text
+                    current_chunk_size = len(para_text)
                 else:
                     # Add to current chunk
                     if current_chunk:
                         current_chunk += "\n\n"
                     current_chunk += para_text
+                    current_chunk_size += len(para_text) + 2  # +2 for the newlines
 
             # Add the last chunk if not empty
             if current_chunk:
@@ -412,8 +711,50 @@ class MarkdownChunker:
                 current_chunk_size = len(content)
 
                 for elem_text in content_elements:
+                    # If this element alone is too large
+                    if len(elem_text) > self.chunk_size:
+                        # Add current chunk first if it's not just the header
+                        if current_chunk != content:
+                            chunks.append(current_chunk)
+                        
+                        # Process the large element by sentences
+                        sentences = re.split(r'(?<=[.!?])\s+', elem_text)
+                        current_sentence_chunk = header_text + "\n\n"  # Start with header
+                        
+                        for sentence in sentences:
+                            # If this single sentence is too large
+                            if len(sentence) > self.chunk_size - len(header_text) - 2:
+                                # Add current sentence chunk first
+                                if current_sentence_chunk != header_text + "\n\n":
+                                    chunks.append(current_sentence_chunk)
+                                
+                                # Split the sentence into smaller chunks, each with header
+                                for j in range(0, len(sentence), self.chunk_size - len(header_text) - 2):
+                                    sub_chunk = header_text + "\n\n" + sentence[j:j+self.chunk_size - len(header_text) - 2]
+                                    chunks.append(sub_chunk)
+                                
+                                current_sentence_chunk = header_text + "\n\n"
+                            # If adding this sentence would exceed chunk size
+                            elif len(current_sentence_chunk) + len(sentence) > self.chunk_size:
+                                chunks.append(current_sentence_chunk)
+                                current_sentence_chunk = header_text + "\n\n" + sentence
+                            else:
+                                # Add to current sentence chunk
+                                if current_sentence_chunk != header_text + "\n\n":
+                                    current_sentence_chunk += " "
+                                else:
+                                    current_sentence_chunk += ""
+                                current_sentence_chunk += sentence
+                        
+                        # Add the last sentence chunk if not just the header
+                        if current_sentence_chunk != header_text + "\n\n":
+                            chunks.append(current_sentence_chunk)
+                        
+                        # Reset to just the header for the next element
+                        current_chunk = content
+                        current_chunk_size = len(content)
                     # If adding this element would exceed the chunk size
-                    if current_chunk_size + len(elem_text) > self.chunk_size:
+                    elif current_chunk_size + len(elem_text) > self.chunk_size:
                         # Add current chunk and start a new one with the header again
                         chunks.append(current_chunk)
                         current_chunk = header_text + "\n\n" + elem_text
@@ -424,9 +765,235 @@ class MarkdownChunker:
                         current_chunk_size += len(elem_text) + 2
 
                 # Add the last chunk if not just the header
-                if current_chunk and current_chunk != header_text + "\n\n":
+                if current_chunk != content:
                     chunks.append(current_chunk)
 
+        return chunks
+
+    def _extract_markdown_paragraphs(self, text: str) -> List[str]:
+        """
+        Extract paragraphs directly from markdown text before any HTML conversion.
+        This preserves the original markdown structure and semantic continuity.
+        
+        Strategy:
+        1. First identify block-level elements (headers, code blocks, lists)
+        2. Then extract paragraphs while preserving their markdown formatting
+        3. Keep track of nesting level to maintain context
+        """
+        # Store positions of block-level elements
+        block_positions = []
+        
+        # Find all block-level elements
+        for pattern in [
+            self.header_pattern,
+            self.code_block_pattern,
+            self.list_item_pattern,
+            self.table_pattern
+        ]:
+            for match in pattern.finditer(text):
+                block_positions.append((match.start(), match.end()))
+        
+        # Sort block positions
+        block_positions.sort()
+        
+        # Extract paragraphs between block elements
+        paragraphs = []
+        last_end = 0
+        
+        for start, end in block_positions:
+            # Check if there's paragraph content before this block
+            if last_end < start:
+                potential_para = text[last_end:start].strip()
+                if potential_para:
+                    # Only split on actual paragraph breaks (double newline)
+                    # This preserves single newlines within paragraphs
+                    para_splits = re.split(r'\n\s*\n', potential_para)
+                    paragraphs.extend(p.strip() for p in para_splits if p.strip())
+            
+            # Add the block itself as a chunk
+            block_text = text[start:end].strip()
+            
+            # If block is too large, split it
+            if len(block_text) > self.chunk_size:
+                # Is it a code block?
+                if block_text.startswith("```") and block_text.endswith("```"):
+                    # Extract language if present
+                    first_line_end = block_text.find("\n")
+                    language = block_text[3:first_line_end].strip() if first_line_end > 3 else ""
+                    
+                    # Split the code content
+                    code_content = block_text[first_line_end+1:-3] if first_line_end > 0 else block_text[3:-3]
+                    code_lines = code_content.split("\n")
+                    
+                    current_code_chunk = "```" + language + "\n"
+                    for line in code_lines:
+                        if len(current_code_chunk) + len(line) + 5 > self.chunk_size:  # +5 for newline and closing ```
+                            current_code_chunk += "\n```"
+                            paragraphs.append(current_code_chunk)
+                            current_code_chunk = "```" + language + "\n" + line
+                        else:
+                            current_code_chunk += line + "\n"
+                    
+                    if current_code_chunk != "```" + language + "\n":
+                        current_code_chunk += "```"
+                        paragraphs.append(current_code_chunk)
+                else:
+                    # Regular block - split by sentences
+                    sentences = re.split(r'(?<=[.!?])\s+', block_text)
+                    current_block_chunk = ""
+                    
+                    for sentence in sentences:
+                        # If this sentence alone is too large
+                        if len(sentence) > self.chunk_size:
+                            # Add current chunk first
+                            if current_block_chunk:
+                                paragraphs.append(current_block_chunk)
+                            
+                            # Split large sentence
+                            for i in range(0, len(sentence), self.chunk_size):
+                                paragraphs.append(sentence[i:i+self.chunk_size])
+                            
+                            current_block_chunk = ""
+                        # If adding this sentence would exceed chunk size
+                        elif len(current_block_chunk) + len(sentence) + 1 > self.chunk_size:
+                            paragraphs.append(current_block_chunk)
+                            current_block_chunk = sentence
+                        else:
+                            # Add to current chunk
+                            if current_block_chunk:
+                                current_block_chunk += " "
+                            current_block_chunk += sentence
+                    
+                    # Add the last chunk
+                    if current_block_chunk:
+                        paragraphs.append(current_block_chunk)
+            else:
+                # Block fits within chunk size
+                paragraphs.append(block_text)
+            
+            last_end = end
+        
+        # Don't forget text after the last block
+        if last_end < len(text):
+            potential_para = text[last_end:].strip()
+            if potential_para:
+                para_splits = re.split(r'\n\s*\n', potential_para)
+                paragraphs.extend(p.strip() for p in para_splits if p.strip())
+        
+        # Final check to ensure all paragraphs are within size limit
+        final_paragraphs = []
+        for para in paragraphs:
+            if len(para) <= self.chunk_size:
+                final_paragraphs.append(para)
+            else:
+                # Split by sentences
+                sentences = re.split(r'(?<=[.!?])\s+', para)
+                current_para = ""
+                
+                for sentence in sentences:
+                    # If this sentence alone is too large
+                    if len(sentence) > self.chunk_size:
+                        # Add current paragraph first
+                        if current_para:
+                            final_paragraphs.append(current_para)
+                        
+                        # Split sentence into character chunks
+                        for i in range(0, len(sentence), self.chunk_size):
+                            final_paragraphs.append(sentence[i:i+self.chunk_size])
+                        
+                        current_para = ""
+                    # If adding this sentence would exceed chunk size
+                    elif len(current_para) + len(sentence) + 1 > self.chunk_size:
+                        final_paragraphs.append(current_para)
+                        current_para = sentence
+                    else:
+                        # Add to current paragraph
+                        if current_para:
+                            current_para += " "
+                        current_para += sentence
+                
+                # Add the last paragraph
+                if current_para:
+                    final_paragraphs.append(current_para)
+        
+        return final_paragraphs
+
+    def chunk_text(self, text: str) -> List[str]:
+        """
+        Enhanced chunking that preserves markdown structure.
+        Now enforces strict chunk size limits.
+        """
+        # Clean navigation and non-essential content first
+        text = self._clean_navigation_elements(text)
+        
+        # Extract paragraphs at markdown level
+        paragraphs = self._extract_markdown_paragraphs(text)
+        
+        chunks = []
+        current_chunk = []
+        current_size = 0
+        
+        for para in paragraphs:
+            para_size = len(para)
+            
+            # If this paragraph alone exceeds chunk_size, it needs splitting
+            if para_size > self.chunk_size:
+                # First add the current chunk if it exists
+                if current_chunk:
+                    chunks.append('\n\n'.join(current_chunk))
+                    current_chunk = []
+                    current_size = 0
+                
+                # Split the large paragraph (by sentences if possible)
+                sentences = re.split(r'(?<=[.!?])\s+', para)
+                
+                if len(sentences) > 1:
+                    # Paragraph has multiple sentences
+                    current_sentence_group = ""
+                    
+                    for sentence in sentences:
+                        # If this sentence alone is too big
+                        if len(sentence) > self.chunk_size:
+                            # Add current sentence group first
+                            if current_sentence_group:
+                                chunks.append(current_sentence_group)
+                                current_sentence_group = ""
+                            
+                            # Split the sentence into character chunks
+                            for i in range(0, len(sentence), self.chunk_size):
+                                chunks.append(sentence[i:i+self.chunk_size])
+                        # If adding this sentence would exceed chunk size
+                        elif len(current_sentence_group) + len(sentence) + 1 > self.chunk_size:
+                            chunks.append(current_sentence_group)
+                            current_sentence_group = sentence
+                        else:
+                            # Add to current sentence group
+                            if current_sentence_group:
+                                current_sentence_group += " "
+                            current_sentence_group += sentence
+                    
+                    # Add the last sentence group
+                    if current_sentence_group:
+                        chunks.append(current_sentence_group)
+                else:
+                    # Just one long sentence, split by characters
+                    for i in range(0, para_size, self.chunk_size):
+                        end = min(i + self.chunk_size, para_size)
+                        chunks.append(para[i:end])
+            # If adding this paragraph would exceed chunk_size
+            elif current_size + para_size > self.chunk_size and current_chunk:
+                chunks.append('\n\n'.join(current_chunk))
+                current_chunk = [para]
+                current_size = para_size
+            else:
+                # Add to current chunk
+                current_chunk.append(para)
+                current_size += para_size
+        
+        # Add any remaining paragraphs
+        if current_chunk:
+            chunks.append('\n\n'.join(current_chunk))
+        
         return chunks
 
     def _estimate_token_count(self, text: str) -> int:
@@ -466,66 +1033,198 @@ class MarkdownChunker:
         """
         Create semantic chunks from markdown text using HTML parsing.
         Creates smaller, more focused chunks for better retrieval.
+        Now enforces strict chunk size limits.
         """
         chunks = []
 
-        # Clean text
+        # Clean text and convert to HTML
         text = self._clean_navigation_elements(text)
         if self.ignore_link_urls:
             text = self._clean_markdown_links(text)
-
-        # Convert markdown to HTML
         html = self._markdown_to_html(text)
 
-        # Extract code blocks with context
+        # Extract code blocks with context first
         code_blocks = self._extract_code_blocks(html)
 
         # Create code-text pairs
         for code_block, context in code_blocks:
-            # Truncate context text to fit token limit
+            # Skip empty code blocks
+            if not code_block.strip():
+                continue
+
+            # Truncate context text to fit token limit and chunk size
             truncated_context = self._truncate_to_token_limit(context)
+            if len(truncated_context) > self.chunk_size:
+                # Split context into smaller pieces if needed
+                sentences = re.split(r'(?<=[.!?])\s+', truncated_context)
+                current_chunk = ""
+                
+                for sentence in sentences:
+                    # If adding this sentence would exceed chunk size
+                    if len(current_chunk) + len(sentence) + 1 > self.chunk_size:
+                        # Create chunk with this context portion and the code
+                        code_text_pair = {
+                            "text_for_embedding": current_chunk,
+                            "code_block": code_block,
+                            "combined": f"{current_chunk}\n\n{code_block}",
+                            "metadata": {
+                                "type": "code_text_pair",
+                                "estimated_tokens": self._estimate_token_count(current_chunk),
+                            },
+                        }
+                        chunks.append(code_text_pair)
+                        current_chunk = sentence
+                    else:
+                        # Add to current chunk
+                        if current_chunk:
+                            current_chunk += " "
+                        current_chunk += sentence
+                
+                # Add the last chunk
+                if current_chunk:
+                    code_text_pair = {
+                        "text_for_embedding": current_chunk,
+                        "code_block": code_block,
+                        "combined": f"{current_chunk}\n\n{code_block}",
+                        "metadata": {
+                            "type": "code_text_pair",
+                            "estimated_tokens": self._estimate_token_count(current_chunk),
+                        },
+                    }
+                    chunks.append(code_text_pair)
+            else:
+                # Context fits within chunk size
+                code_text_pair = {
+                    "text_for_embedding": truncated_context,
+                    "code_block": code_block,
+                    "combined": f"{truncated_context}\n\n{code_block}",
+                    "metadata": {
+                        "type": "code_text_pair",
+                        "estimated_tokens": self._estimate_token_count(truncated_context),
+                    },
+                }
+                chunks.append(code_text_pair)
 
-            # Create the pair
-            code_text_pair = {
-                "text_for_embedding": truncated_context,  # This will be embedded
-                "code_block": code_block,  # This will be stored but not embedded
-                "combined": f"{truncated_context}\n\n{code_block}",  # This will be returned for queries
-                "metadata": {
-                    "type": "code_text_pair",
-                    "estimated_tokens": self._estimate_token_count(truncated_context),
-                },
-            }
+        # Extract text chunks (excluding code blocks)
+        text_sections = self._extract_sections(html)
 
-            chunks.append(code_text_pair)
+        for section in text_sections:
+            content = section["content"]
+            if not content.strip():
+                continue
 
-        # Extract text chunks (smaller than before)
-        if not code_blocks or self.always_create_chunks:
-            text_sections = self._extract_text_chunks(html)
+            # Extract text from HTML content if needed
+            if isinstance(content, str) and ("<" in content or ">" in content):
+                soup = BeautifulSoup(content, "html.parser")
+                content = soup.get_text()
 
-            for section in text_sections:
-                # Skip empty sections
-                if not section.strip():
-                    continue
-
+            # Check if content exceeds chunk size
+            if len(content) > self.chunk_size:
+                # Split into sentences
+                sentences = re.split(r'(?<=[.!?])\s+', content)
+                current_chunk = ""
+                
+                for sentence in sentences:
+                    # If this sentence alone is too large
+                    if len(sentence) > self.chunk_size:
+                        # Add current chunk first
+                        if current_chunk:
+                            truncated_chunk = self._truncate_to_token_limit(current_chunk)
+                            if len(truncated_chunk) >= self.min_chunk_size:
+                                chunk = {
+                                    "text_for_embedding": truncated_chunk,
+                                    "combined": truncated_chunk,
+                                    "metadata": {
+                                        "type": "text_chunk",
+                                        "estimated_tokens": self._estimate_token_count(truncated_chunk),
+                                        "title": section.get("title", ""),
+                                        "level": section.get("level", 0),
+                                        "path": section.get("path", []),
+                                    },
+                                }
+                                chunks.append(chunk)
+                        
+                        # Split sentence into smaller chunks
+                        for i in range(0, len(sentence), self.chunk_size):
+                            sentence_chunk = sentence[i:i+self.chunk_size]
+                            if len(sentence_chunk) >= self.min_chunk_size:
+                                chunk = {
+                                    "text_for_embedding": sentence_chunk,
+                                    "combined": sentence_chunk,
+                                    "metadata": {
+                                        "type": "text_chunk",
+                                        "estimated_tokens": self._estimate_token_count(sentence_chunk),
+                                        "title": section.get("title", ""),
+                                        "level": section.get("level", 0),
+                                        "path": section.get("path", []),
+                                    },
+                                }
+                                chunks.append(chunk)
+                        
+                        current_chunk = ""
+                    # If adding this sentence would exceed chunk size
+                    elif len(current_chunk) + len(sentence) + 1 > self.chunk_size:
+                        # Create chunk with current content
+                        truncated_chunk = self._truncate_to_token_limit(current_chunk)
+                        if len(truncated_chunk) >= self.min_chunk_size:
+                            chunk = {
+                                "text_for_embedding": truncated_chunk,
+                                "combined": truncated_chunk,
+                                "metadata": {
+                                    "type": "text_chunk",
+                                    "estimated_tokens": self._estimate_token_count(truncated_chunk),
+                                    "title": section.get("title", ""),
+                                    "level": section.get("level", 0),
+                                    "path": section.get("path", []),
+                                },
+                            }
+                            chunks.append(chunk)
+                        
+                        current_chunk = sentence
+                    else:
+                        # Add to current chunk
+                        if current_chunk:
+                            current_chunk += " "
+                        current_chunk += sentence
+                
+                # Add the last chunk
+                if current_chunk:
+                    truncated_chunk = self._truncate_to_token_limit(current_chunk)
+                    if len(truncated_chunk) >= self.min_chunk_size:
+                        chunk = {
+                            "text_for_embedding": truncated_chunk,
+                            "combined": truncated_chunk,
+                            "metadata": {
+                                "type": "text_chunk",
+                                "estimated_tokens": self._estimate_token_count(truncated_chunk),
+                                "title": section.get("title", ""),
+                                "level": section.get("level", 0),
+                                "path": section.get("path", []),
+                            },
+                        }
+                        chunks.append(chunk)
+            else:
                 # Truncate to token limit
-                truncated_section = self._truncate_to_token_limit(section)
+                truncated_section = self._truncate_to_token_limit(content)
 
                 # Skip sections that are too small
                 if len(truncated_section) < self.min_chunk_size:
                     continue
 
-                chunks.append(
-                    {
-                        "text_for_embedding": truncated_section,
-                        "combined": truncated_section,
-                        "metadata": {
-                            "type": "text_chunk",
-                            "estimated_tokens": self._estimate_token_count(
-                                truncated_section
-                            ),
-                        },
-                    }
-                )
+                # Create chunk with metadata
+                chunk = {
+                    "text_for_embedding": truncated_section,
+                    "combined": truncated_section,
+                    "metadata": {
+                        "type": "text_chunk",
+                        "estimated_tokens": self._estimate_token_count(truncated_section),
+                        "title": section.get("title", ""),
+                        "level": section.get("level", 0),
+                        "path": section.get("path", []),
+                    },
+                }
+
+                chunks.append(chunk)
 
         return chunks
 
@@ -533,17 +1232,25 @@ class MarkdownChunker:
         """
         Simple chunking method as a fallback.
         Creates smaller, more granular chunks for better multilingual support.
+        Now enforces strict chunk size limits.
         """
+        if not text:
+            return
+
         # Clean links if needed
         if self.ignore_link_urls:
             text = self._clean_markdown_links(text)
 
-        # Split into paragraphs
-        paragraphs = text.split("\n\n")
+        # Find all potential named entities to preserve
+        named_entities = set(self.name_pattern.findall(text))
+        
+        # Split text into paragraphs
+        paragraphs = [p.strip() for p in self.paragraph_pattern.split(text) if p.strip()]
         current_chunk = ""
         current_tokens = 0
+        current_header = ""
         chunk_count = 0
-
+        
         # If text is very short, just return it as a single chunk
         if len(text) < self.min_chunk_size:
             if text.strip():  # Only if it's not just whitespace
@@ -561,22 +1268,12 @@ class MarkdownChunker:
                 )
             return
 
-        # Find headers in the text
-        # headers = self.header_pattern.findall(text)
-        # has_headers = len(headers) > 0
-
-        current_header = ""
-
         for paragraph in paragraphs:
-            paragraph = paragraph.strip()
-            if not paragraph:  # Skip empty paragraphs
-                continue
-
             # Check if this is a header
             header_match = self.header_pattern.match(paragraph)
             if header_match:
                 # If we have content in the current chunk, yield it
-                if current_chunk:
+                if current_chunk and current_chunk.strip():
                     chunk_count += 1
                     if chunk_count <= self.max_chunks:
                         yield {
@@ -594,18 +1291,18 @@ class MarkdownChunker:
 
                 # Update current header
                 current_header = header_match.group(2)
-
                 # Start a new chunk with just the header
                 current_chunk = paragraph
                 current_tokens = self._estimate_token_count(paragraph)
                 continue
 
-            para_tokens = self._estimate_token_count(paragraph)
-
-            # If this paragraph is too big on its own, split it by sentences
-            if para_tokens > self.text_embedding_size:
-                # If we have content in current chunk, yield it first
-                if current_chunk:
+            # Check if paragraph contains named entities
+            contains_named_entity = any(entity in paragraph for entity in named_entities)
+            
+            # Split long paragraphs into smaller chunks
+            if len(paragraph) > self.chunk_size:
+                # If we have content in the current chunk, yield it first
+                if current_chunk and current_chunk.strip():
                     chunk_count += 1
                     if chunk_count <= self.max_chunks:
                         yield {
@@ -620,109 +1317,163 @@ class MarkdownChunker:
                         logger.info(
                             f"Created chunk {chunk_count}: {len(current_chunk)} chars (simple chunking)"
                         )
-                    current_chunk = ""
-                    current_tokens = 0
 
-                # Split large paragraph into sentences
-                sentences = re.split(r"(?<=[.!?])\s+", paragraph)
-                temp_chunk = current_header + "\n\n" if current_header else ""
-                temp_tokens = self._estimate_token_count(temp_chunk)
-
-                for sentence in sentences:
-                    sent_tokens = self._estimate_token_count(sentence)
-
-                    # If adding this sentence exceeds limit, yield current and start new
-                    if (
-                        temp_tokens + sent_tokens > self.text_embedding_size
-                        and temp_chunk
-                    ):
+                # Split the long paragraph into sentences
+                sentences = re.split(r'(?<=[.!?])\s+', paragraph)
+                current_chunk = ""
+                current_tokens = 0
+                
+                # If paragraph has a single very long sentence
+                if len(sentences) <= 1:
+                    # Split by characters
+                    for i in range(0, len(paragraph), self.chunk_size):
+                        char_chunk = paragraph[i:i+self.chunk_size]
                         chunk_count += 1
                         if chunk_count <= self.max_chunks:
                             yield {
-                                "chunk": temp_chunk,
+                                "chunk": char_chunk,
                                 "metadata": {
                                     "type": "simple_text",
-                                    "estimated_tokens": temp_tokens,
+                                    "estimated_tokens": self._estimate_token_count(char_chunk),
                                     "header": current_header,
                                 },
-                                "embedding_text": temp_chunk,
+                                "embedding_text": char_chunk,
                             }
                             logger.info(
-                                f"Created chunk {chunk_count}: {len(temp_chunk)} chars (simple chunking - sentence split)"
+                                f"Created chunk {chunk_count}: {len(char_chunk)} chars (simple chunking - character split)"
+                            )
+                    continue
+                
+                for sentence in sentences:
+                    sentence_tokens = self._estimate_token_count(sentence)
+                    sentence_contains_entity = any(entity in sentence for entity in named_entities)
+                    
+                    # If this sentence is too large by itself
+                    if len(sentence) > self.chunk_size:
+                        # Add current chunk first if it exists
+                        if current_chunk and current_chunk.strip():
+                            chunk_count += 1
+                            if chunk_count <= self.max_chunks:
+                                yield {
+                                    "chunk": current_chunk,
+                                    "metadata": {
+                                        "type": "simple_text",
+                                        "estimated_tokens": current_tokens,
+                                        "header": current_header,
+                                    },
+                                    "embedding_text": current_chunk,
+                                }
+                                logger.info(
+                                    f"Created chunk {chunk_count}: {len(current_chunk)} chars (simple chunking)"
+                                )
+                        
+                        # Split the large sentence into character chunks
+                        for i in range(0, len(sentence), self.chunk_size):
+                            char_chunk = sentence[i:i+self.chunk_size]
+                            chunk_count += 1
+                            if chunk_count <= self.max_chunks:
+                                yield {
+                                    "chunk": char_chunk,
+                                    "metadata": {
+                                        "type": "simple_text",
+                                        "estimated_tokens": self._estimate_token_count(char_chunk),
+                                        "header": current_header,
+                                    },
+                                    "embedding_text": char_chunk,
+                                }
+                                logger.info(
+                                    f"Created chunk {chunk_count}: {len(char_chunk)} chars (simple chunking - character split)"
+                                )
+                        
+                        current_chunk = ""
+                        current_tokens = 0
+                        continue
+                    
+                    # If this sentence contains a named entity, make sure it gets its own chunk
+                    if sentence_contains_entity and current_chunk:
+                        # Yield current chunk before starting entity chunk
+                        if current_chunk.strip():
+                            chunk_count += 1
+                            if chunk_count <= self.max_chunks:
+                                yield {
+                                    "chunk": current_chunk,
+                                    "metadata": {
+                                        "type": "simple_text",
+                                        "estimated_tokens": current_tokens,
+                                        "header": current_header,
+                                    },
+                                    "embedding_text": current_chunk,
+                                }
+                                logger.info(
+                                    f"Created chunk {chunk_count}: {len(current_chunk)} chars (simple chunking)"
+                                )
+                        # Start new chunk with the entity-containing sentence
+                        current_chunk = (current_header + "\n\n" if current_header else "") + sentence
+                        current_tokens = self._estimate_token_count(current_chunk)
+                        continue
+                    
+                    # If adding this sentence would exceed the chunk size
+                    if current_tokens + sentence_tokens > self.chunk_size:
+                        # Yield current chunk if it exists
+                        if current_chunk and current_chunk.strip():
+                            chunk_count += 1
+                            if chunk_count <= self.max_chunks:
+                                yield {
+                                    "chunk": current_chunk,
+                                    "metadata": {
+                                        "type": "simple_text",
+                                        "estimated_tokens": current_tokens,
+                                        "header": current_header,
+                                    },
+                                    "embedding_text": current_chunk,
+                                }
+                                logger.info(
+                                    f"Created chunk {chunk_count}: {len(current_chunk)} chars (simple chunking)"
+                                )
+                        
+                        # Start new chunk with header and current sentence
+                        current_chunk = (current_header + "\n\n" if current_header else "") + sentence
+                        current_tokens = self._estimate_token_count(current_chunk)
+                    else:
+                        # Add sentence to current chunk
+                        if current_chunk:
+                            current_chunk += ". "
+                        current_chunk += sentence
+                        current_tokens += sentence_tokens
+            else:
+                para_tokens = self._estimate_token_count(paragraph)
+                
+                # If adding this paragraph would exceed the chunk size
+                if current_tokens + para_tokens > self.chunk_size:
+                    # Yield current chunk if it exists
+                    if current_chunk and current_chunk.strip():
+                        chunk_count += 1
+                        if chunk_count <= self.max_chunks:
+                            yield {
+                                "chunk": current_chunk,
+                                "metadata": {
+                                    "type": "simple_text",
+                                    "estimated_tokens": current_tokens,
+                                    "header": current_header,
+                                },
+                                "embedding_text": current_chunk,
+                            }
+                            logger.info(
+                                f"Created chunk {chunk_count}: {len(current_chunk)} chars (simple chunking)"
                             )
 
-                        # Start new chunk with the header
-                        temp_chunk = current_header + "\n\n" if current_header else ""
-                        temp_tokens = self._estimate_token_count(temp_chunk)
-
-                        # Add the sentence
-                        temp_chunk += sentence
-                        temp_tokens += sent_tokens
-                    else:
-                        # Add to current temp chunk
-                        if temp_chunk and not temp_chunk.endswith("\n\n"):
-                            temp_chunk += " "
-                        temp_chunk += sentence
-                        temp_tokens += sent_tokens
-
-                # Don't forget the last sentence chunk
-                if temp_chunk and temp_chunk != (
-                    current_header + "\n\n" if current_header else ""
-                ):
-                    chunk_count += 1
-                    if chunk_count <= self.max_chunks:
-                        yield {
-                            "chunk": temp_chunk,
-                            "metadata": {
-                                "type": "simple_text",
-                                "estimated_tokens": temp_tokens,
-                                "header": current_header,
-                            },
-                            "embedding_text": temp_chunk,
-                        }
-                        logger.info(
-                            f"Created chunk {chunk_count}: {len(temp_chunk)} chars (simple chunking - last sentence)"
-                        )
-
-            # If adding this paragraph would exceed the token limit
-            elif current_tokens + para_tokens > self.text_embedding_size:
-                # Yield current chunk
-                chunk_count += 1
-                if chunk_count <= self.max_chunks:
-                    yield {
-                        "chunk": current_chunk,
-                        "metadata": {
-                            "type": "simple_text",
-                            "estimated_tokens": current_tokens,
-                            "header": current_header,
-                        },
-                        "embedding_text": current_chunk,  # Same for simple chunks
-                    }
-                    logger.info(
-                        f"Created chunk {chunk_count}: {len(current_chunk)} chars (simple chunking)"
-                    )
-
-                # Start a new chunk
-                current_chunk = (
-                    current_header + "\n\n" if current_header else ""
-                ) + paragraph
-                current_tokens = self._estimate_token_count(current_chunk)
-            else:
-                # Add to current chunk
-                if current_chunk:
-                    current_chunk += "\n\n"
-                current_chunk += paragraph
-                current_tokens += para_tokens
-
-            # Check if we've hit the chunk limit
-            if chunk_count >= self.max_chunks:
-                logger.warning(
-                    f"Reached maximum chunk limit ({self.max_chunks}). Document chunking stopped."
-                )
-                return
+                    # Start new chunk with header and current paragraph
+                    current_chunk = (current_header + "\n\n" if current_header else "") + paragraph
+                    current_tokens = self._estimate_token_count(current_chunk)
+                else:
+                    # Add paragraph to current chunk
+                    if current_chunk:
+                        current_chunk += "\n\n"
+                    current_chunk += paragraph
+                    current_tokens += para_tokens
 
         # Don't forget the last chunk
-        if current_chunk:
+        if current_chunk and current_chunk.strip():
             chunk_count += 1
             if chunk_count <= self.max_chunks:
                 yield {
@@ -732,7 +1483,7 @@ class MarkdownChunker:
                         "estimated_tokens": current_tokens,
                         "header": current_header,
                     },
-                    "embedding_text": current_chunk,  # Same for simple chunks
+                    "embedding_text": current_chunk,
                 }
                 logger.info(
                     f"Created chunk {chunk_count}: {len(current_chunk)} chars (simple chunking)"
@@ -741,6 +1492,7 @@ class MarkdownChunker:
     def chunk_document(self, text: str) -> Generator[Dict[str, Any], None, None]:
         """
         Chunk document into smaller, more focused chunks for better retrieval.
+        Now enforces strict size limits.
         """
         if not text:
             return
@@ -760,15 +1512,23 @@ class MarkdownChunker:
                 chunk_count = 0
 
                 for chunk in semantic_chunks:
+                    # Verify chunk sizes once more
+                    combined_text = chunk["combined"]
+                    
+                    # If combined text is too large, skip this chunk
+                    if len(combined_text) > self.chunk_size:
+                        logger.warning(f"Skipping oversized chunk: {len(combined_text)} chars")
+                        continue
+                        
                     chunk_count += 1
                     if chunk_count <= self.max_chunks:
                         chunk_dict = {
-                            "chunk": chunk["combined"],
+                            "chunk": combined_text,
                             "metadata": chunk["metadata"],
                             "embedding_text": chunk["text_for_embedding"],
                         }
                         logger.info(
-                            f"Created chunk {chunk_count}: {len(chunk['combined'])} chars (type: {chunk['metadata']['type']})"
+                            f"Created chunk {chunk_count}: {len(combined_text)} chars (type: {chunk['metadata']['type']})"
                         )
                         yield chunk_dict
                     else:
@@ -795,7 +1555,11 @@ class MarkdownChunker:
     ) -> Generator[List[Dict[str, Any]], None, None]:
         """
         Process a file in batches to conserve memory.
+        Only processes markdown (.md) files.
         """
+        if not file_path.lower().endswith('.md'):
+            raise ValueError("Only markdown (.md) files are supported")
+
         if batch_size is None:
             batch_size = self.batch_size
 

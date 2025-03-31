@@ -24,7 +24,7 @@ def save_to_project_tempdir(text, filename="links.md"):
 
 def fetch_links(
     url,
-    max_links=6,
+    max_links=3,
     user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
 ):
     """
@@ -125,7 +125,7 @@ def filter_links_by_structure(original_url, links):
 
 
 def crawl(
-    url, depth=1, max_depth=4, visited=None, all_links=None, external_taken=False
+    url, depth=1, max_depth=3, visited=None, all_links=None, external_taken=False
 ):
     if visited is None:
         visited = set()
