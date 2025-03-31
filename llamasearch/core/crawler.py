@@ -1,25 +1,11 @@
 import requests
 import re
 import os
+from ..utils import find_project_root
 from urllib.parse import urlparse
+from bs4 import BeautifulSoup
 
 JINA_API_URL = "https://r.jina.ai/"
-
-
-def find_project_root():
-    """Finds the root of the project by looking for `pyproject.toml`."""
-    current_dir = os.path.abspath(os.path.dirname(__file__))
-
-    while current_dir != os.path.dirname(current_dir):
-        if os.path.exists(os.path.join(current_dir, "pyproject.toml")):
-            return current_dir
-
-        current_dir = os.path.dirname(current_dir)
-
-    raise RuntimeError(
-        "Could not find project root. Please check your project structure."
-    )
-
 
 def save_to_project_tempdir(text, filename="links.md"):
     """Saves text to a `temp` directory inside the project root."""
@@ -35,35 +21,49 @@ def save_to_project_tempdir(text, filename="links.md"):
     return file_path  # Return the file path for reference
 
 
-def fetch_links_with_jina(url, max_links=50):
+def fetch_links(url, max_links=6, user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"):
     """
-    Fetches structured content from Jina AI and extracts only links, with an optional limit.
+    Fetches HTML content and extracts links using BeautifulSoup.
 
     Args:
         url (str): The URL to fetch links from
-        max_links (int): Maximum number of links to return (default: 50)
-                        This enforces the 50-child limit per page requirement
+        max_links (int): Maximum number of links to return
+                        This enforces the child limit per page requirement
+        user_agent (str): User agent string to use for the request
 
     Returns:
         list: List of links found on the page, limited to max_links
     """
     try:
-        response = requests.get(JINA_API_URL + url, timeout=10)
+        headers = {"User-Agent": user_agent}
+        response = requests.get(url, timeout=10, headers=headers)
         response.raise_for_status()
-        content = response.text
-
-        all_links = list(set(re.findall(r"https?://[^\s)>\"]+", content)))
-
-        # Enforce the 50-child limit per page by slicing the list
-        return all_links[:max_links]
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Find all a tags and extract href attributes
+        links = []
+        for a_tag in soup.find_all('a', href=True):
+            href = a_tag['href']
+            # Convert relative URLs to absolute
+            if href.startswith('http'):
+                links.append(href)
+            elif href.startswith('/'):
+                # Handle relative URLs
+                parsed_url = urlparse(url)
+                base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+                links.append(base_url + href)
+        
+        # Remove duplicates and limit to max_links
+        return list(set(links))[:max_links]
 
     except requests.RequestException as e:
-        print(f"Error fetching from Jina AI: {e}")
+        print(f"Error fetching HTML: {e}")
+        return None
+    except ImportError:
+        print("BeautifulSoup is required. Install it using: pip install beautifulsoup4")
         return None
 
 
-# TODO: Make this match any subdomain, not just www and allow a search into one external link as well. Terminate the search if
-# we hit 50 children on a single node or two external links. Also terminate if we go down to a depth of 3.
 def filter_links_by_structure(original_url, links):
     """Filters links to only include those from the same domain or subdomains, while ignoring media files."""
     parsed_url = urlparse(original_url)
@@ -120,13 +120,16 @@ def filter_links_by_structure(original_url, links):
 
 
 def crawl(
-    url, depth=1, max_depth=3, visited=None, all_links=None, external_taken=False
+    url, depth=1, max_depth=4, visited=None, all_links=None, external_taken=False
 ):
     if visited is None:
         visited = set()
 
     if all_links is None:
         all_links = []
+    
+    if depth == 1 and url not in all_links:
+        all_links.append(url)
 
     # Stop if maximum depth is reached
     if depth > max_depth:
@@ -140,7 +143,7 @@ def crawl(
     visited.add(url)
 
     # Fetch links from the page
-    links = fetch_links_with_jina(url)
+    links = fetch_links(url)
     if not links:
         return all_links
 
@@ -217,7 +220,7 @@ if __name__ == "__main__":
     all_collected_links = crawl(url, depth=1, max_depth=3, external_taken=False)
 
     if all_collected_links:
-        file_path = save_to_project_tempdir("\n".join(all_collected_links), "links.md")
+        file_path = save_to_project_tempdir("\n".join(all_collected_links), "links.txt")
         print(f"\nCrawled links saved at: {file_path}")
         print(f"Total links collected: {len(all_collected_links)}")
     else:

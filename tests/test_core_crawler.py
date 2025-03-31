@@ -3,7 +3,7 @@ import pytest
 import os
 from unittest.mock import patch, mock_open
 from llamasearch.core.crawler import (
-    fetch_links_with_jina,
+    fetch_links,
     filter_links_by_structure,
     save_to_project_tempdir,
 )
@@ -29,9 +29,9 @@ def mock_requests_get():
         yield mock_get
 
 
-def test_fetch_links_with_jina(mock_requests_get):
+def test_fetch_links(mock_requests_get):
     """Test fetching links using Jina API."""
-    links = fetch_links_with_jina(DUMMY_URL, max_links=5)
+    links = fetch_links(DUMMY_URL, max_links=5)
 
     assert mock_requests_get.called
     assert len(links) == 5
