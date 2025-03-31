@@ -34,14 +34,16 @@ def test_extract_text_with_jina(mock_requests_get):
 def test_save_to_project_tempdir():
     """Test saving extracted text to a temp directory."""
     mock_text = "Extracted content"
+    mock_url = "https://example.com/test-page"
     mock_root = tempfile.mkdtemp()
 
     with patch("llamasearch.core.extractor.find_project_root", return_value=mock_root):
         with patch("builtins.open", mock_open()) as mock_file:
-            file_path = save_to_project_tempdir(mock_text, "test_text.md")
+            file_path = save_to_project_tempdir(mock_text, mock_url)
 
             assert mock_file.called
-            assert file_path == os.path.join(mock_root, "temp", "test_text.md")
+            expected_filename = "example-com-test-page.md"
+            assert file_path == os.path.join(mock_root, "temp", expected_filename)
 
 
 def test_read_links_from_temp():

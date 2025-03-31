@@ -1,0 +1,59 @@
+Retrieved 5 relevant chunks:
+
+Chunk 1 (text_chunk) - 39.96% match:
+Source: /Users/mithranmohanraj/Documents/llamasearch/temp/onepiece-fandom-com-wiki-SBS_Volume_75.md
+  Chapter 750, Page 162[]
+  
+  "Ufufu. Yucky. Go die." (22 years old)
+  D: Odacchi, nice to meet you! So getting right to the point! What is Sugar's true age?!
+  It bothers me so much that Sugar was the only thing I could think of during exams! Even though I have to get into college...
+  Thanks to you, my scores were absolute crap♡ P.N. Gahara
+  O: So they were absolute crap. Well that's absolutely crappy (ba dum tss).
+  So, there's more background to this, but in a nutshell if you think about all the present facts that I have to take into consideration, she's actually not that much of an old hag after all.
+  At the moment, her outer appearance has stopped at the age of 10, but her true age is 22 years old. That would be 2 years younger than Baby 5. -----in fact, let me just reveal the entire family's ages right here.
+  
+  With ages ranging from the 10s to the 70s, they're really just like a big, big family.
+  Alright, and that'll be my time. SBS ends here! However, at the end of the volume, there will be a notice about the first character popularity poll in 6 whole years!! The popularity poll that, so far, only Shonen Jump readers were given voting ballots to! We've decided that the Comics readers should also be allowed to participate, so if you're interested, make sure to read the end of this volume! Now then, see you in the next volume for more SBS!
+
+Chunk 2 (text_chunk) - 38.17% match:
+Source: /Users/mithranmohanraj/Documents/llamasearch/temp/onepiece-fandom-com-wiki-Trebol.md
+  Sugar[]
+  
+  Although Sugar is a member of the Trebol Army, she is also a special officer and one of the most important members of the entire crew, along with Caesar Clown, due to her ability to essentially maintain power over Dressrosa. As such, Trebol has been assigned to act as her personal bodyguard.[17] Despite this, the two have a less-than-amiable relationship, as Sugar expresses disgust at Trebol's appearance and habits, telling him to go and die, while Trebol finds her rudeness displeasing, believes her to be a mere brat and treats her like a child.[18]
+  Nevertheless, he takes his role as bodyguard seriously enough to take drastic actions to ensure Sugar's safety going so far as to throw a boat into the Officer's Tower[10] subsequently demolishing it in the process,[19] and panicked when Sugar fainted.[20]
+
+Chunk 3 (text_chunk) - 30.41% match:
+Source: /Users/mithranmohanraj/Documents/llamasearch/temp/onepiece-fandom-com-wiki-Trebol.md
+  Occupations:
+  
+  
+  
+  Pirate Executive Officer;[1] Staff Officer; Sugar's Bodyguard
+
+Chunk 4 (text_chunk) - 33.70% match:
+Source: /Users/mithranmohanraj/Documents/llamasearch/temp/onepiece-fandom-com-wiki-Monkey_D-_Luffy-History-Wano.md
+  English Name:
+  
+  
+  
+  Gum-Gum Fruit(Human-Human Fruit, Model: Nika)
+
+Chunk 5 (text_chunk) - 25.18% match:
+Source: /Users/mithranmohanraj/Documents/llamasearch/temp/onepiece-fandom-com-wiki-Ishi_Ishi_no_Mi.md
+  Current User:
+  
+  Pica[2]
+  The Ishi Ishi no Mi is a Paramecia-type Devil Fruit that allows the user to merge with and manipulate stone, making the user a Stone Assimilation Human (岩石同化人間, Ganseki Dōka Ningen?, English: "Stone-Assimilation Man"). It was eaten by Pica.[2]
+  This fruit is not to be confused with a Logia-type Devil Fruit, as the user cannot transform their body parts into stone nor generate it from their own body.[3]
+
+
+LLM (8.95s):
+Sugar is a character in the One Piece anime and manga series. She serves as an important member of the Trebol Army, alongside Caesar Clown. Her primary function appears to be maintaining power over Dressrosa.
+
+Some key points about Sugar:
+- Although she's part of the Trebol army, her true age is 2 years younger than Baby 5.
+- At 10 years old externally but actually a young adult in terms of maturity and experience within the crew due to her ability to maintain power on dressrosa for extended periods or even longer times. This makes Sugar somewhat like an "elder" compared to other members, especially when it comes to dealing with long-term issues.
+- She has had less-than-amiable interactions with Trebol (her bodyguard), who expresses disgust at his appearance and habits towards her telling him he should go die while Trebol finds her rude behavior displeasing. Despite this tension between them both, Trebol takes on the role of a personal guard seriously enough to take drastic measures for Sugar's safety.
+- When sugar faints due to panic or distress (which is mentioned in one source), it shows that she can be very vulnerable and requires careful protection.
+
+Overall, her character seems like an important figure within the crew who has managed to maintain power over Dressrosa despite being younger than many other characters.

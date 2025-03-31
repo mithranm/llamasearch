@@ -12,11 +12,16 @@ JINA_API_URL = "https://r.jina.ai/"
 DUMMY_URL = "https://example.com"
 
 MOCK_JINA_RESPONSE = """
-https://example.com/page1
-https://example.com/page2
-https://otherdomain.com/notallowed
-https://example.com/image.jpg
-https://example.com/video.mp4
+<html>
+<body>
+    <a href="https://example.com/page1">Page 1</a>
+    <a href="https://example.com/page2">Page 2</a>
+    <a href="https://otherdomain.com/notallowed">External Link</a>
+    <a href="https://example.com/image.jpg">Image</a>
+    <a href="https://example.com/video.mp4">Video</a>
+    <a href="/relative/path">Relative Link</a>
+</body>
+</html>
 """
 
 
@@ -26,13 +31,14 @@ def mock_requests_get():
     with patch("requests.get") as mock_get:
         mock_get.return_value.status_code = 200
         mock_get.return_value.text = MOCK_JINA_RESPONSE
+        mock_get.return_value.content = MOCK_JINA_RESPONSE.encode('utf-8')
         yield mock_get
 
 
 def test_fetch_links(mock_requests_get):
     """Test fetching links using Jina API."""
     links = fetch_links(DUMMY_URL, max_links=5)
-
+    #TODO: Fix this test, I don't think its correct.
     assert mock_requests_get.called
     assert len(links) == 5
     assert "https://example.com/page1" in links

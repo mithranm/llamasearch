@@ -181,7 +181,15 @@ setup(
         "gradio",
         "requests",
         "pydantic",
+        "gTTS"
     ],
+    extras_require={
+        "dev": [
+            "pytest",
+            "black",
+            "flake8",
+        ]
+    },
     entry_points={
         "console_scripts": [
             "llamasearch=llamasearch.__main__:main",

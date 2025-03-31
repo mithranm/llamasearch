@@ -6,44 +6,14 @@ import base64
 import gradio as gr
 from gradio import Blocks
 from llamasearch.ui.utils import save_to_db, QARecord, export_to_txt, delete_all_records
-from llamasearch.core.llm import CustomLLM
 
 
-def generate_response(link, user_input, debug_mode=False):
-    """Generate AI response with optional debug information."""
-    try:
-        # Initialize the LLM
-        llm = CustomLLM(verbose=True)
-
-        # Query the LLM with debug mode if enabled
-        if debug_mode:
-            response, debug_info = llm.query(user_input, debug_mode=True)
-
-            # Format debug information
-            debug_text = "\n\n=== DEBUG INFORMATION ===\n"
-            debug_text += f"Query: {debug_info.get('query', 'N/A')}\n\n"
-
-            if "chunks" in debug_info:
-                debug_text += "Chunks used for response:\n"
-                for i, chunk in enumerate(debug_info["chunks"]):
-                    similarity = chunk.get("similarity", 0) * 100
-                    debug_text += (
-                        f"\n--- Chunk {i+1} (Similarity: {similarity:.2f}%) ---\n"
-                    )
-                    debug_text += f"Source: {chunk.get('metadata', {}).get('filename', 'Unknown')}\n"
-                    debug_text += f"Text: {chunk.get('text', 'N/A')[:200]}...\n"
-
-            # Combine the response and debug information
-            full_response = f"{response}\n{debug_text}"
-            return full_response
-        else:
-            # Regular response without debug info
-            response = llm.query(user_input)
-            return response
-    except Exception as e:
-        return f"Error generating response: {str(e)}"
+def generate_response(link, user_input):
+    return f"AI response for: {user_input} (Link: {link})"
 
 
+# def download_voice():
+#    return "voice_file.mp3"
 def listen_answer(answer_text):
     """
     Converts the provided answer text to speech using gTTS,
@@ -54,14 +24,7 @@ def listen_answer(answer_text):
 
     if not answer_text.strip():
         return None
-
-    # If it's a debug response, only convert the actual response part (before debug info)
-    if "=== DEBUG INFORMATION ===" in answer_text:
-        response_text = answer_text.split("=== DEBUG INFORMATION ===")[0].strip()
-    else:
-        response_text = answer_text
-
-    tts = gTTS(response_text)
+    tts = gTTS(answer_text)
     tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
     tmp_file.close()  # Close the file so gTTS can write to it.
     tts.save(tmp_file.name)
@@ -113,14 +76,8 @@ def save_and_clear(question, answer, rating):
     else:
         rating_int = 0
 
-    # If it's a debug response, only save the actual response part (before debug info)
-    if "=== DEBUG INFORMATION ===" in answer:
-        answer_text = answer.split("=== DEBUG INFORMATION ===")[0].strip()
-    else:
-        answer_text = answer
-
     # Create the QARecord and save it to the database
-    record = QARecord(question=question, answer=answer_text, rating=rating_int)
+    record = QARecord(question=question, answer=answer, rating=rating_int)
     save_to_db(record)
 
     return (
@@ -259,9 +216,7 @@ def create_app() -> Blocks:
         submit_review_btn = gr.Button("Submit Review", visible=False)
 
         submit_btn.click(
-            generate_response,
-            inputs=[link_input, user_input, debug_mode],
-            outputs=chat_output,
+            generate_response, inputs=[link_input, user_input], outputs=chat_output
         )
         listen_btn.click(listen_answer, inputs=chat_output, outputs=audio_output)
 

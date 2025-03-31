@@ -11,6 +11,7 @@ vector_db/
 vector_db_no_pca/
 vector_db_pca/
 models/
+onepiece/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
