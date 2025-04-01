@@ -1,9 +1,9 @@
 import requests
 import re
 import os
-from ..utils import find_project_root
+from ..setup_utils import find_project_root
 from urllib.parse import urlparse
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 JINA_API_URL = "https://r.jina.ai/"
 
@@ -48,15 +48,22 @@ def fetch_links(
         # Find all a tags and extract href attributes
         links = []
         for a_tag in soup.find_all("a", href=True):
-            href = a_tag["href"]
-            # Convert relative URLs to absolute
-            if href.startswith("http"):
-                links.append(href)
-            elif href.startswith("/"):
-                # Handle relative URLs
-                parsed_url = urlparse(url)
-                base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
-                links.append(base_url + href)
+            # Check if the element is a Tag
+            if isinstance(a_tag, Tag):
+                # Get href as string (fixes the AttributeValueList issue)
+                if hasattr(a_tag, "get"):  # Check if the element has get method
+                    href = str(a_tag.get("href", ""))  # type: ignore
+                else:
+                    continue
+
+                # Convert relative URLs to absolute
+                if href.startswith("http"):
+                    links.append(href)
+                elif href.startswith("/"):
+                    # Handle relative URLs
+                    parsed_url = urlparse(url)
+                    base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+                    links.append(f"{base_url}{href}")
 
         # Remove duplicates and limit to max_links
         return list(set(links))[:max_links]

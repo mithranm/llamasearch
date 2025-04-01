@@ -31,7 +31,7 @@ def mock_requests_get():
     with patch("requests.get") as mock_get:
         mock_get.return_value.status_code = 200
         mock_get.return_value.text = MOCK_JINA_RESPONSE
-        mock_get.return_value.content = MOCK_JINA_RESPONSE.encode('utf-8')
+        mock_get.return_value.content = MOCK_JINA_RESPONSE.encode("utf-8")
         yield mock_get
 
 

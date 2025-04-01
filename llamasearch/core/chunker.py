@@ -6,7 +6,7 @@ import gc
 import logging
 from typing import List, Dict, Any, Generator, Tuple, Optional
 import markdown
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,9 @@ class MarkdownChunker:
             f"Initialized MarkdownChunker with text_embedding_size={text_embedding_size} tokens"
         )
 
-    def process_file_in_batches(self, file_path: str, batch_size: Optional[int] = None) -> Generator[List[Dict[str, Any]], None, None]:
+    def process_file_in_batches(
+        self, file_path: str, batch_size: Optional[int] = None
+    ) -> Generator[List[Dict[str, Any]], None, None]:
         """
         Process a .md file in small batches, each containing chunk dicts
         { "chunk":..., "metadata":..., "embedding_text":... }
@@ -101,22 +103,22 @@ class MarkdownChunker:
             lines = code_text.split("\n")
             current_code = ""
             for line in lines:
-                if len(current_code)+len(line)+1 > self.chunk_size and current_code:
+                if len(current_code) + len(line) + 1 > self.chunk_size and current_code:
                     yield {
                         "chunk": current_code.strip(),
                         "metadata": {"type": "code_block"},
                         "embedding_text": current_code.strip(),
                     }
-                    current_code=line
+                    current_code = line
                 else:
                     if current_code:
-                        current_code+="\n"+line
+                        current_code += "\n" + line
                     else:
-                        current_code=line
+                        current_code = line
             if current_code.strip():
                 yield {
                     "chunk": current_code.strip(),
-                    "metadata": {"type":"code_block"},
+                    "metadata": {"type": "code_block"},
                     "embedding_text": current_code.strip(),
                 }
 
@@ -137,125 +139,145 @@ class MarkdownChunker:
                     "chunk": content,
                     "metadata": {
                         "type": "text_chunk",
-                        "title": sec.get("title",""),
-                        "level": sec.get("level",0),
+                        "title": sec.get("title", ""),
+                        "level": sec.get("level", 0),
                     },
-                    "embedding_text": content
+                    "embedding_text": content,
                 }
             else:
                 # We do partial splitting by sentences if needed
-                splitted = re.split(r'(?<=[.!?])\s+', content)
-                current_sent=""
+                splitted = re.split(r"(?<=[.!?])\s+", content)
+                current_sent = ""
                 for s in splitted:
-                    if len(current_sent)+len(s)+1 > self.chunk_size and current_sent:
+                    if (
+                        len(current_sent) + len(s) + 1 > self.chunk_size
+                        and current_sent
+                    ):
                         yield {
                             "chunk": current_sent.strip(),
-                            "metadata":{
-                                "type":"text_chunk",
-                                "title":sec.get("title",""),
-                                "level":sec.get("level",0),
+                            "metadata": {
+                                "type": "text_chunk",
+                                "title": sec.get("title", ""),
+                                "level": sec.get("level", 0),
                             },
-                            "embedding_text": current_sent.strip()
+                            "embedding_text": current_sent.strip(),
                         }
-                        current_sent=s
+                        current_sent = s
                     else:
                         if current_sent:
-                            current_sent+=" "+s
+                            current_sent += " " + s
                         else:
-                            current_sent=s
+                            current_sent = s
                 if current_sent.strip():
                     yield {
                         "chunk": current_sent.strip(),
-                        "metadata":{
-                            "type":"text_chunk",
-                            "title":sec.get("title",""),
-                            "level":sec.get("level",0),
+                        "metadata": {
+                            "type": "text_chunk",
+                            "title": sec.get("title", ""),
+                            "level": sec.get("level", 0),
                         },
-                        "embedding_text": current_sent.strip()
+                        "embedding_text": current_sent.strip(),
                     }
 
-    def _markdown_to_html(self, text:str)->str:
+    def _markdown_to_html(self, text: str) -> str:
         """
         Convert markdown to HTML using python-markdown.
         """
-        return markdown.markdown(text, extensions=[
-            "markdown.extensions.fenced_code",
-            "markdown.extensions.tables",
-            "markdown.extensions.attr_list",
-        ])
+        return markdown.markdown(
+            text,
+            extensions=[
+                "markdown.extensions.fenced_code",
+                "markdown.extensions.tables",
+                "markdown.extensions.attr_list",
+            ],
+        )
 
-    def _extract_code_blocks(self, html:str) -> List[Tuple[str,str]]:
+    def _extract_code_blocks(self, html: str) -> List[Tuple[str, str]]:
         """
         Extract code blocks from HTML content. Return list of (code_block, context).
-        We'll do minimal context extraction around code blocks. 
+        We'll do minimal context extraction around code blocks.
         """
         soup = BeautifulSoup(html, "html.parser")
         code_blocks = []
         pre_tags = soup.find_all("pre")
         for pre in pre_tags:
-            code_tag = pre.find("code")
-            if code_tag:
-                code_text = code_tag.get_text()
-                # Minimal context approach: preceding paragraph
-                context = ""
-                code_blocks.append((code_text, context))
+            # Check if it's a bs4.element.Tag object
+            if isinstance(pre, Tag):
+                # Use find method which returns a single Tag or None
+                code_tag = pre.find("code")
+                if code_tag is not None:
+                    code_text = code_tag.get_text()
+                    # Minimal context approach: preceding paragraph
+                    context = ""
+                    code_blocks.append((code_text, context))
         return code_blocks
 
-    def _extract_sections(self, html:str) -> List[Dict[str,Any]]:
+    def _extract_sections(self, html: str) -> List[Dict[str, Any]]:
         """
-        Extract text sections from HTML content. 
+        Extract text sections from HTML content.
         We'll do a naive approach: find all headers (h1..h6) and gather text until next header.
         If no headers, we treat paragraphs as sections.
         """
-        soup=BeautifulSoup(html, "html.parser")
-        sections=[]
-        headers= soup.find_all(["h1","h2","h3","h4","h5","h6"])
+        soup = BeautifulSoup(html, "html.parser")
+        sections = []
+        headers = soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6"])
         if not headers:
             # fallback: paragraphs
-            paras= soup.find_all("p")
+            paras = soup.find_all("p")
             if paras:
                 for i, p in enumerate(paras):
                     ptext = p.get_text().strip()
                     if ptext:
-                        sections.append({
-                            "content": ptext,
-                            "level": 0,
-                            "title":f"Paragraph {i+1}",
-                        })
+                        sections.append(
+                            {
+                                "content": ptext,
+                                "level": 0,
+                                "title": f"Paragraph {i+1}",
+                            }
+                        )
             else:
                 # fallback if no paras
-                rawtext=soup.get_text().strip()
+                rawtext = soup.get_text().strip()
                 if rawtext:
-                    sections.append({
-                        "content":rawtext,
-                        "level":0,
-                        "title":"Full text",
-                    })
+                    sections.append(
+                        {
+                            "content": rawtext,
+                            "level": 0,
+                            "title": "Full text",
+                        }
+                    )
             return sections
 
         # we do a more advanced approach if headers exist
-        current_path=[]
-        last_level=0
         all_headers = headers
         for i, hdr in enumerate(all_headers):
-            level = int(hdr.name[1])  # h1->1, h2->2...
-            title=hdr.get_text().strip()
-            # find text until next header
-            next_header=all_headers[i+1] if i<len(all_headers)-1 else None
-            content_el=hdr.next_sibling
-            content_list=[]
-            while content_el and content_el!=next_header:
-                if hasattr(content_el,"get_text"):
-                    content_list.append(content_el.get_text())
-                elif isinstance(content_el,str):
-                    content_list.append(content_el.strip())
-                content_el=content_el.next_sibling
-                if i<len(all_headers)-1 and content_el== next_header:
-                    break
-            full_content="\n".join(c.strip() for c in content_list if c.strip())
-            sections.append({
-                "content": full_content,
-                "level": level,
-                "title": title
-            })
+            # Check that hdr is a Tag
+            if isinstance(hdr, Tag):
+                level = int(hdr.name[1])  # h1->1, h2->2...
+                title = hdr.get_text().strip()
+                # find text until next header
+                next_header = all_headers[i + 1] if i < len(all_headers) - 1 else None
+                content_el = hdr.next_sibling
+                content_list = []
+
+                # Extract content until we hit the next header or run out of siblings
+                while content_el and (next_header is None or content_el != next_header):
+                    if isinstance(content_el, Tag):
+                        content_list.append(content_el.get_text())
+                    elif isinstance(content_el, str):
+                        content_list.append(content_el.strip())
+
+                    # Safely get the next sibling
+                    if hasattr(content_el, "next_sibling"):
+                        content_el = content_el.next_sibling
+                    else:
+                        # Break if we can't navigate further
+                        break
+
+                    if i < len(all_headers) - 1 and content_el == next_header:
+                        break
+                full_content = "\n".join(c.strip() for c in content_list if c.strip())
+                sections.append(
+                    {"content": full_content, "level": level, "title": title}
+                )
         return sections

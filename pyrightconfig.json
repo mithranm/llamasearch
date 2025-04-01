@@ -1,0 +1,17 @@
+{
+  "include": [
+    "."
+  ],
+  "exclude": [
+    "**/.git",
+    "**/__pycache__",
+    "**/*.egg-info",
+    "**/credentials/**",
+    "**/data/**",
+    "**/logs/**",
+    "o.md",
+    "github.env",
+    "**/*.csv"
+  ],
+  "reportMissingImports": true
+}

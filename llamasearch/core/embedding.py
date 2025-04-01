@@ -95,7 +95,9 @@ class Embedder:
         # For memory efficiency, process in small batches
         all_embeddings = []
 
-        with tqdm(total=len(strings), desc="Generating embeddings", unit="text") as pbar:
+        with tqdm(
+            total=len(strings), desc="Generating embeddings", unit="text"
+        ) as pbar:
             for i in range(0, len(strings), self.batch_size):
                 batch = strings[i : i + self.batch_size]
                 logger.info(

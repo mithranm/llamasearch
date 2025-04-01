@@ -2,7 +2,7 @@ import requests
 import os
 import re
 
-from ..utils import find_project_root
+from ..setup_utils import find_project_root
 
 # Changing this to my personal Jina API URL
 JINA_API_URL = "https://postgres.mithran.org/oodo/"

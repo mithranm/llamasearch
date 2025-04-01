@@ -1,0 +1,1 @@
+This devcontainer setup is only for Windows users with NVIDIA GPUs!

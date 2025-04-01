@@ -1,0 +1,9 @@
+name: rapids
+channels:
+  - rapidsai
+  - conda-forge
+  - nvidia
+dependencies:
+  - python=3.10
+  - rapids=23.12
+  - cudatoolkit=11.8
