@@ -13,6 +13,7 @@ vector_db_pca/
 models/
 onepiece/
 bts/
+potomac/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

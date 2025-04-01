@@ -8,6 +8,7 @@ import logging
 import torch
 import gc
 from sentence_transformers import SentenceTransformer
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -94,39 +95,43 @@ class Embedder:
         # For memory efficiency, process in small batches
         all_embeddings = []
 
-        for i in range(0, len(strings), self.batch_size):
-            batch = strings[i : i + self.batch_size]
-            logger.info(
-                f"Processing batch {i//self.batch_size + 1}/{(len(strings) + self.batch_size - 1)//self.batch_size} ({len(batch)} strings)"
-            )
-
-            # Truncate very long texts to reduce memory pressure
-            truncated_batch = []
-            for text in batch:
-                if len(text) > 2000:  # Increased from 1000 to 2000
-                    truncated_batch.append(text[:2000])
-                    logger.info("Truncated string to 2000 chars")
-                else:
-                    truncated_batch.append(text)
-
-            # Get embeddings for this batch
-            with torch.no_grad():
-                batch_embeddings = self.model.encode(
-                    truncated_batch, convert_to_numpy=True
-                )
-
-            all_embeddings.append(batch_embeddings)
-
-            # Force garbage collection after each batch
-            gc.collect()
-
-            # Log progress for every few batches
-            if (i + self.batch_size) % (self.batch_size * 5) == 0 or (
-                i + self.batch_size >= len(strings)
-            ):
+        with tqdm(total=len(strings), desc="Generating embeddings", unit="text") as pbar:
+            for i in range(0, len(strings), self.batch_size):
+                batch = strings[i : i + self.batch_size]
                 logger.info(
-                    f"Processed {min(i + self.batch_size, len(strings))}/{len(strings)} strings"
+                    f"Processing batch {i//self.batch_size + 1}/{(len(strings) + self.batch_size - 1)//self.batch_size} ({len(batch)} strings)"
                 )
+
+                # Truncate very long texts to reduce memory pressure
+                truncated_batch = []
+                for text in batch:
+                    if len(text) > 2000:  # Increased from 1000 to 2000
+                        truncated_batch.append(text[:2000])
+                        logger.info("Truncated string to 2000 chars")
+                    else:
+                        truncated_batch.append(text)
+
+                # Get embeddings for this batch
+                with torch.no_grad():
+                    batch_embeddings = self.model.encode(
+                        truncated_batch, convert_to_numpy=True
+                    )
+
+                all_embeddings.append(batch_embeddings)
+
+                # Force garbage collection after each batch
+                gc.collect()
+
+                # Update progress bar
+                pbar.update(len(batch))
+
+                # Log progress for every few batches
+                if (i + self.batch_size) % (self.batch_size * 5) == 0 or (
+                    i + self.batch_size >= len(strings)
+                ):
+                    logger.info(
+                        f"Processed {min(i + self.batch_size, len(strings))}/{len(strings)} strings"
+                    )
 
         # Combine all into a numpy array
         combined = np.vstack(all_embeddings)
