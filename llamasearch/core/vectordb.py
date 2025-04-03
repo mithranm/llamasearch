@@ -6,12 +6,15 @@ import logging
 import gc
 import shutil
 import json
-from typing import Dict, Any, Optional, List
-from sklearn.metrics.pairwise import cosine_similarity
 import spacy
+
+from typing import Dict, Any, Optional, List, cast
+from sklearn.metrics.pairwise import cosine_similarity
 from tqdm import tqdm
 
-from .embedding import Embedder
+
+
+from .embedder import Embedder
 from .bm25 import BM25Retriever
 from .chunker import MarkdownChunker
 from .knowledge_graph import KnowledgeGraph
@@ -38,7 +41,8 @@ class VectorDB:
         text_embedding_size=512,
         chunk_overlap=100,
         min_chunk_size=50,
-        batch_size=8,
+        chunker_batch_size: Optional[int] = None,
+        embedder_batch_size: Optional[int] = None,
         similarity_threshold=0.15,
         max_chunks=5000,
         persist=False,
@@ -50,7 +54,8 @@ class VectorDB:
         self.text_embedding_size = text_embedding_size
         self.chunk_overlap = chunk_overlap
         self.min_chunk_size = min_chunk_size
-        self.batch_size = batch_size
+        self.embedder_batch_size = embedder_batch_size
+        self.chunker_batch_size = chunker_batch_size
         self.similarity_threshold = similarity_threshold
         self.max_chunks = max_chunks
         self.persist = persist
@@ -82,8 +87,10 @@ class VectorDB:
             self.storage_dir, f"{collection_name}_embeddings.npy"
         )
 
+        # Pass auto_optimize and batch_size to the Embedder
         self.embedder = embedder or Embedder(
-            batch_size=16, max_length=text_embedding_size
+            batch_size=embedder_batch_size, 
+            max_length=text_embedding_size
         )
 
         self.chunker = MarkdownChunker(
@@ -91,7 +98,7 @@ class VectorDB:
             text_embedding_size=text_embedding_size,
             min_chunk_size=min_chunk_size,
             max_chunks=max_chunks,
-            batch_size=batch_size,
+            batch_size=cast(int, chunker_batch_size),
         )
 
         self.bm25 = BM25Retriever()
@@ -109,6 +116,10 @@ class VectorDB:
             f"Embeddings at: {self.embeddings_path}, meta at: {self.metadata_path}"
         )
         logger.info(f"Persistence: {self.persist}, use_pca: {self.use_pca}")
+        if self.chunker_batch_size is not None:
+            logger.info(f"Using fixed batch size: {self.chunker_batch_size}")
+        if self.embedder_batch_size is not None:
+            logger.info(f"Using fixed embedder batch size: {self.embedder_batch_size}")
 
         try:
             self.nlp = spacy.load("en_core_web_sm")
@@ -119,6 +130,36 @@ class VectorDB:
                 ["python", "-m", "spacy", "download", "en_core_web_sm"], check=True
             )
             self.nlp = spacy.load("en_core_web_sm")
+
+    def _process_temp_docs(self):
+        """
+        Process documents from the temp directory.
+        Only processes markdown files, ignores others with a warning.
+        """
+        proj_root = find_project_root()
+        temp_dir = os.path.join(proj_root, "temp")
+        
+        if not os.path.exists(temp_dir):
+            logger.info(f"Temp dir not found: {temp_dir}")
+            return
+            
+        logger.info(f"Processing markdown docs from {temp_dir}")
+        
+        for fn in os.listdir(temp_dir):
+            fp = os.path.join(temp_dir, fn)
+            
+            # Skip non-markdown files with a warning
+            if not fn.lower().endswith(".md"):
+                logger.warning(f"Skipping non-markdown file: {fn}")
+                continue
+                
+            # Process markdown files
+            if os.path.isfile(fp):
+                logger.info(f"Processing file: {fn}")
+                try:
+                    self.add_document(fp)
+                except Exception as e:
+                    logger.error(f"Error processing {fn}: {e}")
 
     def _load_metadata(self):
         if os.path.exists(self.metadata_path):
@@ -195,6 +236,15 @@ class VectorDB:
         return False
 
     def add_document(self, file_path: str) -> int:
+        """
+        Add a document to the vector database with optimized embedding process.
+        
+        Args:
+            file_path: Path to the markdown file
+            
+        Returns:
+            int: Number of chunks added
+        """
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
         if not file_path.lower().endswith(".md"):
@@ -228,60 +278,73 @@ class VectorDB:
 
         # Create temp file in the same directory as the target embeddings file
         dest_dir = os.path.dirname(self.embeddings_path)
-        temp_embeddings_filename = (
-            f"temp_embeddings_{os.path.basename(self.embeddings_path)}"
-        )
+        temp_embeddings_filename = f"temp_embeddings_{os.path.basename(self.embeddings_path)}"
         temp_path = os.path.join(dest_dir, temp_embeddings_filename)
 
         try:
             batch_idx = 0
-            batches = list(
-                self.chunker.process_file_in_batches(file_path, self.batch_size)
-            )
+            # Get all batches up front to estimate total work
+            batches = list(self.chunker.process_file_in_batches(file_path, self.chunker_batch_size))
+            total_chunks = sum(len(batch) for batch in batches)
+            
+            logger.info(f"Processing {os.path.basename(file_path)}: {total_chunks} total chunks in {len(batches)} batches")
+            
+            # Only use tqdm for files with significant number of chunks
+            use_progress_bar = total_chunks > 10
+            
+            if use_progress_bar:
+                progress_iter = tqdm(
+                    batches,
+                    desc=f"Processing {os.path.basename(file_path)}",
+                    unit="batch",
+                    total=len(batches)
+                )
+            else:
+                progress_iter = batches
+                
+            for batch in progress_iter:
+                if not batch:
+                    continue
+                    
+                chunk_texts = [b["chunk"] for b in batch]
+                emb_texts = [b["embedding_text"] for b in batch]
+                meta_list = []
+                
+                for i, bdat in enumerate(batch):
+                    met = dict(base_meta)
+                    met["batch_idx"] = batch_idx
+                    met["chunk_idx"] = i
+                    meta_list.append(met)
 
-            with tqdm(
-                total=len(batches),
-                desc=f"Processing {os.path.basename(file_path)}",
-                unit="batch",
-            ) as pbar:
-                for batch in batches:
-                    if not batch:
-                        continue
-                    chunk_texts = [b["chunk"] for b in batch]
-                    emb_texts = [b["embedding_text"] for b in batch]
-                    meta_list = []
-                    for i, bdat in enumerate(batch):
-                        met = dict(base_meta)
-                        met["batch_idx"] = batch_idx
-                        met["chunk_idx"] = i
-                        meta_list.append(met)
+                logger.debug(f"Generating embeddings for batch {batch_idx+1} with {len(batch)} chunks")
+                
+                # Use our optimized embedder
+                embeddings = self.embedder.embed_batch(emb_texts)
+                embeddings = np.ascontiguousarray(embeddings, dtype=np.float32)
 
-                    logger.info(
-                        f"Generating embeddings for batch {batch_idx+1} with {len(batch)} chunks"
-                    )
-                    embeddings = self.embedder.embed_batch(emb_texts)
-                    embeddings = np.ascontiguousarray(embeddings, dtype=np.float32)
+                if os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
+                    old = np.load(temp_path)
+                    old = np.ascontiguousarray(old, dtype=np.float32)
+                    merged = np.vstack([old, embeddings])
+                    np.save(temp_path, merged, allow_pickle=False)
+                    del old, merged
+                else:
+                    np.save(temp_path, embeddings, allow_pickle=False)
 
-                    if os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
-                        old = np.load(temp_path)
-                        old = np.ascontiguousarray(old, dtype=np.float32)
-                        merged = np.vstack([old, embeddings])
-                        np.save(temp_path, merged, allow_pickle=False)
-                        del old, merged
-                    else:
-                        np.save(temp_path, embeddings, allow_pickle=False)
+                self.documents.extend(chunk_texts)
+                self.document_metadata.extend(meta_list)
 
-                    self.documents.extend(chunk_texts)
-                    self.document_metadata.extend(meta_list)
+                for txt, mt in zip(chunk_texts, meta_list):
+                    self.bm25.add_document(txt, mt)
 
-                    for txt, mt in zip(chunk_texts, meta_list):
-                        self.bm25.add_document(txt, mt)
-
-                    added_chunks += len(batch)
-                    batch_idx += 1
+                added_chunks += len(batch)
+                batch_idx += 1
+                
+                # Only collect garbage occasionally, not after every batch
+                if batch_idx % 5 == 0:
                     del chunk_texts, emb_texts, meta_list, embeddings
                     gc.collect()
-                    pbar.update(1)
+                    
             if added_chunks > 0:
                 self._merge_embeddings(temp_path)
                 self._save_metadata()

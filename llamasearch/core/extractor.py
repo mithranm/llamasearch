@@ -1,6 +1,8 @@
 import requests
 import os
 import re
+import json
+from datetime import datetime
 
 from ..setup_utils import find_project_root
 
@@ -24,7 +26,11 @@ def slugify_url(url):
 
 
 def save_to_project_tempdir(text, url):
-    """Saves extracted content to a `temp` directory inside the project root, using the URL to create a unique filename."""
+    """
+    Saves extracted content to a `temp` directory inside the project root,
+    including metadata in an HTML comment that will be skipped by the chunker.
+    Uses the URL to create a unique filename.
+    """
     project_root = find_project_root()
     temp_dir = os.path.join(project_root, "temp")
     os.makedirs(temp_dir, exist_ok=True)  # Ensure the directory exists
@@ -32,25 +38,36 @@ def save_to_project_tempdir(text, url):
     filename = slugify_url(url) + ".md"  # Create filename from URL
     file_path = os.path.join(temp_dir, filename)
 
-    # Write content to the file
-    with open(
-        file_path, "w", encoding="utf-8"
-    ) as file:  # Use "w" to create/overwrite each file
-        file.write(f"## {url}\n\n{text}")  # Include URL as a heading in the file
+    # Create metadata as JSON in an HTML comment
+    metadata = {
+        "source_url": url,
+        "extracted_at": datetime.now().isoformat(),
+        "extractor_version": "1.0"
+    }
+    
+    metadata_str = f"""<!-- 
+METADATA: {json.dumps(metadata, indent=2)}
+-->
+
+"""
+
+    # Write content to the file with metadata
+    with open(file_path, "w", encoding="utf-8") as file:
+        file.write(metadata_str + f"## {url}\n\n{text}")  # Include metadata + URL heading + content
 
     return file_path
 
 
-def read_links_from_temp():
-    """Reads URLs from the saved links file."""
+def read_links_from_data():
+    """Reads URLs from the saved links file in the data directory."""
     project_root = find_project_root()
-    temp_file = os.path.join(project_root, "temp", "links.txt")
+    data_file = os.path.join(project_root, "data", "links.txt")
 
-    if not os.path.exists(temp_file):
-        print("No links found. Run crawler.py first.")
+    if not os.path.exists(data_file):
+        print("No links found. Run crawler.py first to crawl links to the data directory.")
         return []
 
-    with open(temp_file, "r", encoding="utf-8") as f:
+    with open(data_file, "r", encoding="utf-8") as f:
         links = [line.strip() for line in f.readlines()]
 
     return links
@@ -69,7 +86,7 @@ def extract_text_with_jina(url):
 
 
 if __name__ == "__main__":
-    links = read_links_from_temp()
+    links = read_links_from_data()
 
     if not links:
         print("No links to process.")

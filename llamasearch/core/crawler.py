@@ -8,13 +8,16 @@ from bs4 import BeautifulSoup, Tag
 JINA_API_URL = "https://r.jina.ai/"
 
 
-def save_to_project_tempdir(text, filename="links.md"):
-    """Saves text to a `temp` directory inside the project root."""
+def save_crawled_links(text, filename="links.txt"):
+    """
+    Saves crawled links to a `data` directory inside the project root.
+    Using a dedicated data directory is cleaner than using temp for persistent crawl data.
+    """
     project_root = find_project_root()
-    temp_dir = os.path.join(project_root, "temp")
+    data_dir = os.path.join(project_root, "data")
 
-    os.makedirs(temp_dir, exist_ok=True)  # Create temp dir if it doesn't exist
-    file_path = os.path.join(temp_dir, filename)  # Define full file path
+    os.makedirs(data_dir, exist_ok=True)  # Create data dir if it doesn't exist
+    file_path = os.path.join(data_dir, filename)  # Define full file path
 
     with open(file_path, "w", encoding="utf-8") as file:
         file.write(text)
@@ -232,7 +235,7 @@ if __name__ == "__main__":
     all_collected_links = crawl(url, depth=1, max_depth=3, external_taken=False)
 
     if all_collected_links:
-        file_path = save_to_project_tempdir("\n".join(all_collected_links), "links.txt")
+        file_path = save_crawled_links("\n".join(all_collected_links), "links.txt")
         print(f"\nCrawled links saved at: {file_path}")
         print(f"Total links collected: {len(all_collected_links)}")
     else:

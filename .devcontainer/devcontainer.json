@@ -1,52 +1,31 @@
 {
-    "name": "LlamaSearch Development",
+    "name": "CUDA 11.8 Dev Container",
     "build": {
-        "dockerfile": "Dockerfile",
-        "context": ".."
+        "context": "..",
+        "dockerfile": "Dockerfile"
     },
+    // Ensure we pass GPU to the container
     "runArgs": [
-        "--gpus",
-        "all"
+        "--gpus", "all"
     ],
+    // We'll bind the Windows folder to /workspace in the container
+    "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
     "workspaceFolder": "/workspace",
-    "mounts": [
-        "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
-        "source=C:/Users/mithr/Documents/gh-issues,target=/workspace/data/gh-issues,type=bind,consistency=cached",
-        "source=/mnt/sdd/,target=/workspace/data/fast,type=bind,consistency=cached",
-        "source=/mnt/sdc/,target=/workspace/data/slow,type=bind,consistency=cached"
-    ],
-    "initializeCommand": "powershell -Command \"if (-not (Get-WmiObject Win32_VideoController | Where-Object { $_.Name -match 'NVIDIA' })) { Write-Host 'No NVIDIA GPU detected. This dev container requires an NVIDIA GPU.'; exit 1 }\"",
+
     "customizations": {
         "vscode": {
+            "settings": {
+                "terminal.integrated.defaultProfile.linux": "bash",
+                "python.defaultInterpreterPath": "/usr/bin/python3"
+            },
             "extensions": [
                 "ms-python.python",
-                "ms-python.vscode-pylance",
-                "charliermarsh.ruff",
-                "ms-python.black-formatter"
-            ],
-            "settings": {
-                "python.defaultInterpreterPath": "/opt/conda/envs/rapids/bin/python",
-                "python.formatting.provider": "black",
-                "editor.formatOnSave": true,
-                "editor.rulers": [
-                    88
-                ],
-                "files.trimTrailingWhitespace": true,
-                "terminal.integrated.profiles.linux": {
-                    "bash": {
-                        "path": "/bin/bash",
-                        "args": [
-                            "-l"
-                        ]
-                    }
-                },
-                "terminal.integrated.defaultProfile.linux": "bash"
-            }
+                "ms-toolsai.jupyter",
+                "ms-vscode.cpptools"
+            ]
         }
     },
-    "forwardPorts": [
-        7860
-    ],
-    "remoteUser": "vscode",
-    "postCreateCommand": "bash -c '. /opt/conda/etc/profile.d/conda.sh && conda activate rapids && python -c \"import sys; print(f\\\"Python interpreter: {sys.executable}\\\")\"'"
+
+    // A quick check that GPU is visible
+    "postCreateCommand": "nvidia-smi"
 }

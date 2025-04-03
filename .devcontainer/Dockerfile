@@ -1,72 +1,42 @@
-FROM nvidia/cuda:11.8.0-devel-ubuntu22.04
-# Prevent interactive prompts during package installation
+# Use NVIDIA's official CUDA 11.8 base image with cuDNN8 on Ubuntu 22.04
+FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04
+
+# Noninteractive to avoid tzdata prompts
 ENV DEBIAN_FRONTEND=noninteractive
-# Install system dependencies early
-RUN apt-get update && apt-get install -y \
-    git \
-    curl \
-    wget \
-    ca-certificates \
-    build-essential \
-    cmake \
-    sudo \
+
+# 1) Upgrade to a newer cmake from Kitware apt repo
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget gnupg apt-transport-https ca-certificates software-properties-common \
+    && wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc | apt-key add - \
+    && apt-add-repository 'deb https://apt.kitware.com/ubuntu/ jammy main' \
+    && apt-get update && apt-get install -y --no-install-recommends cmake \
     && rm -rf /var/lib/apt/lists/*
-# Download Miniconda installer early for caching
-ADD https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh miniconda.sh
-# Install Miniconda in its own layer
-RUN bash miniconda.sh -b -p /opt/conda \
-    && rm miniconda.sh
-# Add conda to PATH
-ENV PATH=/opt/conda/bin:$PATH
-# Use bash shell
-SHELL ["/bin/bash", "-c"]
-# Create conda environment in its own layer
-RUN conda create -n rapids python=3.10 -y
-# Create environment.yml for better caching
-COPY environment.yml /tmp/environment.yml
-# Install conda packages from environment.yml
-RUN conda env update -n rapids -f /tmp/environment.yml && \
-    conda clean -afy
-# Install PyTorch in its own layer
-RUN conda run -n rapids pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-# Install additional packages in their own layer
-RUN conda run -n rapids pip install --no-cache-dir xgboost && \
-    conda run -n rapids pip install --no-cache-dir --no-binary lightgbm --config-settings=cmake.define.USE_GPU=ON lightgbm && \
-    conda run -n rapids pip install git+https://github.com/huggingface/transformers@v4.50.0
-# Set working directory to match the mount point
-WORKDIR /workspace
-RUN useradd -m -s /bin/bash vscode \
-    && echo "vscode:vscode" | chpasswd \
-    && adduser vscode sudo \
-    && echo "vscode ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/vscode
-# Update ownership path
-RUN mkdir -p /workspace && chown -R vscode:vscode /workspace
-# Copy project files
-COPY pyproject.toml ./
-COPY llamasearch/setup_utils.py ./llamasearch/setup_utils.py
-COPY llamasearch/__init__.py ./llamasearch/__init__.py
-# Install project dependencies
-RUN CMAKE_ARGS="-DGGML_OPENMP=OFF" conda run -n rapids pip install -e '.[dev]'
 
-# Properly initialize conda
-RUN conda init bash && \
-    mkdir -p /home/vscode/.config && \
-    chown -R vscode:vscode /home/vscode/.config && \
-    touch /home/vscode/.sudo_as_admin_successful && \
-    chown vscode:vscode /home/vscode/.sudo_as_admin_successful
+# 2) Install Python 3, pip, other build tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip python3-dev \
+    build-essential git \
+    ocl-icd-libopencl1 libgomp1 ninja-build \
+    && rm -rf /var/lib/apt/lists/*
 
-# Set up environment variables for conda activation
-ENV CONDA_EXE=/opt/conda/bin/conda \
-    CONDA_PREFIX=/opt/conda/envs/rapids \
-    CONDA_PYTHON_EXE=/opt/conda/bin/python \
-    CONDA_PROMPT_MODIFIER=(rapids) \
-    CONDA_DEFAULT_ENV=rapids \
-    PATH=/opt/conda/envs/rapids/bin:/opt/conda/bin:$PATH
+# Upgrade pip
+RUN pip3 install --no-cache-dir --upgrade pip
 
-# Create .bashrc with conda initialization
-RUN echo '. /opt/conda/etc/profile.d/conda.sh' >> /home/vscode/.bashrc && \
-    echo 'conda activate rapids' >> /home/vscode/.bashrc && \
-    chown vscode:vscode /home/vscode/.bashrc
+# 3) Pre-install some GPU-accelerated libraries that you want
+RUN pip3 install --no-cache-dir lightgbm --config-settings=cmake.define.USE_CUDA=ON \
+    && pip3 install --no-cache-dir xgboost \
+    && pip3 install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118 \
+    && pip3 install --no-cache-dir cudf-cu11 cuml-cu11 cugraph-cu11 --extra-index-url=https://pypi.nvidia.com
 
-# Switch to vscode user
-USER vscode
+# 4) Let’s set environment variables for CUDA
+ENV CUDA_HOME=/usr/local/cuda
+ENV CUDACXX=/usr/local/cuda/bin/nvcc
+ENV PATH="/usr/local/cuda/bin:${PATH}"
+ENV LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH}"
+
+# We'll also ensure our scikit-build sees sm_80 or sm_86
+# (If Ampere, typically 80 or 86 is valid. We'll do both.)
+ENV CMAKE_ARGS="-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=80;86"
+
+# Default shell command
+CMD ["/bin/bash"]

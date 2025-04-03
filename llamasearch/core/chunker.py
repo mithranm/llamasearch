@@ -10,6 +10,7 @@ from bs4 import BeautifulSoup, Tag
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_CHUNK_BATCH_SIZE = 100  # Default batch size for chunking
 
 class MarkdownChunker:
     """
@@ -24,7 +25,7 @@ class MarkdownChunker:
         text_embedding_size: int = 512,
         min_chunk_size: int = 50,
         max_chunks: int = 5000,
-        batch_size: int = 1,
+        batch_size: Optional[int] = None,
         ignore_link_urls: bool = True,
         code_context_window: int = 2,
         include_section_headers: bool = True,
@@ -34,7 +35,7 @@ class MarkdownChunker:
         self.text_embedding_size = text_embedding_size
         self.min_chunk_size = min_chunk_size
         self.max_chunks = max_chunks
-        self.batch_size = batch_size
+        self.batch_size = batch_size if batch_size else DEFAULT_CHUNK_BATCH_SIZE
         self.ignore_link_urls = ignore_link_urls
         self.code_context_window = code_context_window
         self.include_section_headers = include_section_headers

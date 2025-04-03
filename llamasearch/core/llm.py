@@ -31,6 +31,9 @@ class OptimizedLLM:
         context_length: int = 2048,
         n_results: int = 5,
         custom_model_path: Optional[str] = None,
+        auto_optimize: bool = True,
+        embedder_batch_size: Optional[int] = None,
+        chunker_batch_size: Optional[int] = None,
     ):
         self.verbose = verbose
         self.persist = persist
@@ -38,6 +41,8 @@ class OptimizedLLM:
         self.n_results = n_results
         self.model_name = model_name
         self.custom_model_path = custom_model_path
+        self.auto_optimize = auto_optimize
+        self.embedder_batch_size = embedder_batch_size
 
         project_root = find_project_root()
         self.models_dir = os.path.join(project_root, "models")
@@ -55,16 +60,19 @@ class OptimizedLLM:
             logger.info("Please download or provide a valid model path.")
 
         self.storage_dir = os.path.join(project_root, "vector_db")
+        
+        # Initialize VectorDB with auto_optimize flag and optional batch_size
         self.vectordb = VectorDB(
             persist=persist,
             chunk_size=250,
             text_embedding_size=512,
             chunk_overlap=50,
             min_chunk_size=50,
-            batch_size=2,
+            chunker_batch_size=chunker_batch_size,
+            embedder_batch_size=embedder_batch_size,  # Use provided batch size or auto
             similarity_threshold=0.25,
             storage_dir=self.storage_dir,
-            use_pca=False,
+            use_pca=False
         )
 
         self._process_temp_docs()
@@ -72,6 +80,7 @@ class OptimizedLLM:
         self.llm_instance = None
         logger.info(f"Initialized OptimizedLLM with model: {self.model_name}")
         logger.info(f"Model path: {self.model_path}")
+        logger.info(f"Auto-optimize: {self.auto_optimize}, Batch size: {self.embedder_batch_size or 'auto'}")
 
     def _process_temp_docs(self):
         proj_root = find_project_root()
@@ -82,12 +91,14 @@ class OptimizedLLM:
         logger.info(f"Processing docs from {temp_dir}")
         for fn in os.listdir(temp_dir):
             fp = os.path.join(temp_dir, fn)
-            if os.path.isfile(fp):
+            if os.path.isfile(fp) and fn.lower().endswith(".md"):
                 logger.info(f"Processing file: {fn}")
                 try:
                     self.vectordb.add_document(fp)
                 except Exception as e:
                     logger.error(f"Error processing {fn}: {e}")
+            elif os.path.isfile(fp):
+                logger.warning(f"Skipping non-markdown file: {fn}")
 
     def _get_llm(self):
         if self.llm_instance is None:
@@ -303,33 +314,28 @@ class OptimizedLLM:
 
 def main():
     parser = argparse.ArgumentParser("LlamaSearch advanced setup")
-    parser.add_argument("--document", type=str, default=None)
-    parser.add_argument("--query", type=str, default=None)
-    parser.add_argument("--persist", action="store_true")
-    parser.add_argument("--debug", action="store_true")
-    parser.add_argument("--custom-model", type=str, default=None)
+    parser.add_argument("--document", type=str, default=None, 
+                      help="Path to document or directory of documents to add")
+    parser.add_argument("--query", type=str, default=None,
+                      help="Query to run against the documents")
+    parser.add_argument("--persist", action="store_true",
+                      help="Persist the vector database between runs")
+    parser.add_argument("--debug", action="store_true",
+                      help="Enable debug mode with additional info")
+    parser.add_argument("--custom-model", type=str, default=None,
+                      help="Path to a custom model file")
+    parser.add_argument("--embedder-batch-size", type=int, default=None,
+                      help="Fixed batch size for embeddings (disables auto-optimization)")
+    parser.add_argument("--chunker-batch-size", type=int, default=None,
+                      help="Fixed batch size for chunker (disables auto-optimization)")
     args = parser.parse_args()
-
-    llm = OptimizedLLM(persist=args.persist, custom_model_path=args.custom_model)
-    if args.document:
-        import os
-
-        if os.path.isfile(args.document):
-            if not args.document.lower().endswith(".md"):
-                print("Only .md files supported.")
-            else:
-                c = llm.vectordb.add_document(args.document)
-                print(f"Added {c} chunks from {args.document}")
-        elif os.path.isdir(args.document):
-            total = 0
-            for f in os.listdir(args.document):
-                if f.lower().endswith(".md"):
-                    fp = os.path.join(args.document, f)
-                    c = llm.vectordb.add_document(fp)
-                    total += c
-            print(f"Added {total} chunks from {args.document}")
-        else:
-            print(f"No file/dir found: {args.document}")
+    
+    # Initialize with dynamic settings based on args
+    llm = OptimizedLLM(
+        persist=args.persist, 
+        custom_model_path=args.custom_model,
+        chunker_batch_size=args.chunker_batch_size
+    )
 
     if args.query:
         st = time.time()
