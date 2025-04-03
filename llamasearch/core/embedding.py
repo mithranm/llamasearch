@@ -19,7 +19,7 @@ class Embedder:
     def __init__(
         self,
         model_name: str = DEFAULT_MODEL_NAME,
-        device: str = "cpu",
+        device: str = None,
         max_length: int = 512,
         batch_size: int = 2,
     ):  # Increased max_length to 512
@@ -39,9 +39,12 @@ class Embedder:
 
             # Load the model
             logger.info(f"Loading sentence-transformer model: {model_name}")
-            self.model = SentenceTransformer(model_name, device=device)
+            
+            if device is None:
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+            self.model = SentenceTransformer(model_name_or_path=model_name, device=device)
 
-            logger.info(f"Loaded sentence-transformer model {model_name} on {device}")
+            logger.info(f"Loaded sentence-transformer model {model_name} on {self.device}")
         except (OSError, ValueError) as e:
             logger.error(f"Error loading model '{model_name}': {e}")
             raise

@@ -1,4 +1,6 @@
 {
+  "useLibraryCodeForTypes": false,
+  "typeCheckingMode": "off",
   "include": [
     "."
   ],
