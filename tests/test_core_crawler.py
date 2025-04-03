@@ -5,7 +5,7 @@ from unittest.mock import patch, mock_open
 from llamasearch.core.crawler import (
     fetch_links,
     filter_links_by_structure,
-    save_to_project_tempdir,
+    save_crawled_links,
 )
 
 JINA_API_URL = "https://r.jina.ai/"
@@ -138,8 +138,8 @@ def test_complex_domains():
     assert "https://other.co.uk/page" not in filtered
 
 
-def test_save_to_project_tempdir():
-    """Test saving filtered links to a temp directory."""
+def test_save_crawled_links():
+    """Test saving crawled links to a temp directory."""
     mock_text = "https://example.com/page1\nhttps://example.com/page2"
     import tempfile
 
@@ -147,7 +147,7 @@ def test_save_to_project_tempdir():
 
     with patch("llamasearch.core.crawler.find_project_root", return_value=mock_root):
         with patch("builtins.open", mock_open()) as mock_file:
-            file_path = save_to_project_tempdir(mock_text, "test_link.md")
+            file_path = save_crawled_links(mock_text, "test_link.txt")
 
             assert mock_file.called
-            assert file_path == os.path.join(mock_root, "temp", "test_link.md")
+            assert file_path == os.path.join(mock_root, "data", "test_link.txt")

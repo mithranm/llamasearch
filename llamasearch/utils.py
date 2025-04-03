@@ -52,17 +52,17 @@ class NumpyEncoder(json.JSONEncoder):
     Custom JSON encoder that gracefully handles numpy types (e.g. float32, int64).
     """
 
-    def default(self, obj):
+    def default(self, o):
         # Convert float32 -> float
-        if isinstance(obj, np.float32) or isinstance(obj, np.float64):
-            return float(obj)
+        if isinstance(o, np.float32) or isinstance(o, np.float64):
+            return float(o)
         # Convert int64 -> int
-        if isinstance(obj, np.integer):
-            return int(obj)
+        if isinstance(o, np.integer):
+            return int(o)
         # Convert array -> list (optional)
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        return super().default(obj)
+        if isinstance(o, np.ndarray):
+            return o.tolist()
+        return super().default(o)
 
 
 def log_query(query, context_chunks, response, debug_info=None):

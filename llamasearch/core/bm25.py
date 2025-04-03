@@ -3,11 +3,7 @@ import numpy as np
 from rank_bm25 import BM25Okapi
 from typing import Dict, Any, Optional, List
 
-# Import SpaCy for improved text processing
-try:
-    import spacy
-except ImportError:
-    pass
+import spacy
 
 logger = logging.getLogger(__name__)
 
