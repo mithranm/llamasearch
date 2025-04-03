@@ -32,7 +32,6 @@ wheels/
 .devcontainer/
 !.devcontainer/Dockerfile
 .devcontainer/devcontainer.json
-!.devcontainer/startup.sh
 
 # Virtual environments
 venv/
