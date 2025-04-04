@@ -1,117 +1,34 @@
-"""
-Optimized embedding module with dynamic batch size and hardware detection
-"""
+# llamasearch/core/enhanced_embedder.py
 
 import numpy as np
 import logging
 import torch
 import gc
-import platform
-import os
 import time
-from sentence_transformers import SentenceTransformer
+from typing import List, Optional, Dict, Any, Union
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
-from typing import Optional
+
+from sentence_transformers import SentenceTransformer
+from .resource_manager import get_resource_manager
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
 
-def detect_hardware_capabilities():
+class EnhancedEmbedder:
     """
-    Detect available hardware acceleration and memory capacity
-    to determine optimal batch size.
+    Enhanced embedder with multi-threading and multi-GPU support.
     
-    Returns:
-        dict: Hardware capabilities information
+    Features:
+    - Uses thread pools for parallel processing
+    - Supports distributing work across multiple GPUs
+    - Dynamic batching based on available resources
+    - Granular memory management to prevent OOM errors
+    - Progress tracking with tqdm
     """
-    capabilities = {
-        "device": "cpu",
-        "recommended_batch_size": 4,  # Default conservative value
-        "max_length": 512,
-        "memory_optimized": False
-    }
-    
-    # Check for CUDA
-    if torch.cuda.is_available():
-        capabilities["device"] = "cuda"
-        capabilities["cuda_device_count"] = torch.cuda.device_count()
-        capabilities["cuda_device_name"] = torch.cuda.get_device_name(0)
-        
-        # Estimate available GPU memory (in GB)
-        try:
-            free_memory = torch.cuda.mem_get_info(0)[0] / (1024**3)  # Convert bytes to GB
-            total_memory = torch.cuda.mem_get_info(0)[1] / (1024**3)
-            capabilities["cuda_free_memory_gb"] = free_memory
-            capabilities["cuda_total_memory_gb"] = total_memory
-            
-            # Dynamically set batch size based on available GPU memory
-            if free_memory > 10:  # More than 10GB free
-                capabilities["recommended_batch_size"] = 32
-            elif free_memory > 6:  # 6-10GB free
-                capabilities["recommended_batch_size"] = 16
-            elif free_memory > 2:  # 2-6GB free
-                capabilities["recommended_batch_size"] = 8
-            else:  # Less than 2GB
-                capabilities["recommended_batch_size"] = 4
-        except:
-            # Fallback if mem_get_info is not available
-            capabilities["recommended_batch_size"] = 8
-    
-    # Check for Apple Silicon (M1/M2/M3) with Metal support
-    elif platform.system() == "Darwin" and platform.processor() == "arm":
-        capabilities["device"] = "mps" if torch.backends.mps.is_available() else "cpu"
-        capabilities["is_apple_silicon"] = True
-        
-        # For Apple Silicon, we'll use a heuristic since direct memory query isn't available
-        try:
-            # Try to get total system memory as a proxy
-            import subprocess
-            result = subprocess.run(['sysctl', '-n', 'hw.memsize'], capture_output=True, text=True)
-            if result.returncode == 0:
-                system_mem_gb = int(result.stdout.strip()) / (1024**3)
-                capabilities["system_memory_gb"] = system_mem_gb
-                
-                # Set batch size based on system memory
-                if system_mem_gb > 32:  # 32+ GB system RAM
-                    capabilities["recommended_batch_size"] = 24
-                elif system_mem_gb > 16:  # 16-32GB system RAM
-                    capabilities["recommended_batch_size"] = 16
-                elif system_mem_gb > 8:  # 8-16GB system RAM
-                    capabilities["recommended_batch_size"] = 8
-                else:  # Less than 8GB
-                    capabilities["recommended_batch_size"] = 4
-        except:
-            # Fallback if sysctl fails
-            capabilities["recommended_batch_size"] = 8
-    
-    # For CPU-only systems, determine based on available system memory
-    else:
-        try:
-            import psutil
-            system_mem_gb = psutil.virtual_memory().total / (1024**3)
-            capabilities["system_memory_gb"] = system_mem_gb
-            
-            # Set batch size based on system memory
-            if system_mem_gb > 32:  # 32+ GB system RAM
-                capabilities["recommended_batch_size"] = 16
-            elif system_mem_gb > 16:  # 16-32GB system RAM
-                capabilities["recommended_batch_size"] = 8
-            elif system_mem_gb > 8:  # 8-16GB system RAM
-                capabilities["recommended_batch_size"] = 4
-            else:  # Less than 8GB
-                capabilities["recommended_batch_size"] = 2
-        except:
-            # Fallback if psutil is not available
-            capabilities["recommended_batch_size"] = 4
-    
-    # Log the detected capabilities
-    logger.info(f"Detected hardware capabilities: {capabilities}")
-    return capabilities
 
-
-class Embedder:
     def __init__(
         self,
         model_name: str = DEFAULT_MODEL_NAME,
@@ -119,229 +36,288 @@ class Embedder:
         max_length: int = 512,
         batch_size: Optional[int] = None,
         auto_optimize: bool = True,
+        num_workers: Optional[int] = None
     ):
         """
-        Initialize the embedder with the sentence-transformers model.
+        Initialize the embedder with dynamic hardware detection.
 
         Args:
             model_name: HuggingFace model name or path
-            device: Device to use ('cpu', 'cuda', or 'mps')
+            device: Device to use ('cpu', 'cuda', 'mps', or 'auto')
             max_length: Maximum token length for input text
-            batch_size: Batch size for processing multiple texts (set to None for auto)
+            batch_size: Batch size for processing multiple texts (None for auto)
             auto_optimize: Whether to automatically optimize settings based on hardware
+            num_workers: Number of worker threads (None for auto)
         """
+        self.model_name = model_name
+        self.max_length = max_length
+        
+        # Get resource manager for hardware optimization
+        self.resource_manager = get_resource_manager(auto_optimize=auto_optimize)
+        
+        # Use resource manager to get optimal configuration
+        if auto_optimize:
+            config = self.resource_manager.get_embedding_config()
+            
+            # Use provided values if specified, otherwise use optimized values
+            self.device = device or config["device"]
+            self.batch_size = batch_size or config["batch_size"]
+            self.num_workers = num_workers or (2 if config["multi_process"] else 1)
+            self.threads_per_worker = config.get("threads_per_worker", 1)
+        else:
+            # Use provided values or reasonable defaults
+            self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+            self.batch_size = batch_size or 8
+            self.num_workers = num_workers or 1
+            self.threads_per_worker = 1
+        
+        # Initialize models (potentially multiple for parallelization)
+        self.models = {}
+        self.model_locks = {}
+        
+        # Load primary model
+        logger.info(f"Loading primary embedding model: {model_name} on {self.device}")
+        self._load_primary_model()
+        
+        # Log configuration
+        logger.info(f"EnhancedEmbedder initialized with device={self.device}, batch_size={self.batch_size}, "
+                   f"workers={self.num_workers}, threads_per_worker={self.threads_per_worker}")
+
+    def _load_primary_model(self):
+        """Load the primary embedding model."""
         try:
-            self.max_length = max_length
-            self.auto_optimize = auto_optimize
-            
-            # Ensure batch_size is always initialized to a valid value
-            default_batch_size = 8
-            
-            # Auto-detect optimal settings based on hardware
-            if auto_optimize:
-                self.capabilities = detect_hardware_capabilities()
-                self.device = device or self.capabilities["device"]
+            # Set thread count for efficient CPU utilization when using CPU-only
+            if self.device == "cpu":
+                torch.set_num_threads(self.threads_per_worker)
                 
-                # Use the recommended batch size if batch_size is None
-                if batch_size is None:
-                    self.batch_size = self.capabilities["recommended_batch_size"]
-                else:
-                    # Use the specified batch_size if provided
-                    self.batch_size = batch_size
-            else:
-                self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-                # Use the specified batch_size or default if not auto-optimizing
-                self.batch_size = batch_size if batch_size is not None else default_batch_size
+            # Load the model on the primary device
+            self.models[0] = SentenceTransformer(model_name_or_path=self.model_name, device=self.device)
+            self.model_locks[0] = torch.multiprocessing.Lock() if self.num_workers > 1 else None
             
-            logger.info(f"Loading sentence-transformer model: {model_name}")
-            logger.info(f"Using device: {self.device}, batch size: {self.batch_size}")
-            
-            self.model = SentenceTransformer(model_name_or_path=model_name, device=self.device)
-            
-            # Perform a quick benchmark to fine-tune batch size if auto_optimize is enabled
-            if auto_optimize and batch_size is None:  # Only benchmark if we're auto-detecting batch size
-                self._benchmark_and_adjust()
-                
-            logger.info(f"Loaded sentence-transformer model {model_name} on {self.device}")
-            logger.info(f"Using batch size: {self.batch_size}")
-            
-        except (OSError, ValueError) as e:
-            logger.error(f"Error loading model '{model_name}': {e}")
+            # If multiple workers are requested and we have multiple GPUs, load additional models
+            if self.num_workers > 1 and self.device == "cuda" and torch.cuda.device_count() > 1:
+                for gpu_id in range(1, min(self.num_workers, torch.cuda.device_count())):
+                    logger.info(f"Loading additional model on CUDA device {gpu_id}")
+                    
+                    # Create model on specific GPU
+                    device = f"cuda:{gpu_id}"
+                    self.models[gpu_id] = SentenceTransformer(model_name_or_path=self.model_name, device=device)
+                    self.model_locks[gpu_id] = torch.multiprocessing.Lock()
+        except Exception as e:
+            logger.error(f"Error loading model '{self.model_name}': {e}")
             raise
-    
-    def _benchmark_and_adjust(self):
-        """Perform a quick benchmark to find the optimal batch size"""
-        logger.info("Running embedding benchmark to optimize batch size...")
-        
-        # Create test data with varying lengths
-        test_strings = [
-            "This is a short test sentence.",
-            "Here's a medium length test sentence with more words to process by the model.",
-            "This is a longer test sentence that contains multiple phrases and clauses to better test the embedding performance with longer texts that need to be processed by the transformer model in batches."
-        ] * 5  # Repeat to get a reasonable sample size
-        
-        # Test different batch sizes to find optimal
-        # Ensure all values are integers and > 0
-        start_batch = max(1, self.batch_size // 2)
-        double_batch = min(64, self.batch_size * 2)
-        
-        batch_sizes_to_test = [
-            start_batch,          # Half the recommended
-            self.batch_size,      # The recommended
-            double_batch          # Double the recommended (with upper limit)
-        ]
-        
-        best_batch_size = self.batch_size
-        best_throughput = 0
-        
-        for test_batch_size in batch_sizes_to_test:
-            # Skip duplicates
-            if test_batch_size in batch_sizes_to_test[:batch_sizes_to_test.index(test_batch_size)]:
-                continue
-                
-            try:
-                # Test embedding with this batch size
-                start_time = time.time()
-                with torch.no_grad():
-                    for i in range(0, len(test_strings), test_batch_size):
-                        batch = test_strings[i:i+test_batch_size]
-                        _ = self.model.encode(batch, convert_to_numpy=True)
-                
-                end_time = time.time()
-                elapsed = end_time - start_time
-                throughput = len(test_strings) / elapsed
-                
-                logger.info(f"Batch size {test_batch_size}: {throughput:.2f} samples/sec, {elapsed:.4f}s total")
-                
-                # Update best batch size if this one is faster
-                if throughput > best_throughput:
-                    best_throughput = throughput
-                    best_batch_size = test_batch_size
+
+    def _get_model_for_worker(self, worker_id: int = 0):
+        """Get the appropriate model for a specific worker."""
+        if self.device == "cuda" and torch.cuda.device_count() > 1:
+            # Distribute across available GPUs
+            gpu_id = worker_id % torch.cuda.device_count()
+            return self.models[gpu_id], self.model_locks[gpu_id]
+        else:
+            # Use the primary model
+            return self.models[0], self.model_locks[0]
+
+    def _embed_batch_with_worker(self, texts: List[str], worker_id: int) -> np.ndarray:
+        """Embed a batch of texts using a specific worker."""
+        if not texts:
+            return np.array([])
             
-            except RuntimeError as e:
-                # Memory error, skip this batch size
-                logger.warning(f"Batch size {test_batch_size} failed: {e}")
-                # Try to recover
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                gc.collect()
+        model, lock = self._get_model_for_worker(worker_id)
         
-        # Update batch size to the optimal one
-        logger.info(f"Selected optimal batch size: {best_batch_size} ({best_throughput:.2f} samples/sec)")
-        self.batch_size = best_batch_size
+        # Use lock if provided (for multi-worker scenarios)
+        if lock:
+            lock.acquire()
+            
+        try:
+            # Process the batch with the model
+            with torch.no_grad():
+                embeddings = model.encode(texts, convert_to_numpy=True)
+            return embeddings
+        finally:
+            # Ensure lock is released even if an error occurs
+            if lock:
+                lock.release()
 
-    def embed_string(self, string: str) -> np.ndarray:
+    def embed_strings(self, strings: List[str], show_progress: bool = True) -> np.ndarray:
         """
-        Get embedding for a single string.
-
+        Generate embeddings for a list of strings using multiple workers.
+        
         Args:
-            string: Input text string
-
+            strings: List of text strings to embed
+            show_progress: Whether to show a progress bar
+            
         Returns:
-            Numpy array containing the embedding
-        """
-        if not isinstance(string, str):
-            raise TypeError("Input must be a string.")
-
-        logger.debug(f"Embedding single string ({len(string)} chars)")
-
-        # Process the string to enforce a max length
-        if len(string) > 2000:
-            string = string[:2000]
-            logger.debug("Truncated string to 2000 chars to reduce memory usage")
-
-        # Get embedding with minimal memory management
-        with torch.no_grad():
-            embedding = self.model.encode(string, convert_to_numpy=True)
-
-        # Clean up memory only if absolutely necessary
-        if self.device == "cpu" or len(string) > 1000:
-            gc.collect()
-            if torch.cuda.is_available() and self.device == "cuda":
-                torch.cuda.empty_cache()
-
-        return embedding
-
-    def embed_batch(self, strings: list) -> np.ndarray:
-        """
-        Get embeddings for a batch of strings, optimizing for available hardware.
-
-        Args:
-            strings: List of input text strings
-
-        Returns:
-            Numpy array containing embeddings
+            Numpy array of embeddings
         """
         if not strings:
             return np.array([])
-
-        logger.info(f"Embedding batch of {len(strings)} strings with batch size {self.batch_size}")
-
-        # For memory efficiency, process in optimized batches
-        all_embeddings = []
-
-        with tqdm(
-            total=len(strings), desc="Generating embeddings", unit="text"
-        ) as pbar:
-            for i in range(0, len(strings), self.batch_size):
-                batch = strings[i:i+self.batch_size]
+            
+        # Truncate very long texts to prevent OOM
+        truncated_strings = []
+        for text in strings:
+            if len(text) > 2000:
+                truncated_strings.append(text[:2000])
+            else:
+                truncated_strings.append(text)
                 
-                # Truncate very long texts to reduce memory pressure
-                truncated_batch = []
-                for text in batch:
-                    if len(text) > 2000:
-                        truncated_batch.append(text[:2000])
-                    else:
-                        truncated_batch.append(text)
-
-                # Get embeddings for this batch
-                with torch.no_grad():
-                    batch_embeddings = self.model.encode(
-                        truncated_batch, convert_to_numpy=True
-                    )
-
-                all_embeddings.append(batch_embeddings)
-
-                # Force garbage collection conditionally - not after every batch
-                # Only do garbage collection periodically to improve performance
-                if i % (self.batch_size * 5) == 0 and i > 0:
+        # Prepare batches
+        total_samples = len(truncated_strings)
+        batch_size = self.batch_size
+        num_batches = (total_samples + batch_size - 1) // batch_size
+        
+        # Set up progress tracking
+        progress_bar = None
+        if show_progress and total_samples > batch_size:
+            progress_bar = tqdm(total=total_samples, desc="Generating embeddings", unit="text")
+        
+        # Single worker case (simpler)
+        if self.num_workers == 1:
+            all_embeddings = []
+            
+            for i in range(0, total_samples, batch_size):
+                batch = truncated_strings[i:i+batch_size]
+                embeddings = self._embed_batch_with_worker(batch, worker_id=0)
+                all_embeddings.append(embeddings)
+                
+                # Update progress
+                if progress_bar:
+                    progress_bar.update(len(batch))
+                    
+                # Periodic garbage collection for long sequences
+                if i > 0 and i % (batch_size * 10) == 0:
                     gc.collect()
-                    if torch.cuda.is_available() and self.device == "cuda":
+                    if torch.cuda.is_available() and self.device.startswith("cuda"):
                         torch.cuda.empty_cache()
-
-                # Update progress bar
-                pbar.update(len(batch))
-
-        # Combine all into a numpy array
+        
+        # Multi-worker case
+        else:
+            # Create a thread pool for parallel processing
+            with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
+                futures = []
+                
+                # Submit batch jobs to workers
+                for worker_id in range(self.num_workers):
+                    # Create batches for this worker (interleaved)
+                    worker_batches = []
+                    for i in range(worker_id, num_batches, self.num_workers):
+                        start_idx = i * batch_size
+                        end_idx = min(start_idx + batch_size, total_samples)
+                        if end_idx > start_idx:
+                            worker_batches.append(truncated_strings[start_idx:end_idx])
+                    
+                    # Skip if no batches for this worker
+                    if not worker_batches:
+                        continue
+                        
+                    # Create a job for this worker with all its batches
+                    futures.append(executor.submit(self._process_worker_batches, 
+                                                 worker_batches, worker_id, progress_bar))
+                
+                # Collect results from all workers
+                all_embeddings = []
+                for future in as_completed(futures):
+                    worker_embeddings = future.result()
+                    all_embeddings.extend(worker_embeddings)
+        
+        # Close progress bar
+        if progress_bar:
+            progress_bar.close()
+            
+        # Combine all embeddings and ensure contiguous array
+        if not all_embeddings:
+            return np.array([])
+            
         combined = np.vstack(all_embeddings)
-
-        # Final garbage collection
+        result = np.ascontiguousarray(combined, dtype=np.float32)
+        
+        # Final cleanup
         gc.collect()
-        if torch.cuda.is_available() and self.device == "cuda":
+        if torch.cuda.is_available() and self.device.startswith("cuda"):
+            torch.cuda.empty_cache()
+            
+        return result
+
+    def _process_worker_batches(self, batches: List[List[str]], worker_id: int, 
+                               progress_bar=None) -> List[np.ndarray]:
+        """Process multiple batches with a single worker."""
+        results = []
+        
+        for batch in batches:
+            # Process the batch
+            embeddings = self._embed_batch_with_worker(batch, worker_id)
+            results.append(embeddings)
+            
+            # Update progress
+            if progress_bar:
+                progress_bar.update(len(batch))
+        
+        return results
+
+    def embed_string(self, text: str) -> np.ndarray:
+        """Embed a single string."""
+        if not isinstance(text, str):
+            raise TypeError("Input must be a string")
+            
+        # Truncate very long text
+        if len(text) > 2000:
+            text = text[:2000]
+            logger.debug("Truncated string to 2000 chars to reduce memory usage")
+            
+        # Get embedding using the primary model
+        model, lock = self._get_model_for_worker(0)
+        
+        if lock:
+            lock.acquire()
+            
+        try:
+            with torch.no_grad():
+                embedding = model.encode(text, convert_to_numpy=True)
+            return embedding
+        finally:
+            if lock:
+                lock.release()
+
+    def embed_batch(self, strings: List[str]) -> np.ndarray:
+        """Legacy method to maintain compatibility with existing code."""
+        return self.embed_strings(strings)
+
+    def close(self):
+        """Release resources."""
+        # Clear all models
+        self.models.clear()
+        self.model_locks.clear()
+        
+        # Force garbage collection
+        gc.collect()
+        if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-        return combined
 
-
+# Testing/benchmark code
 if __name__ == "__main__":
-    try:
-        # Configure logging for standalone testing
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        )
-
-        # Test with auto-optimization
-        embedder = Embedder(auto_optimize=True)
-
-        # Test embedding
-        text = "This is an example sentence."
-        embedding = embedder.embed_string(text)
-        logger.info(f"Embedding shape: {embedding.shape}")
-
-        # Test batch embedding with optimized settings
-        batch = ["First test sentence.", "Second test sentence."] * 5
-        batch_embeddings = embedder.embed_batch(batch)
-        logger.info(f"Batch embedding shape: {batch_embeddings.shape}")
-    except Exception as e:
-        logger.error(f"Error: {e}")
+    logging.basicConfig(level=logging.INFO, 
+                       format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    
+    # Create sample texts of varying lengths
+    test_texts = []
+    for i in range(100):
+        # Generate texts of different lengths
+        word_count = 5 + (i % 50)
+        test_texts.append(" ".join(["sample"] * word_count))
+        
+    # Test with auto-optimization
+    embedder = EnhancedEmbedder(auto_optimize=True)
+    
+    # Benchmark time
+    start_time = time.time()
+    embeddings = embedder.embed_strings(test_texts)
+    end_time = time.time()
+    
+    print(f"Generated {len(embeddings)} embeddings in {end_time - start_time:.2f} seconds")
+    print(f"Embedding shape: {embeddings.shape}")
+    
+    # Test single string embedding
+    single = embedder.embed_string("This is a test")
+    print(f"Single embedding shape: {single.shape}")
+    
+    embedder.close()

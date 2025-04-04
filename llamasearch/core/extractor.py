@@ -7,7 +7,7 @@ from datetime import datetime
 from ..setup_utils import find_project_root
 
 # Changing this to my personal Jina API URL
-JINA_API_URL = "https://postgres.mithran.org/oodo/"
+API_URL = "https://postgres.mithran.org/oodo/"
 
 
 def slugify_url(url):
@@ -35,7 +35,7 @@ def save_to_project_tempdir(text, url):
     temp_dir = os.path.join(project_root, "temp")
     os.makedirs(temp_dir, exist_ok=True)  # Ensure the directory exists
 
-    filename = slugify_url(url) + ".md"  # Create filename from URL
+    filename = slugify_url(url) + ".html"  # Create filename from URL
     file_path = os.path.join(temp_dir, filename)
 
     # Create metadata as JSON in an HTML comment
@@ -45,7 +45,7 @@ def save_to_project_tempdir(text, url):
         "extractor_version": "1.0"
     }
     
-    metadata_str = f"""<!-- 
+    metadata_str = f"""<!--
 METADATA: {json.dumps(metadata, indent=2)}
 -->
 
@@ -53,7 +53,7 @@ METADATA: {json.dumps(metadata, indent=2)}
 
     # Write content to the file with metadata
     with open(file_path, "w", encoding="utf-8") as file:
-        file.write(metadata_str + f"## {url}\n\n{text}")  # Include metadata + URL heading + content
+        file.write(metadata_str + text)
 
     return file_path
 
@@ -74,14 +74,20 @@ def read_links_from_data():
 
 
 def extract_text_with_jina(url):
-    """Fetches cleaned text using Jina AI."""
+    """
+    Fetches cleaned text using HTML endpoint.
+    
+    Args:
+        url (str): The URL to extract content from
+    """
     try:
         # Increased timeout to 120 seconds to accommodate longer processing times
-        response = requests.get(JINA_API_URL + url, timeout=120)
+        api_url = f"{API_URL.replace('/oodo/', '/html/')}{url}"
+        response = requests.get(api_url, timeout=120)
         response.raise_for_status()
         return response.text.strip()
     except requests.RequestException as e:
-        print(f"Error fetching from Jina AI: {e}")
+        print(f"Error fetching from Scraping AI: {e}")
         return None
 
 
@@ -95,10 +101,11 @@ if __name__ == "__main__":
     # Synchronous - avoids rate limiting
     for link in links:
         print(f"Extracting content from: {link}")
+        # First try to get markdown
         text = extract_text_with_jina(link)
-
+        
         if text:
-            file_path = save_to_project_tempdir(
-                text, link
-            )  # Pass the URL to save_to_project_tempdir
+            file_path = save_to_project_tempdir(text, link)
             print(f"Extracted content saved at: {file_path}")
+        else:
+            print(f"Failed to extract content from: {link}")

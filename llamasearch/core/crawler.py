@@ -1,23 +1,34 @@
 import requests
 import re
 import os
-from ..setup_utils import find_project_root
 from urllib.parse import urlparse
-from bs4 import BeautifulSoup, Tag
 
-JINA_API_URL = "https://r.jina.ai/"
+# Updated to use the development Jina API
+JINA_API_URL = "https://postgres.mithran.org/oodo/"
 
 
-def save_crawled_links(text, filename="links.txt"):
-    """
-    Saves crawled links to a `data` directory inside the project root.
-    Using a dedicated data directory is cleaner than using temp for persistent crawl data.
-    """
+def find_project_root():
+    """Finds the root of the project by looking for `pyproject.toml`."""
+    current_dir = os.path.abspath(os.path.dirname(__file__))
+
+    while current_dir != os.path.dirname(current_dir):
+        if os.path.exists(os.path.join(current_dir, "pyproject.toml")):
+            return current_dir
+
+        current_dir = os.path.dirname(current_dir)
+
+    raise RuntimeError(
+        "Could not find project root. Please check your project structure."
+    )
+
+
+def save_to_project_dir(text, filename="links.txt", directory="data"):
+    """Saves text to a specified directory inside the project root."""
     project_root = find_project_root()
-    data_dir = os.path.join(project_root, "data")
+    target_dir = os.path.join(project_root, directory)
 
-    os.makedirs(data_dir, exist_ok=True)  # Create data dir if it doesn't exist
-    file_path = os.path.join(data_dir, filename)  # Define full file path
+    os.makedirs(target_dir, exist_ok=True)  # Create directory if it doesn't exist
+    file_path = os.path.join(target_dir, filename)  # Define full file path
 
     with open(file_path, "w", encoding="utf-8") as file:
         file.write(text)
@@ -25,57 +36,31 @@ def save_crawled_links(text, filename="links.txt"):
     return file_path  # Return the file path for reference
 
 
-def fetch_links(
-    url,
-    max_links=3,
-    user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
-):
+def fetch_links_with_jina(url, max_links=4):
     """
-    Fetches HTML content and extracts links using BeautifulSoup.
+    Fetches structured content from Jina AI and extracts only links, with an optional limit.
 
     Args:
         url (str): The URL to fetch links from
         max_links (int): Maximum number of links to return
-                        This enforces the child limit per page requirement
-        user_agent (str): User agent string to use for the request
 
     Returns:
         list: List of links found on the page, limited to max_links
     """
     try:
-        headers = {"User-Agent": user_agent}
-        response = requests.get(url, timeout=10, headers=headers)
+        # Using the development Jina API
+        response = requests.get(f"{JINA_API_URL}{url}", timeout=45)
         response.raise_for_status()
-        soup = BeautifulSoup(response.content, "html.parser")
+        content = response.text
 
-        # Find all a tags and extract href attributes
-        links = []
-        for a_tag in soup.find_all("a", href=True):
-            # Check if the element is a Tag
-            if isinstance(a_tag, Tag):
-                # Get href as string (fixes the AttributeValueList issue)
-                if hasattr(a_tag, "get"):  # Check if the element has get method
-                    href = str(a_tag.get("href", ""))  # type: ignore
-                else:
-                    continue
+        # Extract links from the markdown content
+        all_links = list(set(re.findall(r"https?://[^\s)>\"]+", content)))
 
-                # Convert relative URLs to absolute
-                if href.startswith("http"):
-                    links.append(href)
-                elif href.startswith("/"):
-                    # Handle relative URLs
-                    parsed_url = urlparse(url)
-                    base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
-                    links.append(f"{base_url}{href}")
-
-        # Remove duplicates and limit to max_links
-        return list(set(links))[:max_links]
+        # Enforce the link limit by slicing the list
+        return all_links[:max_links]
 
     except requests.RequestException as e:
-        print(f"Error fetching HTML: {e}")
-        return None
-    except ImportError:
-        print("BeautifulSoup is required. Install it using: pip install beautifulsoup4")
+        print(f"Error fetching from Jina AI: {e}")
         return None
 
 
@@ -137,12 +122,27 @@ def filter_links_by_structure(original_url, links):
 def crawl(
     url, depth=1, max_depth=3, visited=None, all_links=None, external_taken=False
 ):
+    """
+    Crawls a website starting from the given URL, up to a specified depth.
+    
+    Args:
+        url (str): The starting URL to crawl
+        depth (int): Current crawl depth
+        max_depth (int): Maximum depth to crawl
+        visited (set): Set of already visited URLs
+        all_links (list): List to store all collected links
+        external_taken (bool): Whether an external link has already been followed
+        
+    Returns:
+        list: All collected links
+    """
     if visited is None:
         visited = set()
 
     if all_links is None:
         all_links = []
-
+        
+    # Include the starting URL in all_links
     if depth == 1 and url not in all_links:
         all_links.append(url)
 
@@ -157,8 +157,8 @@ def crawl(
     print(f"Crawling (depth {depth}/{max_depth}): {url}")
     visited.add(url)
 
-    # Fetch links from the page
-    links = fetch_links(url)
+    # Fetch links from the page using Jina API
+    links = fetch_links_with_jina(url)
     if not links:
         return all_links
 
@@ -235,7 +235,7 @@ if __name__ == "__main__":
     all_collected_links = crawl(url, depth=1, max_depth=3, external_taken=False)
 
     if all_collected_links:
-        file_path = save_crawled_links("\n".join(all_collected_links), "links.txt")
+        file_path = save_to_project_dir("\n".join(all_collected_links), "links.txt", "data")
         print(f"\nCrawled links saved at: {file_path}")
         print(f"Total links collected: {len(all_collected_links)}")
     else:

@@ -4,7 +4,6 @@
 # Project
 .dirfilter
 o.md
-temp/
 logs/
 *.db
 vector_db/
@@ -17,7 +16,11 @@ potomac/
 pantheon/
 solo-leveling/
 game-of-thrones/
+wsl/
 conversation.txt
+temp/
+debug/
+data/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

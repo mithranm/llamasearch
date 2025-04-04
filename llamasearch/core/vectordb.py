@@ -6,17 +6,16 @@ import logging
 import gc
 import shutil
 import json
-import spacy
+import networkx as nx
+from collections import defaultdict
+from pathlib import Path
 
 from typing import Dict, Any, Optional, List, cast
 from sklearn.metrics.pairwise import cosine_similarity
-from tqdm import tqdm
 
-
-
-from .embedder import Embedder
+from .embedder import EnhancedEmbedder
 from .bm25 import BM25Retriever
-from .chunker import MarkdownChunker
+from .chunker import MarkdownChunker, HtmlChunker
 from .knowledge_graph import KnowledgeGraph
 from ..setup_utils import find_project_root
 
@@ -25,22 +24,23 @@ logger = logging.getLogger(__name__)
 
 class VectorDB:
     """
-    Retains advanced features:
-      - advanced chunker
-      - name-based expansions
-      - BM25 + vector
-      - knowledge graph building (dynamic, no staff hardcode)
-      - reintroduce _get_embedding_count to fix missing method
+    Enhanced VectorDB that integrates semantic chunking and knowledge graph-based retrieval.
+    
+    Features:
+      - Triple heuristic: BM25 + vector similarity + graph entity relationships
+      - Knowledge graph integration for entity-based expansion
+      - Graph-based distance rankings
+      - BM25 + vector + graph hybrid search
     """
 
     def __init__(
         self,
         collection_name="documents",
-        embedder: Optional[Embedder] = None,
-        chunk_size=150,
+        embedder: Optional[EnhancedEmbedder] = None,
+        chunk_size=500,
         text_embedding_size=512,
         chunk_overlap=100,
-        min_chunk_size=50,
+        min_chunk_size=200,
         chunker_batch_size: Optional[int] = None,
         embedder_batch_size: Optional[int] = None,
         similarity_threshold=0.15,
@@ -48,6 +48,9 @@ class VectorDB:
         persist=False,
         storage_dir: Optional[str] = None,
         use_pca=False,
+        graph_weight=0.3,
+        bm25_weight=0.35,
+        vector_weight=0.35,
     ):
         self.collection_name = collection_name
         self.chunk_size = chunk_size
@@ -60,6 +63,11 @@ class VectorDB:
         self.max_chunks = max_chunks
         self.persist = persist
         self.use_pca = use_pca
+        
+        # Ranking weights for the triple heuristic
+        self.graph_weight = graph_weight
+        self.bm25_weight = bm25_weight
+        self.vector_weight = vector_weight
 
         if storage_dir:
             self.storage_dir = storage_dir
@@ -68,6 +76,7 @@ class VectorDB:
             suff = "pca" if use_pca else "no_pca"
             self.storage_dir = os.path.join(project_root, f"vector_db_{suff}")
 
+        # Possibly clear old data if not persisting
         if not self.persist and os.path.exists(self.storage_dir):
             logger.info(f"Clearing vector database dir at {self.storage_dir}")
             for fn in os.listdir(self.storage_dir):
@@ -86,80 +95,55 @@ class VectorDB:
         self.embeddings_path = os.path.join(
             self.storage_dir, f"{collection_name}_embeddings.npy"
         )
-
-        # Pass auto_optimize and batch_size to the Embedder
-        self.embedder = embedder or Embedder(
-            batch_size=embedder_batch_size, 
-            max_length=text_embedding_size
+        self.kg_path = os.path.join(
+            self.storage_dir, f"{collection_name}_knowledge_graph.json"
         )
 
-        self.chunker = MarkdownChunker(
-            chunk_size=chunk_size,
-            text_embedding_size=text_embedding_size,
-            min_chunk_size=min_chunk_size,
-            max_chunks=max_chunks,
-            batch_size=cast(int, chunker_batch_size),
+        # Setup embedder
+        self.embedder = embedder or EnhancedEmbedder(
+            batch_size=embedder_batch_size,
+            max_length=text_embedding_size,
         )
+
+        # Setup chunkers
+        chunker_params = {
+            'chunk_size': chunk_size,
+            'text_embedding_size': text_embedding_size,
+            'min_chunk_size': min_chunk_size,
+            'max_chunks': max_chunks,
+            'batch_size': chunker_batch_size,
+            'overlap_size': chunk_overlap,
+            'semantic_headers_only': True,
+            'min_section_length': 100,
+        }
+        
+        self.markdown_chunker = MarkdownChunker(**chunker_params)
+        self.html_chunker = HtmlChunker(**chunker_params)
+        self.chunker = self.markdown_chunker  # For backward compatibility
 
         self.bm25 = BM25Retriever()
 
         self.documents: List[str] = []
-        self.document_metadata: List[dict] = []
+        self.document_metadata: List[Dict[str, Any]] = []
 
-        # knowledge graph
+        # Knowledge graph and entity index
         self.kg = KnowledgeGraph()
+        self.entity_to_chunks = defaultdict(set)
+        self.chunk_to_entities = defaultdict(set)
+        self.graph = nx.Graph()
 
+        # Load any existing data
         self._load_metadata()
+        self._load_knowledge_graph()
+        self._build_entity_indices()
+
         logger.info(f"Initialized VectorDB with {len(self.documents)} documents")
-        logger.info(f"Storage: {self.storage_dir}")
-        logger.info(
-            f"Embeddings at: {self.embeddings_path}, meta at: {self.metadata_path}"
-        )
+        logger.info(f"Storage dir: {self.storage_dir}")
+        logger.info(f"Knowledge graph has {len(self.kg.entities)} entities")
+        logger.info(f"Embeddings at: {self.embeddings_path}")
         logger.info(f"Persistence: {self.persist}, use_pca: {self.use_pca}")
-        if self.chunker_batch_size is not None:
-            logger.info(f"Using fixed batch size: {self.chunker_batch_size}")
-        if self.embedder_batch_size is not None:
-            logger.info(f"Using fixed embedder batch size: {self.embedder_batch_size}")
+        logger.info(f"Search weights => vector={self.vector_weight}, bm25={self.bm25_weight}, graph={self.graph_weight}")
 
-        try:
-            self.nlp = spacy.load("en_core_web_sm")
-        except OSError:
-            import subprocess
-
-            subprocess.run(
-                ["python", "-m", "spacy", "download", "en_core_web_sm"], check=True
-            )
-            self.nlp = spacy.load("en_core_web_sm")
-
-    def _process_temp_docs(self):
-        """
-        Process documents from the temp directory.
-        Only processes markdown files, ignores others with a warning.
-        """
-        proj_root = find_project_root()
-        temp_dir = os.path.join(proj_root, "temp")
-        
-        if not os.path.exists(temp_dir):
-            logger.info(f"Temp dir not found: {temp_dir}")
-            return
-            
-        logger.info(f"Processing markdown docs from {temp_dir}")
-        
-        for fn in os.listdir(temp_dir):
-            fp = os.path.join(temp_dir, fn)
-            
-            # Skip non-markdown files with a warning
-            if not fn.lower().endswith(".md"):
-                logger.warning(f"Skipping non-markdown file: {fn}")
-                continue
-                
-            # Process markdown files
-            if os.path.isfile(fp):
-                logger.info(f"Processing file: {fn}")
-                try:
-                    self.add_document(fp)
-                except Exception as e:
-                    logger.error(f"Error processing {fn}: {e}")
 
     def _load_metadata(self):
         if os.path.exists(self.metadata_path):
@@ -169,26 +153,26 @@ class VectorDB:
                     data = json.load(f)
                 self.documents = data.get("documents", [])
                 self.document_metadata = data.get("metadata", [])
-                logger.info(f"Loaded {len(self.documents)} doc entries")
+                # Rebuild BM25 index from loaded documents
+                for doc, meta in zip(self.documents, self.document_metadata):
+                    self.bm25.add_document(doc, meta)
+                logger.info(f"Loaded {len(self.documents)} doc entries from metadata")
             except Exception as e:
                 logger.error(f"Error loading meta: {e}")
                 self.documents = []
                 self.document_metadata = []
 
     def _save_metadata(self):
-        logger.info(f"Saving metadata ({len(self.documents)} docs)")
-
-        # Create temp file in the same directory as the target to avoid cross-device issues
-        dest_dir = os.path.dirname(self.metadata_path)
-        temp_filename = f"temp_{os.path.basename(self.metadata_path)}"
-        temp_path = os.path.join(dest_dir, temp_filename)
-
+        logger.info(f"Saving metadata for {len(self.documents)} documents.")
+        temp_fn = f"temp_{os.path.basename(self.metadata_path)}"
+        temp_path = os.path.join(os.path.dirname(self.metadata_path), temp_fn)
         try:
             with open(temp_path, "w", encoding="utf-8") as f:
-                meta = {"documents": self.documents, "metadata": self.document_metadata}
+                meta = {
+                    "documents": self.documents,
+                    "metadata": self.document_metadata
+                }
                 json.dump(meta, f)
-
-            # Use os.replace for atomic operation (now safe since both files are on same filesystem)
             os.replace(temp_path, self.metadata_path)
             logger.info("Metadata saved.")
         except Exception as e:
@@ -196,9 +180,94 @@ class VectorDB:
             if os.path.exists(temp_path):
                 try:
                     os.unlink(temp_path)
-                except Exception as e2:
-                    logger.error(f"Error deleting temp file: {e2}")
+                except Exception:
                     pass
+
+    def _load_knowledge_graph(self):
+        if os.path.exists(self.kg_path):
+            logger.info(f"Loading knowledge graph from {self.kg_path}")
+            try:
+                with open(self.kg_path, "r", encoding="utf-8") as f:
+                    self.kg.entities = json.load(f)
+                logger.info(f"KG loaded with {len(self.kg.entities)} entities.")
+            except Exception as e:
+                logger.error(f"Error loading KG: {e}")
+                self.kg.entities = {}
+
+    def _save_knowledge_graph(self):
+        logger.info(f"Saving knowledge graph with {len(self.kg.entities)} entities.")
+        temp_fn = f"temp_{os.path.basename(self.kg_path)}"
+        temp_path = os.path.join(os.path.dirname(self.kg_path), temp_fn)
+        try:
+            with open(temp_path, "w", encoding="utf-8") as f:
+                json.dump(self.kg.entities, f, ensure_ascii=False)
+            os.replace(temp_path, self.kg_path)
+
+            # Also store a copy in data/ for convenience
+            data_dir = os.path.join(find_project_root(), "data")
+            os.makedirs(data_dir, exist_ok=True)
+            data_path = os.path.join(data_dir, f"{self.collection_name}_knowledge_graph.json")
+            with open(data_path, "w", encoding="utf-8") as f:
+                json.dump(self.kg.entities, f, ensure_ascii=False)
+
+            logger.info(f"KG saved to {self.kg_path} and {data_path}")
+        except Exception as e:
+            logger.error(f"Error saving KG: {e}")
+            if os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except Exception:
+                    pass
+
+    def _build_entity_indices(self):
+        logger.info("Building entity→chunk and chunk→entity indices + relationship graph")
+        self.entity_to_chunks.clear()
+        self.chunk_to_entities.clear()
+        self.graph.clear()
+
+        # 1) For each chunk
+        for i, (chunk_text, meta) in enumerate(zip(self.documents, self.document_metadata)):
+            if "entities" not in meta:
+                meta["entities"] = self._extract_entities_from_chunk(chunk_text)
+            for ent in meta["entities"]:
+                etext = ent["text"]
+                self.entity_to_chunks[etext].add(i)
+                self.chunk_to_entities[i].add(etext)
+                if not self.graph.has_node(etext):
+                    self.graph.add_node(etext, label=ent["label"])
+
+        # 2) build edges from KG co_mentions
+        for entity, info in self.kg.entities.items():
+            co = info.get("co_mentions", {})
+            for related_ent, co_list in co.items():
+                weight = len(co_list)
+                if self.graph.has_edge(entity, related_ent):
+                    self.graph[entity][related_ent]["weight"] += weight  # type: ignore[operator]
+                else:
+                    self.graph.add_edge(entity, related_ent, weight=weight)
+
+        logger.info(f"entity_to_chunks: {len(self.entity_to_chunks)} entity keys")
+        logger.info(f"chunk_to_entities: {len(self.chunk_to_entities)} chunks total")
+        logger.info(f"Graph: {self.graph.number_of_nodes()} nodes, {self.graph.number_of_edges()} edges")
+
+    def _extract_entities_from_chunk(self, text: str) -> List[Dict[str, Any]]:
+        """Use spaCy to extract named entities from chunk text."""
+        entities = []
+        try:
+            if not text or len(text) < 5:
+                return entities
+            # If we have spaCy, use it
+            if not self.kg.nlp:
+                return entities
+            doc = self.kg.nlp(text)
+            for ent in doc.ents:
+                if ent.text.strip():
+                    # Use proper dict creation instead of += for merging
+                    entity_data: Dict[str, Any] = {"text": ent.text, "label": ent.label_}
+                    entities.append(entity_data)
+        except Exception as e:
+            logger.error(f"Error extracting entities: {e}")
+        return entities
 
     def _get_embedding_count(self) -> int:
         if os.path.exists(self.embeddings_path):
@@ -206,167 +275,11 @@ class VectorDB:
                 arr = np.load(self.embeddings_path, mmap_mode="r")
                 return arr.shape[0]
             except Exception as e:
-                logger.error(f"Error loading embeddings: {e}")
+                logger.error(f"Error loading embeddings array: {e}")
         return 0
 
-    def _is_document_processed(self, file_path: str) -> bool:
-        if not self.document_metadata:
-            return False
-        disk_mtime = os.path.getmtime(file_path)
-        for md in self.document_metadata:
-            if md.get("source") == file_path:
-                if abs(md.get("mtime", 0) - disk_mtime) < 0.0001:
-                    return True
-                else:
-                    old_len = len(self.documents)
-                    self.documents = [
-                        d
-                        for i, d in enumerate(self.documents)
-                        if self.document_metadata[i].get("source") != file_path
-                    ]
-                    self.document_metadata = [
-                        x
-                        for x in self.document_metadata
-                        if x.get("source") != file_path
-                    ]
-                    logger.info(
-                        f"File changed, removed {old_len - len(self.documents)} old chunks"
-                    )
-                    return False
-        return False
-
-    def add_document(self, file_path: str) -> int:
-        """
-        Add a document to the vector database with optimized embedding process.
-        
-        Args:
-            file_path: Path to the markdown file
-            
-        Returns:
-            int: Number of chunks added
-        """
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"File not found: {file_path}")
-        if not file_path.lower().endswith(".md"):
-            raise ValueError("Only markdown (.md) files are supported")
-
-        if self.persist and self._is_document_processed(file_path):
-            logger.info(f"Document already processed: {file_path}")
-            c = sum(1 for m in self.document_metadata if m.get("source") == file_path)
-            return c
-
-        doc_mtime = os.path.getmtime(file_path)
-        base_meta = {
-            "source": file_path,
-            "filename": os.path.basename(file_path),
-            "mtime": doc_mtime,
-        }
-
-        # read entire text => build knowledge graph from it
-        full_text = ""
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                full_text = f.read()
-        except Exception as e:
-            logger.error(f"Error reading {file_path}: {e}")
-            return 0
-
-        # build knowledge graph from text
-        self.kg.build_from_text(full_text, context_file=file_path)
-
-        added_chunks = 0
-
-        # Create temp file in the same directory as the target embeddings file
-        dest_dir = os.path.dirname(self.embeddings_path)
-        temp_embeddings_filename = f"temp_embeddings_{os.path.basename(self.embeddings_path)}"
-        temp_path = os.path.join(dest_dir, temp_embeddings_filename)
-
-        try:
-            batch_idx = 0
-            # Get all batches up front to estimate total work
-            batches = list(self.chunker.process_file_in_batches(file_path, self.chunker_batch_size))
-            total_chunks = sum(len(batch) for batch in batches)
-            
-            logger.info(f"Processing {os.path.basename(file_path)}: {total_chunks} total chunks in {len(batches)} batches")
-            
-            # Only use tqdm for files with significant number of chunks
-            use_progress_bar = total_chunks > 10
-            
-            if use_progress_bar:
-                progress_iter = tqdm(
-                    batches,
-                    desc=f"Processing {os.path.basename(file_path)}",
-                    unit="batch",
-                    total=len(batches)
-                )
-            else:
-                progress_iter = batches
-                
-            for batch in progress_iter:
-                if not batch:
-                    continue
-                    
-                chunk_texts = [b["chunk"] for b in batch]
-                emb_texts = [b["embedding_text"] for b in batch]
-                meta_list = []
-                
-                for i, bdat in enumerate(batch):
-                    met = dict(base_meta)
-                    met["batch_idx"] = batch_idx
-                    met["chunk_idx"] = i
-                    meta_list.append(met)
-
-                logger.debug(f"Generating embeddings for batch {batch_idx+1} with {len(batch)} chunks")
-                
-                # Use our optimized embedder
-                embeddings = self.embedder.embed_batch(emb_texts)
-                embeddings = np.ascontiguousarray(embeddings, dtype=np.float32)
-
-                if os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
-                    old = np.load(temp_path)
-                    old = np.ascontiguousarray(old, dtype=np.float32)
-                    merged = np.vstack([old, embeddings])
-                    np.save(temp_path, merged, allow_pickle=False)
-                    del old, merged
-                else:
-                    np.save(temp_path, embeddings, allow_pickle=False)
-
-                self.documents.extend(chunk_texts)
-                self.document_metadata.extend(meta_list)
-
-                for txt, mt in zip(chunk_texts, meta_list):
-                    self.bm25.add_document(txt, mt)
-
-                added_chunks += len(batch)
-                batch_idx += 1
-                
-                # Only collect garbage occasionally, not after every batch
-                if batch_idx % 5 == 0:
-                    del chunk_texts, emb_texts, meta_list, embeddings
-                    gc.collect()
-                    
-            if added_chunks > 0:
-                self._merge_embeddings(temp_path)
-                self._save_metadata()
-
-            if os.path.exists(temp_path):
-                os.unlink(temp_path)
-                logger.info("Cleaned up temp file")
-
-            return added_chunks
-
-        except Exception as e:
-            logger.error(f"Error adding doc {file_path}: {e}")
-            if os.path.exists(temp_path):
-                try:
-                    os.unlink(temp_path)
-                except Exception as e2:
-                    logger.error(f"Error deleting temp file: {e2}")
-                    pass
-            raise
-
     def _merge_embeddings(self, temp_path: str):
-        logger.info("Merging new embeddings with existing DB.")
+        logger.info("Merging newly created embeddings with existing DB.")
         if (
             os.path.exists(self.embeddings_path)
             and os.path.getsize(self.embeddings_path) > 0
@@ -376,34 +289,226 @@ class VectorDB:
                 arr_new = np.load(temp_path)
                 merged = np.vstack([arr_old, arr_new])
                 merged = np.ascontiguousarray(merged, dtype=np.float32)
-
-                # Create another temp file in the same directory for the merged result
-                dest_dir = os.path.dirname(self.embeddings_path)
-                merged_temp_filename = (
+                merged_temp = os.path.join(
+                    os.path.dirname(self.embeddings_path),
                     f"merged_{os.path.basename(self.embeddings_path)}"
                 )
-                merged_temp_path = os.path.join(dest_dir, merged_temp_filename)
-
-                # Save to temp file in the destination directory
-                np.save(merged_temp_path, merged, allow_pickle=False)
-
-                # Replace the original with the merged data
-                os.replace(merged_temp_path, self.embeddings_path)
-
-                logger.info("Embeddings merged.")
+                np.save(merged_temp, merged, allow_pickle=False)
+                os.replace(merged_temp, self.embeddings_path)
+                logger.info("Embeddings merged successfully.")
             except Exception as e:
                 logger.error(f"Error merging embeddings: {e}")
                 raise
         else:
-            # Simply copy the temp file to the destination
             shutil.copy2(temp_path, self.embeddings_path)
+
+    def _is_document_processed(self, file_path: str) -> bool:
+        """Check if a file was previously processed (by mtime)."""
+        if not self.document_metadata:
+            return False
+        disk_mtime = os.path.getmtime(file_path)
+        for md in self.document_metadata:
+            if md.get("source") == file_path:
+                if abs(md.get("mtime", 0) - disk_mtime) < 0.0001:
+                    return True
+                else:
+                    # file changed => remove old
+                    old_len = len(self.documents)
+                    self.documents = [
+                        d for i, d in enumerate(self.documents)
+                        if self.document_metadata[i].get("source") != file_path
+                    ]
+                    self.document_metadata = [
+                        x for x in self.document_metadata
+                        if x.get("source") != file_path
+                    ]
+                    logger.info(f"File changed => removed {old_len - len(self.documents)} old chunks")
+                    return False
+        return False
+
+    def add_document(self, file_path: str) -> int:
+        """Index a single .md file by chunking + embedding each chunk."""
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"File not found: {file_path}")
+        ext = Path(file_path).suffix.lower()
+        if ext not in [".md", ".html", ".htm"]:
+            raise ValueError("Only markdown and HTML files are supported")
+            
+        chunker = self.markdown_chunker if ext == ".md" else self.html_chunker
+
+        if self.persist and self._is_document_processed(file_path):
+            logger.info(f"Document is already processed: {file_path}")
+            c = sum(1 for m in self.document_metadata if m.get("source") == file_path)
+            return c
+
+        doc_mtime = os.path.getmtime(file_path)
+        base_meta = {
+            "source": file_path,
+            "filename": os.path.basename(file_path),
+            "mtime": doc_mtime,
+        }
+        with open(file_path, "r", encoding="utf-8") as f:
+            full_text = f.read()
+
+        # Build knowledge graph from full text
+        self.kg.build_from_text(full_text, context_file=file_path)
+        
+        # Use appropriate chunker based on file type
+        chunker = self.markdown_chunker if ext == ".md" else self.html_chunker
+
+        added_chunks = 0
+        dest_dir = os.path.dirname(self.embeddings_path)
+        temp_fn = f"temp_embeddings_{os.path.basename(self.embeddings_path)}"
+        temp_path = os.path.join(dest_dir, temp_fn)
+
+        try:
+            all_batches = list(chunker.process_file_in_batches(file_path, self.chunker_batch_size))
+            total_chunks = sum(len(b) for b in all_batches)
+            logger.info(f"{os.path.basename(file_path)} => {total_chunks} chunks in {len(all_batches)} batches")
+
+            for batch_idx, batch in enumerate(all_batches):
+                if not batch:
+                    continue
+                texts = [x["chunk"] for x in batch]
+                emb_texts = [x["embedding_text"] for x in batch]
+                meta_list = []
+                for i, bdat in enumerate(batch):
+                    met = dict(base_meta)
+                    met["batch_idx"] = batch_idx
+                    met["chunk_idx"] = i
+                    if "metadata" in bdat:
+                        for k, v in bdat["metadata"].items():
+                            met[k] = v
+                    meta_list.append(met)
+
+                embeddings = self.embedder.embed_batch(emb_texts)
+                embeddings = np.ascontiguousarray(embeddings, dtype=np.float32)
+
+                if os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
+                    old = np.load(temp_path)
+                    old = np.ascontiguousarray(old, dtype=np.float32)
+                    merged = np.vstack([old, embeddings])
+                    merged = np.ascontiguousarray(merged, dtype=np.float32)
+                    np.save(temp_path, merged, allow_pickle=False)
+                    del old, merged
+                else:
+                    np.save(temp_path, embeddings, allow_pickle=False)
+
+                self.documents.extend(texts)
+                self.document_metadata.extend(meta_list)
+                for t, m in zip(texts, meta_list):
+                    self.bm25.add_document(t, m)
+
+                added_chunks += len(batch)
+
+            if added_chunks > 0:
+                self._merge_embeddings(temp_path)
+                self._save_metadata()
+                self._save_knowledge_graph()
+                self._build_entity_indices()
+
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+            logger.info(f"Done indexing {file_path}: {added_chunks} chunks.")
+            return added_chunks
+
+        except Exception as e:
+            logger.error(f"Error adding doc {file_path}: {e}")
+            if os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except Exception:
+                    pass
+            raise
+
+    def add_document_chunks(self, file_path: str, chunks: List[Dict[str, Any]]) -> int:
+        """If you already have chunk dicts from somewhere else, feed them in here."""
+        if not chunks:
+            logger.warning(f"No chunks provided for {file_path}")
+            return 0
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        if self.persist and self._is_document_processed(file_path):
+            logger.info(f"Doc is already processed: {file_path}")
+            c = sum(1 for m in self.document_metadata if m.get("source") == file_path)
+            return c
+
+        doc_mtime = os.path.getmtime(file_path)
+        base_meta = {
+            "source": file_path,
+            "filename": os.path.basename(file_path),
+            "mtime": doc_mtime,
+        }
+        # Build knowledge graph from combined chunk text
+        full_text = "\n\n".join(c["chunk"] for c in chunks)
+        self.kg.build_from_text(full_text, context_file=file_path)
+
+        added_chunks = 0
+        dest_dir = os.path.dirname(self.embeddings_path)
+        temp_fn = f"temp_embeddings_{os.path.basename(self.embeddings_path)}"
+        temp_path = os.path.join(dest_dir, temp_fn)
+
+        try:
+            emb_texts = [c.get("embedding_text") or c["chunk"] for c in chunks]
+            embeddings = self.embedder.embed_batch(emb_texts)
+            embeddings = np.ascontiguousarray(embeddings, dtype=np.float32)
+
+            if os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
+                old = np.load(temp_path)
+                old = np.ascontiguousarray(old, dtype=np.float32)
+                merged = np.vstack([old, embeddings])
+                merged = np.ascontiguousarray(merged, dtype=np.float32)
+                np.save(temp_path, merged, allow_pickle=False)
+                del old, merged
+            else:
+                np.save(temp_path, embeddings, allow_pickle=False)
+
+            chunk_texts = [chunk["chunk"] for chunk in chunks]
+            meta_list = []
+            for i, cdat in enumerate(chunks):
+                met = dict(base_meta)
+                met["batch_idx"] = 0
+                met["chunk_idx"] = i
+                if "metadata" in cdat:
+                    for k, v in cdat["metadata"].items():
+                        met[k] = v
+                meta_list.append(met)
+
+            self.documents.extend(chunk_texts)
+            self.document_metadata.extend(meta_list)
+            for txt, m in zip(chunk_texts, meta_list):
+                self.bm25.add_document(txt, m)
+
+            added_chunks += len(chunks)
+
+            self._merge_embeddings(temp_path)
+            self._save_metadata()
+            self._save_knowledge_graph()
+            self._build_entity_indices()
+
+            logger.info(f"Added {len(chunks)} chunks from {os.path.basename(file_path)}")
+            return len(chunks)
+
+        except Exception as e:
+            logger.error(f"Error adding chunks from {file_path}: {e}")
+            if os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except Exception:
+                    pass
+            raise
 
     def query(self, query_text: str, n_results: int = 5) -> Dict[str, Any]:
         """
-        Hybrid search with adjacency expansions for name queries.
+        Hybrid search with graph-based ranking:
+          - vector similarity
+          - BM25
+          - knowledge graph entity relationships
+        Return top n_results, ensuring they are not forcibly deduplicated out.
         """
         if not self.documents:
-            logger.warning("No docs in DB.")
+            logger.warning("No docs in DB; returning empty results.")
             return {
                 "query": query_text,
                 "ids": [],
@@ -411,208 +516,199 @@ class VectorDB:
                 "metadatas": [],
                 "scores": [],
                 "distances": [],
+                "entities": [],
             }
 
-        # vector
-        vres = self._vector_search(query_text, n_ret=n_results * 2)
-        # bm25
-        bmres = self.bm25.query(query_text, n_results * 2)
-        combined = self._combine_results(vres, bmres, n_ret=n_results * 2)
+        # Extract query entities
+        query_entities = self._extract_entities_from_chunk(query_text)
+        entity_names = [e["text"] for e in query_entities]
 
-        # check name expansions
-        doc = self.nlp(query_text)
-        persons = [ent.text for ent in doc.ents if ent.label_ == "PERSON"]
-        if persons:
-            logger.info(f"Detected name query {persons}")
-            expanded = self._expand_name_context(combined, persons)
-            # re-sort
-            expanded_sorted = sorted(expanded, key=lambda x: x["score"], reverse=True)
-            final = expanded_sorted[:n_results]
-        else:
-            final = sorted(combined, key=lambda x: x["score"], reverse=True)[:n_results]
+        # vector search
+        vec_res = self._vector_search(query_text, n_ret=n_results * 2)
+        
+        # Handle empty vector search results safely
+        vec_idx = []
+        vec_scores = {}
+        if vec_res and isinstance(vec_res, dict) and vec_res.get("ids"):
+            try:
+                vec_idx = [int(iid[4:]) for iid in vec_res["ids"]]
+                vec_scores = {idx: s for idx, s in zip(vec_idx, vec_res.get("scores", []))}
+            except (IndexError, ValueError) as e:
+                logger.warning(f"Error parsing vector search IDs: {e}")
+                vec_idx = []
+                vec_scores = {}
 
-        # build final dict
-        out = {
+        # BM25
+        bm_idx = []
+        bm_scores = {}
+        try:
+            bm_res = self.bm25.query(query_text, n_results * 2)
+            if bm_res and isinstance(bm_res, dict) and bm_res.get("ids"):
+                bm_idx = [int(iid[4:]) for iid in bm_res["ids"]]
+                bm_scores = {idx: s for idx, s in zip(bm_idx, bm_res.get("scores", []))}
+        except Exception as e:
+            logger.warning(f"BM25 error: {e}")
+
+        # Graph-based
+        graph_scores = {}
+        if entity_names:
+            graph_scores = self._graph_search(entity_names, n_ret=n_results * 2)
+
+        combined_scores = {}
+        all_indices = set(vec_idx) | set(bm_idx) | set(graph_scores.keys())
+        for idx in all_indices:
+            if 0 <= idx < len(self.documents):
+                v = vec_scores.get(idx, 0) * self.vector_weight
+                b = bm_scores.get(idx, 0) * self.bm25_weight
+                g = graph_scores.get(idx, 0) * self.graph_weight
+                combined_scores[idx] = (v + b + g)
+
+        # Sort by combined desc
+        sorted_idx = sorted(combined_scores.keys(), key=lambda i: combined_scores[i], reverse=True)
+
+        # Deduplicate by content similarity
+        final_indices = []
+        seen_content = set()
+        for idx in sorted_idx:
+            content = self.documents[idx].strip()
+            content_hash = hash(content)
+            if content_hash not in seen_content:
+                final_indices.append(idx)
+                seen_content.add(content_hash)
+                if len(final_indices) >= n_results:
+                    break
+
+        # Gather final results
+        docs = []
+        metas = []
+        scores = []
+        dists = []
+        for i in final_indices:
+            docs.append(self.documents[i])
+            metas.append(self.document_metadata[i])
+            sc = combined_scores[i]
+            scores.append(sc)
+            dists.append(1.0 - min(sc, 1.0))  # trivial distance
+
+        # Return in the standard format
+        return {
             "query": query_text,
-            "ids": [f"doc_{x['index']}" for x in final],
-            "documents": [x["chunk"] for x in final],
-            "metadatas": [x["metadata"] for x in final],
-            "scores": [x["score"] for x in final],
-            "distances": [1.0 - x["score"] for x in final],
+            "ids": [f"doc_{i}" for i in final_indices],
+            "documents": docs,
+            "metadatas": metas,
+            "scores": scores,
+            "distances": dists,
+            "entities": query_entities,
         }
-        return out
 
     def _vector_search(self, text: str, n_ret=10) -> Dict[str, Any]:
+        """Cosine similarity search."""
+        empty_result = {
+            "query": text,
+            "ids": [],
+            "documents": [],
+            "metadatas": [],
+            "scores": [],
+            "distances": [],
+        }
+        
         if not text.strip():
-            return {
-                "query": text,
-                "ids": [],
-                "documents": [],
-                "metadatas": [],
-                "scores": [],
-                "distances": [],
-            }
+            return empty_result
         if len(text) > 2000:
             text = text[:2000]
 
-        q_emb = self.embedder.embed_string(text)
-        q_emb = np.ascontiguousarray(q_emb, dtype=np.float32)
-        c = self._get_embedding_count()
-        if c == 0:
-            logger.warning("No embeddings.")
+        try:
+            query_embedding = self.embedder.embed_string(text)
+            if not os.path.exists(self.embeddings_path):
+                logger.warning(f"No embeddings file found at {self.embeddings_path}")
+                return empty_result
+            
+            try:
+                embeddings = np.load(self.embeddings_path)
+                if len(embeddings) == 0:
+                    logger.warning("Embeddings file is empty")
+                    return empty_result
+            except Exception as e:
+                logger.error(f"Error loading embeddings from {self.embeddings_path}: {e}")
+                return empty_result
+
+            # Calculate similarity scores
+            try:
+                similarities = cosine_similarity(query_embedding.reshape(1, -1), embeddings)[0]
+            except Exception as e:
+                logger.error(f"Error calculating cosine similarity: {e}")
+                return empty_result
+
+            # Get indices of top matches
+            try:
+                top_indices = np.argsort(similarities)[-n_ret:][::-1]
+                scores = similarities[top_indices]
+            except Exception as e:
+                logger.error(f"Error getting top matches: {e}")
+                return empty_result
+
+            # Filter by threshold
+            mask = scores >= self.similarity_threshold
+            top_indices = top_indices[mask]
+            scores = scores[mask]
+
+            if len(top_indices) == 0:
+                logger.info(f"No results above threshold {self.similarity_threshold}")
+                return empty_result
+
             return {
                 "query": text,
-                "ids": [],
-                "documents": [],
-                "metadatas": [],
-                "scores": [],
-                "distances": [],
+                "ids": [f"doc_{i}" for i in top_indices],
+                "scores": scores.tolist(),
+                "distances": (1.0 - scores).tolist(),
             }
-        sims = np.zeros(c, dtype=np.float32)
-        arr = np.load(self.embeddings_path, mmap_mode="r")
-        bsz = min(100, c)
-        for i in range(0, c, bsz):
-            end = min(i + bsz, c)
-            chunk = np.ascontiguousarray(arr[i:end], dtype=np.float32)
-            q_emb_2d = q_emb.reshape(1, -1) if q_emb.ndim == 1 else q_emb
-            sub_sims = cosine_similarity(q_emb_2d, chunk)[0]
-            sims[i:end] = sub_sims
 
-        # threshold
-        filt_idx = np.where(sims >= self.similarity_threshold)[0]
-        if len(filt_idx) == 0 and len(text.split()) <= 3:
-            filt_idx = np.where(sims >= 0.05)[0]
+        except Exception as e:
+            logger.error(f"Vector search error: {e}", exc_info=True)
+            return empty_result
 
-        sorted_idx = filt_idx[np.argsort(-sims[filt_idx])]
-        sorted_idx = sorted_idx[:n_ret]
-
-        out = {
-            "query": text,
-            "ids": [f"doc_{idx}" for idx in sorted_idx],
-            "documents": [self.documents[idx] for idx in sorted_idx],
-            "metadatas": [self.document_metadata[idx] for idx in sorted_idx],
-            "scores": [float(sims[idx]) for idx in sorted_idx],
-            "distances": [float(1.0 - sims[idx]) for idx in sorted_idx],
-        }
-        return out
-
-    def _combine_results(
-        self, vres: Dict[str, Any], bmres: Dict[str, Any], n_ret: int
-    ) -> List[Dict[str, Any]]:
-        # naive additive approach
-        combined_scores = {}
-        # from bmres
-        bm_ids = bmres.get("ids", [])
-        bm_sc = bmres.get("scores", [])
-        for i, docid in enumerate(bm_ids):
-            if i < len(bm_sc):
-                idx = int(docid[4:]) if docid.startswith("doc_") else int(docid)
-                combined_scores[idx] = combined_scores.get(idx, 0.0) + bm_sc[i]
-        # from vres
-        vec_ids = vres.get("ids", [])
-        vec_sc = vres.get("scores", [])
-        for i, docid in enumerate(vec_ids):
-            if i < len(vec_sc):
-                idx = int(docid[4:]) if docid.startswith("doc_") else int(docid)
-                combined_scores[idx] = combined_scores.get(idx, 0.0) + vec_sc[i]
-
-        sorted_idx = sorted(
-            combined_scores.keys(), key=lambda k: combined_scores[k], reverse=True
-        )
-        top = sorted_idx[: n_ret * 2]
-        out = []
-        for idx in top:
-            if 0 <= idx < len(self.documents):
-                out.append(
-                    {
-                        "index": idx,
-                        "chunk": self.documents[idx],
-                        "metadata": self.document_metadata[idx],
-                        "score": combined_scores[idx],
-                    }
-                )
-        return out
-
-    def _expand_name_context(
-        self, combined_list: List[Dict[str, Any]], persons: List[str]
-    ) -> List[Dict[str, Any]]:
-        """
-        If chunk references any person's name, also add neighboring chunks from the same doc
-        to provide adjacency expansions.
-        We do partial scoring for neighbors.
-        """
-        # Build doc->(index, chunk, meta) mapping
-        doc_map = {}
-        for i, md in enumerate(self.document_metadata):
-            src = md.get("source", "")
-            if src not in doc_map:
-                doc_map[src] = []
-            doc_map[src].append((i, self.documents[i], md))
-
-        # sort each doc by batch_idx, chunk_idx
-        for src in doc_map:
-            doc_map[src].sort(
-                key=lambda x: (x[2].get("batch_idx", 0), x[2].get("chunk_idx", 0))
-            )
-
-        new_list = []
-        visited = set()
-        for item in combined_list:
-            idx = item["index"]
-            chunk = item["chunk"]
-            src = item["metadata"].get("source", "")
-            low_chunk = chunk.lower()
-            has_name = False
-            for p in persons:
-                if p.lower() in low_chunk:
-                    has_name = True
-                    break
-            if has_name:
-                # add item
-                new_list.append(item)
-                visited.add(idx)
-                # find neighbors
-                if src in doc_map:
-                    doc_ch = doc_map[src]
-                    pos = -1
-                    for j, (rid, _, _) in enumerate(doc_ch):
-                        if rid == idx:
-                            pos = j
-                            break
-                    if pos != -1:
-                        # we can add immediate neighbors
-                        for offset in [-1, 1]:
-                            nbpos = pos + offset
-                            if 0 <= nbpos < len(doc_ch):
-                                nb_idx = doc_ch[nbpos][0]
-                                if nb_idx not in visited:
-                                    new_list.append(
-                                        {
-                                            "index": nb_idx,
-                                            "chunk": self.documents[nb_idx],
-                                            "metadata": self.document_metadata[nb_idx],
-                                            "score": item["score"] * 0.5,
-                                        }
-                                    )
-                                    visited.add(nb_idx)
-            else:
-                # normal chunk
-                new_list.append(item)
-                visited.add(idx)
-
-        # deduplicate by index, keep max score
-        dedup = {}
-        for x in new_list:
-            idx = x["index"]
-            if idx in dedup:
-                if x["score"] > dedup[idx]["score"]:
-                    dedup[idx] = x
-            else:
-                dedup[idx] = x
-        return list(dedup.values())
+    def _graph_search(self, entities: List[str], n_ret: int = 10) -> Dict[int, float]:
+        """Gather relevant chunks by entity co‐mentions in the knowledge-graph graph."""
+        if not entities or not self.graph.nodes:
+            return {}
+            
+        scores: Dict[int, float] = defaultdict(float)
+        
+        # direct matches
+        for ent in entities:
+            for ch_idx in self.entity_to_chunks.get(ent, []):
+                scores[ch_idx] += 1.0
+                
+        # neighbors
+        for ent in entities:
+            if ent not in self.graph:
+                continue
+            for nbr in self.graph[ent]:
+                # Get edge data and ensure proper type casting
+                edge_data = cast(Dict[str, Any], self.graph[ent][nbr])
+                weight_value = edge_data.get("weight", 1.0)
+                # Ensure we have a float
+                weight = float(weight_value) if weight_value is not None else 1.0
+                    
+                rel_score = min(1.0, weight / 10.0)
+                for ch_idx in self.entity_to_chunks.get(nbr, []):
+                    scores[ch_idx] += rel_score
+        
+        # normalize
+        if scores:
+            score_values = [float(v) for v in scores.values()]
+            max_score = max(score_values) if score_values else 0.0
+            if max_score > 0:
+                for k in scores:
+                    scores[k] /= max_score
+                    
+        # sort + limit
+        return dict(sorted(scores.items(), key=lambda x: (float(x[1]), x[0]), reverse=True)[:n_ret])
 
     def close(self):
+        """Flush metadata, knowledge graph, etc."""
         self._save_metadata()
+        self._save_knowledge_graph()
         self.documents = []
         self.document_metadata = []
         gc.collect()
