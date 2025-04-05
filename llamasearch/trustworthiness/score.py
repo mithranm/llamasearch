@@ -1,7 +1,7 @@
 def calculate_trustworthiness_score(percent_1: float, percent_2: float) -> int:
     """
     Author: Shaheda
-    
+
     Calculates a 1-5 trustworthiness score from two percentages.
     Includes input validation and precise boundary handling.
 
@@ -24,8 +24,12 @@ def calculate_trustworthiness_score(percent_1: float, percent_2: float) -> int:
     avg = (percent_1 + percent_2) / 2
     
     # Precise boundary handling
-    if avg <= 20: return 1
-    if avg <= 40: return 2
-    if avg <= 60: return 3
-    if avg <= 80: return 4
+    if avg <= 20:
+        return 1
+    if avg <= 40:
+        return 2
+    if avg <= 60:
+        return 3
+    if avg <= 80:
+        return 4
     return 5
