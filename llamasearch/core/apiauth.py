@@ -1,87 +1,73 @@
 #!/usr/bin/env python3
-import jwt
 import os
-import sys
-import argparse
 import datetime
+import jwt
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa, ed25519
 
-def load_private_key(private_key_path):
-    """Loads the private key from the specified file."""
+def generate_jwt(private_key_path, key_id, override_algorithm=None):
+    """
+    Generates a JWT signed with the provided private key.
+    
+    This function auto-detects the key type:
+      - For RSA keys, it uses RS256.
+      - For Ed25519 keys, it rejects them with an error.
+      
+    Args:
+        private_key_path (str): Path to the private key file.
+        key_id (str): Unique identifier for the key (e.g. developer's email or key name).
+        override_algorithm (str, optional): An optional override for the signing algorithm.
+    
+    Returns:
+        str: The generated JWT.
+        
+    Raises:
+        ValueError: If an Ed25519 key is used or if the override algorithm does not match the key type.
+        RuntimeError: If key reading or JWT encoding fails.
+    """
     try:
-        with open(private_key_path, "r") as f:
-            key = f.read()
-        return key
+        with open(private_key_path, 'r') as f:
+            ssh_key = f.read()
     except Exception as e:
         raise RuntimeError(f"Error reading private key from {private_key_path}: {e}")
 
-def load_public_key(private_key_path):
-    """Assumes the public key is in the same directory with a .pub extension."""
-    public_key_path = private_key_path + ".pub"
-    if not os.path.exists(public_key_path):
-        raise RuntimeError(f"Public key file not found: {public_key_path}")
     try:
-        with open(public_key_path, "r") as f:
-            pub_key = f.read().strip()
-        return pub_key
+        key = serialization.load_ssh_private_key(ssh_key.encode(), password=None)
     except Exception as e:
-        raise RuntimeError(f"Error reading public key from {public_key_path}: {e}")
+        raise ValueError(f"Failed to load SSH private key: {e}")
 
-def generate_jwt(private_key_path, algorithm="RS256"):
-    """
-    Generates a JWT signed with the private key.
-    
-    The JWT includes:
-      - Issued at (iat) and expiration (exp) claims.
-    """
-    from cryptography.hazmat.primitives import serialization
-    from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
-    
-    # Load the SSH private key
-    with open(private_key_path, 'r') as f:
-        ssh_key = f.read()
-    
-    # Convert SSH key to appropriate format
-    key = serialization.load_ssh_private_key(ssh_key.encode(), password=None)
-    
+    # Reject Ed25519 keys explicitly
+    if isinstance(key, ed25519.Ed25519PrivateKey):
+        raise ValueError("Ed25519 keys are not supported for JWT generation. Please use an RSA key instead.")
+    elif not isinstance(key, rsa.RSAPrivateKey):
+        raise ValueError("Unsupported key type. Only RSA keys are supported for JWT generation.")
+
     now = datetime.datetime.now(datetime.timezone.utc)
     payload = {
         "iat": now,
         "exp": now + datetime.timedelta(minutes=5)
     }
-    
-    # Handle key format based on algorithm
-    if algorithm.startswith('RS'):
-        if not isinstance(key, rsa.RSAPrivateKey):
-            raise ValueError("RSA algorithm specified but key is not an RSA key")
-        # For RSA, convert to PEM format
-        private_key = key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption()
-        ).decode()
-    else:  # For Ed25519
-        if not isinstance(key, ed25519.Ed25519PrivateKey):
-            raise ValueError("EdDSA algorithm expected but key is not an Ed25519 key")
-        # For Ed25519, convert to PEM format
-        private_key = key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption()
-        ).decode()
-        algorithm = 'EdDSA'  # Force EdDSA algorithm for Ed25519 keys
-    
-    token = jwt.encode(payload, private_key, algorithm=algorithm)
-    return token
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate a JWT using a private key from your $HOME/.ssh directory")
-    parser.add_argument("--key", help="Path to the private key file (default: ~/.ssh/id_ed25519)", default=os.path.expanduser("~/.ssh/id_ed25519"))
-    parser.add_argument("--alg", help="Signing algorithm (e.g. EdDSA for Ed25519, RS256 for RSA)", default="EdDSA")
-    args = parser.parse_args()
+    default_algorithm = "RS256"
+    # Allow override of algorithm if provided (must match the key type)
+    if override_algorithm:
+        if override_algorithm != default_algorithm:
+            raise ValueError(
+                f"Provided algorithm '{override_algorithm}' does not match the key type. Expected '{default_algorithm}'."
+            )
+        algorithm = override_algorithm
+    else:
+        algorithm = default_algorithm
+
+    headers = {
+        "alg": algorithm,
+        "typ": "JWT",
+        "kid": key_id
+    }
+
     try:
-        token = generate_jwt(args.key, args.alg)
-        print("Generated JWT:")
-        print(token)
+        token = jwt.encode(payload, key, algorithm=algorithm, headers=headers)
     except Exception as e:
-        print("Error generating JWT:", str(e))
-        sys.exit(1)
+        raise RuntimeError(f"JWT encoding failed: {e}")
+
+    return token

@@ -187,11 +187,25 @@ def download_qwen_model():
         print("Please download manually from https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF")
         print(f"And place it into {models_dir}")
 
+def install_spacy_model():
+    """Install spaCy's English model."""
+    print("Installing spaCy English model...")
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "spacy", "download", "en_core_web_sm"],
+            check=True
+        )
+        print("Successfully installed spaCy English model")
+    except subprocess.CalledProcessError as e:
+        print(f"Error installing spaCy model: {e}")
+        print("Please install manually using: python -m spacy download en_core_web_sm")
+
 def setup_dependencies():
     print("LlamaSearch Setup")
     print("=================")
     setup_project_directories()
     install_llama_cpp_python()
+    install_spacy_model()
     try:
         download_qwen_model()
     except Exception as e:
