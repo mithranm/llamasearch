@@ -48,31 +48,134 @@ def get_nvidia_gpu_info() -> Optional[Dict[str, Any]]:
         pass
     return None
 
+def check_llama_cpp_cuda_support() -> bool:
+    """Checks if the installed llama-cpp-python has CUDA support."""
+    try:
+        # Direct approach: For 0.3.8+, use a more direct method to detect CUDA support
+        from ..setup_utils import check_llama_cpp_cuda_support as setup_check_cuda
+        has_cuda = setup_check_cuda()
+        
+        if has_cuda:
+            logger.info("Confirmed llama-cpp-python has CUDA support via setup_utils")
+            return True
+            
+        # Alternative approach: Create a minimal model with GPU layers and check for CUDA in logs
+        try:
+            from llama_cpp import Llama
+            import io
+            from contextlib import redirect_stdout, redirect_stderr
+            
+            # Capture stdout to check for CUDA initialization messages
+            stdout_buffer = io.StringIO()
+            stderr_buffer = io.StringIO()
+            
+            with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
+                try:
+                    # Try to create a model with GPU layers - this may fail but will show CUDA detection
+                    # We don't care about the model, just that CUDA is detected
+                    _ = Llama(
+                        model_path="doesnotexist.gguf",  # Invalid path to avoid loading
+                        n_gpu_layers=1,                # Request GPU usage
+                        verbose=True,                  # Enable verbose to see CUDA init messages
+                        n_threads=1                    # Minimal threading
+                    )
+                except Exception as e:
+                    # Check both stdout and stderr for CUDA detection messages
+                    stdout_content = stdout_buffer.getvalue()
+                    stderr_content = stderr_buffer.getvalue()
+                    logs = stdout_content + stderr_content
+                    
+                    # Look for evidence of CUDA initialization
+                    if "ggml_cuda_init" in logs and "found" in logs and "CUDA device" in logs:
+                        logger.info("Detected CUDA support via initialization logs")
+                        return True
+                    
+                    # Sometimes the error message itself will confirm CUDA support
+                    err_msg = str(e).lower()
+                    if "cuda" in err_msg and "not compiled with cuda" not in err_msg:
+                        logger.info("CUDA support detected via exception message")
+                        return True
+        except Exception as e:
+            logger.warning(f"Error during alternative CUDA detection: {e}")
+            
+        logger.warning("No CUDA support detected in llama-cpp-python")
+        return False
+    except Exception as e:
+        logger.error(f"Error checking llama-cpp-python CUDA support: {e}")
+        return False
+
 def get_gpu_info() -> Dict[str, Any]:
     """Returns a dictionary with basic GPU info."""
-    gpu_info = {"available": False, "type": None, "details": None}
+    gpu_info = {"available": False, "type": None, "details": None, "n_gpu_layers": 0}
+    
+    # Check for NVIDIA GPU (CUDA)
     nvidia_info = get_nvidia_gpu_info()
     if nvidia_info:
         gpu_info["available"] = True
         gpu_info["type"] = "cuda"
         gpu_info["details"] = nvidia_info
+        # Use all layers for CUDA
+        gpu_info["n_gpu_layers"] = -1
+        
+        # Verify if CUDA is actually supported by llama-cpp-python
+        if not check_llama_cpp_cuda_support():
+            logger.warning("NVIDIA GPU detected, but llama-cpp-python doesn't have CUDA support")
+            logger.warning("Will use CPU-only mode. Reinstall llama-cpp-python with CUDA support")
+            # Force CPU mode
+            gpu_info["available"] = False
+            gpu_info["type"] = "cpu"
+            gpu_info["n_gpu_layers"] = 0
+        
+        return gpu_info
+    
+    # Check for Apple Metal GPU
+    try:
+        import torch
+        if torch.backends.mps.is_available():
+            gpu_info["available"] = True
+            gpu_info["type"] = "metal"
+            gpu_info["details"] = {"name": "Apple GPU", "framework": "MPS"}
+            # Use all layers for Metal
+            gpu_info["n_gpu_layers"] = -1
+            return gpu_info
+    except (ImportError, AttributeError):
+        pass
+    
+    # Check for ROCm (AMD GPUs)
+    try:
+        import torch
+        # A more reliable way to detect ROCm in PyTorch
+        if hasattr(torch, 'cuda') and torch.cuda.is_available():
+            device_name = torch.cuda.get_device_name(0).lower()
+            # AMD GPUs usually have "amd" in their name when using ROCm
+            if "amd" in device_name or "radeon" in device_name:
+                gpu_info["available"] = True
+                gpu_info["type"] = "rocm"
+                gpu_info["details"] = {"name": device_name, "count": torch.cuda.device_count()}
+                gpu_info["n_gpu_layers"] = -1
+                return gpu_info
+    except (ImportError, AttributeError):
+        pass
+    
     return gpu_info
 
-# --- Data Directory Clearing ---
-def clear_data_directory() -> None:
-    """Wipes the data directory (reverse lookup, knowledge graph, etc.) on a fresh run."""
+def clear_llm_data() -> None:
+    """Clears only LLM-specific data files while preserving crawler data."""
     project_root = find_project_root()
     data_dir = os.path.join(project_root, "data")
     if os.path.exists(data_dir):
+        # List of files/directories that should be preserved
+        preserve = {"links.txt", "reverse_lookup.json"}
         for fname in os.listdir(data_dir):
-            fpath = os.path.join(data_dir, fname)
-            try:
-                if os.path.isfile(fpath):
-                    os.unlink(fpath)
-                else:
-                    shutil.rmtree(fpath)
-            except Exception as e:
-                logger.error(f"Failed to remove {fpath}: {e}")
+            if fname not in preserve:
+                fpath = os.path.join(data_dir, fname)
+                try:
+                    if os.path.isfile(fpath):
+                        os.unlink(fpath)
+                    else:
+                        shutil.rmtree(fpath)
+                except Exception as e:
+                    logger.error(f"Failed to remove {fpath}: {e}")
 
 # --- LlamaSearch Class ---
 class LlamaSearch:
@@ -197,22 +300,76 @@ class LlamaSearch:
         if self.force_cpu:
             logger.info("Forced CPU mode, skipping GPU detection")
             return
+            
+        # First check if we're on Windows
+        if platform.system() == "Windows":
+            # Special handling for Windows with NVIDIA GPU
+            nvidia_info = get_nvidia_gpu_info()
+            if nvidia_info:
+                # Check if CUDA is properly installed and configured
+                logger.info("Detected Windows with NVIDIA GPU")
+                
+                # Check if CUDA_PATH environment variable is set
+                cuda_path = os.environ.get("CUDA_PATH")
+                if not cuda_path:
+                    logger.warning("CUDA_PATH environment variable not set - CUDA may not be properly configured")
+                    logger.warning("Will use CPU-only mode")
+                    return
+                
+                # Verify CUDA support in llama-cpp-python
+                if check_llama_cpp_cuda_support():
+                    free_vram_gb = nvidia_info["free_memory_mb"] / 1024
+                    n_gpu_layers = -1
+                    if free_vram_gb < 4:
+                        n_gpu_layers = 20
+                    elif free_vram_gb < 8:
+                        n_gpu_layers = 35
+                    self.gpu_info = {
+                        "available": True, 
+                        "type": "cuda", 
+                        "name": nvidia_info["name"], 
+                        "memory_mb": nvidia_info["free_memory_mb"], 
+                        "n_gpu_layers": n_gpu_layers
+                    }
+                    logger.info(f"Using NVIDIA GPU: {nvidia_info['name']} with {free_vram_gb:.1f}GB free VRAM")
+                    logger.info(f"Using {n_gpu_layers if n_gpu_layers != -1 else 'all'} GPU layers")
+                    return
+                else:
+                    logger.warning("NVIDIA GPU detected, but llama-cpp-python doesn't have CUDA support")
+                    logger.warning("Will use CPU-only mode. Reinstall llama-cpp-python with CUDA support")
+                    return
+                
+        # Continue with the normal detection flow for non-Windows platforms
         if platform.system() == "Darwin" and platform.processor() == "arm":
             self.gpu_info = {"available": True, "type": "metal", "memory_mb": 0, "n_gpu_layers": -1}
             logger.info("Detected Apple Silicon, using Metal for all layers")
             return
+            
         nvidia_info = get_nvidia_gpu_info()
         if nvidia_info:
-            free_vram_gb = nvidia_info["free_memory_mb"] / 1024
-            n_gpu_layers = -1
-            if free_vram_gb < 4:
-                n_gpu_layers = 20
-            elif free_vram_gb < 8:
-                n_gpu_layers = 35
-            self.gpu_info = {"available": True, "type": "cuda", "name": nvidia_info["name"], "memory_mb": nvidia_info["free_memory_mb"], "n_gpu_layers": n_gpu_layers}
-            logger.info(f"Detected NVIDIA GPU: {nvidia_info['name']} with {free_vram_gb:.1f}GB free VRAM")
-            logger.info(f"Using {n_gpu_layers if n_gpu_layers != -1 else 'all'} GPU layers")
-            return
+            # Check if CUDA is properly supported in llama-cpp-python
+            if check_llama_cpp_cuda_support():
+                free_vram_gb = nvidia_info["free_memory_mb"] / 1024
+                n_gpu_layers = -1
+                if free_vram_gb < 4:
+                    n_gpu_layers = 20
+                elif free_vram_gb < 8:
+                    n_gpu_layers = 35
+                self.gpu_info = {
+                    "available": True, 
+                    "type": "cuda", 
+                    "name": nvidia_info["name"], 
+                    "memory_mb": nvidia_info["free_memory_mb"], 
+                    "n_gpu_layers": n_gpu_layers
+                }
+                logger.info(f"Detected NVIDIA GPU: {nvidia_info['name']} with {free_vram_gb:.1f}GB free VRAM")
+                logger.info(f"Using {n_gpu_layers if n_gpu_layers != -1 else 'all'} GPU layers")
+                return
+            else:
+                logger.warning("NVIDIA GPU detected, but llama-cpp-python doesn't have CUDA support")
+                logger.warning("Will use CPU-only mode. Reinstall llama-cpp-python with CUDA support")
+                return
+                
         logger.info("No compatible GPU detected, CPU-only inference")
 
     def _get_llm(self):
@@ -220,6 +377,7 @@ class LlamaSearch:
             logger.info(f"Loading LLM from {self.model_path}")
             n_threads = max(1, min(self.resource_manager.hardware.physical_cores - 1, 8)) if self.auto_optimize else min(os.cpu_count() or 4, 8)
             n_gpu_layers = 0
+            
             if self.gpu_info["available"] and not self.force_cpu:
                 n_gpu_layers = self.gpu_info.get("n_gpu_layers", 0)
                 if self.gpu_info["type"] == "cuda":
@@ -228,40 +386,115 @@ class LlamaSearch:
                     logger.info("Using Metal for all layers")
             else:
                 logger.info("Using CPU-only inference")
+                
             try:
-                chat_template = """
-                {%- if messages[0]['role'] == 'system' -%}
-                {{- '<|im_start|>system\\n' + messages[0]['content'] + '<|im_end|>\\n' -}}
-                {%- endif -%}
-                {%- for message in messages[1:] -%}
-                {{- '<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>\\n' -}}
-                {%- endfor -%}
-                {{- '<|im_start|>assistant\\n' -}}
-                """
-                self.llm_instance = Llama(
-                    model_path=self.model_path,
-                    n_ctx=self.context_length,
-                    n_threads=n_threads,
-                    n_gpu_layers=n_gpu_layers,
-                    verbose=self.verbose,
-                    chat_format="custom",
-                    chat_template=chat_template,
-                )
+                # Allow for different versions of llama-cpp-python (0.2.x vs 0.3.x)
+                # Newer 0.3.x uses different chat format mechanisms
+                from importlib.metadata import version
+                
+                try:
+                    llama_cpp_version = version('llama-cpp-python')
+                    logger.info(f"Using llama-cpp-python version: {llama_cpp_version}")
+                    
+                    is_version_03x = llama_cpp_version.startswith('0.3.')
+                except Exception:
+                    # If we can't determine version, assume older
+                    is_version_03x = False
+                    logger.warning("Could not determine llama-cpp-python version, assuming 0.2.x")
+                
+                # Basic parameters that work for all versions
+                kwargs = {
+                    "model_path": self.model_path,
+                    "n_ctx": self.context_length,
+                    "n_threads": n_threads,
+                    "verbose": self.verbose,
+                }
+                
+                # Only add n_gpu_layers if GPU is available and not forced to CPU
+                if self.gpu_info["available"] and not self.force_cpu:
+                    kwargs["n_gpu_layers"] = n_gpu_layers
+                
+                # Chat format handling varies by version
+                if is_version_03x:
+                    # In 0.3.x, chat format is more complex and uses 'chat_handler' instead
+                    # Try to use ChatFormatter from the library itself as it's recommended
+                    try:
+                        from llama_cpp.llama_chat_format import format_qwen
+                        # Pass messages parameter to format_qwen() to allow it to use system messages
+                        # Rather than initializing with a default system message
+                        kwargs["chat_handler"] = format_qwen
+                        logger.info("Using Qwen2ChatHandler for chat formatting that will handle system messages")
+                    except ImportError:
+                        # Fall back to chat_format with custom template if chat_handler not available
+                        chat_template = """
+                        {%- if messages[0]['role'] == 'system' -%}
+                        {{- '<|im_start|>system\\n' + messages[0]['content'] + '<|im_end|>\\n' -}}
+                        {%- endif -%}
+                        {%- for message in messages[1:] -%}
+                        {{- '<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>\\n' -}}
+                        {%- endfor -%}
+                        {{- '<|im_start|>assistant\\n' -}}
+                        """
+                        kwargs["chat_format"] = "custom"
+                        kwargs["chat_template"] = chat_template
+                        logger.info("Using custom chat template")
+                else:
+                    # Older version with simpler chat format
+                    chat_template = """
+                    {%- if messages[0]['role'] == 'system' -%}
+                    {{- '<|im_start|>system\\n' + messages[0]['content'] + '<|im_end|>\\n' -}}
+                    {%- endif -%}
+                    {%- for message in messages[1:] -%}
+                    {{- '<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>\\n' -}}
+                    {%- endfor -%}
+                    {{- '<|im_start|>assistant\\n' -}}
+                    """
+                    kwargs["chat_format"] = "custom"
+                    kwargs["chat_template"] = chat_template
+                
+                # Create the LLM instance
+                self.llm_instance = Llama(**kwargs)
+                
+                # Check if GPU layers are actually being used
+                if (self.gpu_info["available"] and not self.force_cpu and 
+                    not any("offloading" in line for line in self._get_log_lines())):
+                    logger.warning("Model is not using GPU layers despite GPU being available.")
+                    logger.warning("This suggests llama-cpp-python was not compiled with CUDA support.")
+                    logger.warning("To fix: reinstall llama-cpp-python with CUDA support following instructions in setup_utils.py")
+                
                 logger.info(f"Model loaded with context {self.context_length}")
             except Exception as e:
                 logger.error(f"Error loading model: {e}")
                 raise RuntimeError(f"Failed to load LLM: {str(e)}")
         return self.llm_instance
 
-    def ingest_temp_dir(self) -> None:
-        """Process all documents from the project's temp directory."""
+    def _get_log_lines(self, last_n_lines=100):
+        """Helper function to retrieve recent log lines from the model."""
+        try:
+            log_dir = os.path.join(find_project_root(), "logs")
+            log_files = [f for f in os.listdir(log_dir) if f.endswith('.log')]
+            if not log_files:
+                return []
+            
+            # Get most recent log file
+            latest_log = sorted(log_files)[-1]
+            log_path = os.path.join(log_dir, latest_log)
+            
+            with open(log_path, 'r') as f:
+                lines = f.readlines()
+                return lines[-last_n_lines:] if len(lines) > last_n_lines else lines
+        except Exception:
+            return []
+
+    def ingest_crawl_data(self) -> None:
+        """Process all documents from the project's crawl_data/raw directory."""
         project_root = find_project_root()
-        temp_dir = os.path.join(project_root, "temp")
-        if not os.path.exists(temp_dir):
-            logger.info(f"Temp directory {temp_dir} not found.")
+        crawl_data_dir = os.path.join(project_root, "crawl_data", "raw")
+        if not os.path.exists(crawl_data_dir):
+            logger.info(f"Crawl data directory {crawl_data_dir} not found.")
             return
-        logger.info(f"Ingesting files from {temp_dir}...")
-        results = process_directory(temp_dir, recursive=True, chunker=self.chunker)
+        logger.info(f"Ingesting files from {crawl_data_dir}...")
+        results = process_directory(crawl_data_dir, recursive=True, chunker=self.chunker)
         total_chunks = 0
         for file_path, chunks in results.items():
             if self.persist and self.vectordb.is_document_processed(file_path):
@@ -298,7 +531,7 @@ class LlamaSearch:
         logger.info(f"Final prompt (truncated): {prompt[:300]}...")
         return prompt
 
-    def query(self, query_text: str, show_retrieved_chunks: bool = True, debug_mode: bool = False) -> Dict[str, Any]:
+    def llm_query(self, query_text: str, show_retrieved_chunks: bool = True, debug_mode: bool = False) -> Dict[str, Any]:
         logger.info(f"Query: {query_text}")
         start_t = time.time()
         debug_info: Dict[str, Any] = {}
@@ -309,7 +542,7 @@ class LlamaSearch:
         logger.info("Retrieving context from vectordb...")
         st = time.time()
         try:
-            results = self.vectordb.query(query_text, show_retrieved_chunks=show_retrieved_chunks)
+            results = self.vectordb.vectordb_query(query_text, show_retrieved_chunks=show_retrieved_chunks)
             logger.info(f"Retrieved {len(results.get('documents', []))} documents")
             for i, doc_text in enumerate(results.get("documents", [])):
                 score = results.get("scores", [0] * len(results.get("documents", [])))[i]
@@ -420,15 +653,20 @@ class LlamaSearch:
         return total_chunks
 
     def add_web_content(self, url: str) -> int:
-        from .extractor import extract_text_with_jina, save_to_project_tempdir
+        from .pcrawler import fetch_and_parse, save_extracted_content
         logger.info(f"Processing URL: {url}")
         try:
-            content = extract_text_with_jina(url)
-            if not content:
+            # Use pcrawler to fetch content
+            content, _, raw_html = fetch_and_parse(url)
+            if not content or not raw_html:
                 logger.error(f"Failed to extract content from URL: {url}")
                 return 0
-            temp_file = save_to_project_tempdir(content, url)
+                
+            # Save the content
+            temp_file = save_extracted_content(url, raw_html)
             logger.info(f"Saved content to {temp_file}")
+            
+            # Add the document
             return self.add_document(temp_file)
         except Exception as e:
             logger.error(f"Error adding web content from {url}: {e}")
@@ -474,7 +712,7 @@ def main():
 
     # Only clear the data directory if persist is NOT set.
     if not args.persist:
-        clear_data_directory()
+        clear_llm_data()
 
     llm = LlamaSearch(
         persist=args.persist,
@@ -485,8 +723,8 @@ def main():
     )
     try:
         if not args.document and not args.url:
-            logger.info("No --document or --url provided. Ingesting from 'temp' directory by default.")
-            llm.ingest_temp_dir()
+            logger.info("No --document or --url provided. Ingesting from 'crawl_data/raw' directory by default.")
+            llm.ingest_crawl_data()
         if args.document:
             from pathlib import Path
             doc_path = Path(args.document)
@@ -505,7 +743,7 @@ def main():
             logger.info(f"Added {added} chunks from URL")
         if args.query:
             st = time.time()
-            result = llm.query(args.query, debug_mode=args.debug)
+            result = llm.llm_query(args.query, debug_mode=args.debug)
             response = result.get("response", "")
             display = result.get("retrieved_display", "")
             if display.strip():

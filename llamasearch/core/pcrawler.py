@@ -8,7 +8,7 @@ import hashlib
 from urllib.parse import urlparse, urljoin
 from bs4 import BeautifulSoup
 from datetime import datetime
-import shutil
+from typing import Optional, List
 
 from . import apiauth
 
@@ -24,23 +24,65 @@ def find_project_root():
         current_dir = os.path.dirname(current_dir)
     raise RuntimeError("Could not find project root. Please check your project structure.")
 
-def save_to_project_dir(text, filename="links.txt", directory="data"):
-    """Saves text to a specified directory inside the project root."""
+def save_to_crawl_dir(text: str, filename: str, subdir: Optional[str] = None) -> str:
+    """Saves text to a file in the crawl_data directory structure.
+    
+    Args:
+        text: Content to save
+        filename: Name of the file
+        subdir: Optional subdirectory within crawl_data (e.g., 'raw')
+        
+    Returns:
+        str: Full path to the saved file
+    """
     project_root = find_project_root()
-    target_dir = os.path.join(project_root, directory)
+    base_dir = os.path.join(project_root, "crawl_data")
+    if subdir:
+        target_dir = os.path.join(base_dir, subdir)
+    else:
+        target_dir = base_dir
+    
     os.makedirs(target_dir, exist_ok=True)
     file_path = os.path.join(target_dir, filename)
+    
     with open(file_path, "w", encoding="utf-8") as file:
         file.write(text)
+    
     return file_path
 
-def clear_temp_directory():
-    """Clears the temp directory to ensure a clean crawl."""
+def update_reverse_lookup_table(hash_value: str, url: str) -> None:
+    """Updates the reverse lookup table mapping file hashes to original URLs."""
     project_root = find_project_root()
-    temp_dir = os.path.join(project_root, "temp")
-    if os.path.exists(temp_dir):
-        shutil.rmtree(temp_dir)
-    os.makedirs(temp_dir, exist_ok=True)
+    lookup_path = os.path.join(project_root, "crawl_data", "reverse_lookup.json")
+    
+    try:
+        with open(lookup_path, "r", encoding="utf-8") as file:
+            reverse_lookup = json.load(file)
+    except FileNotFoundError:
+        reverse_lookup = {}
+    
+    reverse_lookup[hash_value] = url
+    
+    with open(lookup_path, "w", encoding="utf-8") as file:
+        json.dump(reverse_lookup, file, indent=2)
+
+def save_extracted_content(url: str, content: str) -> str:
+    """Save extracted content and update the reverse lookup table."""
+    url_hash = hashlib.sha256(url.encode()).hexdigest()
+    filename = f"{url_hash}.html"
+    
+    metadata = {
+        "source": url,
+        "extracted_at": datetime.now().isoformat()
+    }
+    metadata_str = f"""<!--
+METADATA: {json.dumps(metadata, indent=2)}
+-->
+"""
+    full_content = metadata_str + "\n" + content
+    file_path = save_to_crawl_dir(full_content, filename, subdir="raw")
+    update_reverse_lookup_table(url_hash, url)
+    return file_path
 
 def normalize_url(url):
     """Normalize URL by adding https:// if missing and handling paths."""
@@ -114,7 +156,7 @@ def fetch_and_parse(url, max_links=10, key_id=None):
         response.raise_for_status()
         html_content = response.text
         debug_filename = f"scraping_response_{urlparse(url).netloc.replace('.', '_')}.html"
-        debug_path = save_to_project_dir(html_content, filename=debug_filename, directory="debug")
+        debug_path = save_to_crawl_dir(html_content, filename=debug_filename, subdir="debug")
         print(f"Saved raw API response to: {debug_path}")
         soup = BeautifulSoup(html_content, 'html.parser')
         content_text = extract_main_content(soup)
@@ -186,32 +228,16 @@ def extract_and_score_links(soup, base_url):
         scored_links.append((link, score))
     return scored_links
 
-def smart_crawl(start_url, target_links=50, max_depth=3, max_links_per_page=10, key_id=None):
-    """
-    Crawls the web starting from start_url until target_links unique links are collected,
-    or the crawl reaches max_depth. Clears the temp directory before crawling.
-    
-    Args:
-        start_url (str): The starting URL.
-        target_links (int): Number of unique links to collect.
-        max_depth (int): Maximum crawl depth.
-        max_links_per_page (int): Maximum links to extract per page.
-        key_id (str, optional): For authentication.
-        
-    Returns:
-        list: Unique collected links.
-    """
-    clear_temp_directory()
-    visited = set()
+def smart_crawl(start_url: str, target_links: int = 50, max_depth: int = 3, max_links_per_page: int = 10, key_id: Optional[str] = None) -> List[str]:
+    """Crawls the web starting from start_url."""
     collected_links = []
     queue = [(start_url, 1)]
     
     while queue and len(collected_links) < target_links:
         current_url, depth = queue.pop(0)
         normalized_url = normalize_url(current_url)
-        if normalized_url in visited or depth > max_depth:
+        if normalized_url in collected_links or depth > max_depth:
             continue
-        visited.add(normalized_url)
         
         print(f"Crawling (depth {depth}/{max_depth}): {normalized_url}")
         content_text, links, html = fetch_and_parse(normalized_url, max_links=max_links_per_page, key_id=key_id)
@@ -239,56 +265,32 @@ def smart_crawl(start_url, target_links=50, max_depth=3, max_links_per_page=10, 
                 external_links.append(link)
         
         for link in internal_links:
-            if link not in visited:
+            if link not in collected_links:
                 queue.append((link, depth + 1))
         
         if external_links:
             external_link = external_links[0]
-            if external_link not in visited:
+            if external_link not in collected_links:
                 queue.append((external_link, depth + 1))
     
+    # Save collected links
+    if collected_links:
+        links_text = "\n".join(collected_links)
+        file_path = save_to_crawl_dir(links_text, "links.txt")
+        print(f"\nCrawled links saved at: {file_path}")
+        print(f"Total links collected: {len(collected_links)}")
+        
+        # Save extracted content
+        for url in collected_links:
+            try:
+                content_text, _, html_content = fetch_and_parse(url, key_id=key_id)
+                if content_text and html_content:
+                    file_path = save_extracted_content(url, html_content)
+                    print(f"Saved content from {url} to {file_path}")
+            except Exception as e:
+                print(f"Error processing {url}: {e}")
+    
     return collected_links
-
-def update_reverse_lookup_table(hash_value, url):
-    """
-    Updates the reverse lookup table with a mapping from file hash to original URL.
-    The table is stored as a JSON file in project_root/data/reverse_lookup.json.
-    """
-    project_root = find_project_root()
-    data_dir = os.path.join(project_root, "data")
-    os.makedirs(data_dir, exist_ok=True)
-    reverse_lookup_path = os.path.join(data_dir, "reverse_lookup.json")
-    
-    try:
-        with open(reverse_lookup_path, "r", encoding="utf-8") as file:
-            reverse_lookup = json.load(file)
-    except FileNotFoundError:
-        reverse_lookup = {}
-    
-    reverse_lookup[hash_value] = url
-    
-    with open(reverse_lookup_path, "w", encoding="utf-8") as file:
-        json.dump(reverse_lookup, file, indent=2)
-
-def save_extracted_content(url, content, directory="temp"):
-    """
-    Save extracted content to a file and update the reverse lookup table.
-    Embeds metadata (including source traceability) as an HTML comment.
-    """
-    url_hash = hashlib.sha256(url.encode()).hexdigest()
-    filename = f"{url_hash}.html"
-    metadata = {
-        "source": url,  # Original source URL or file path
-        "extracted_at": datetime.now().isoformat()
-    }
-    metadata_str = f"""<!--
-METADATA: {json.dumps(metadata, indent=2)}
--->
-"""
-    full_content = metadata_str + "\n" + content
-    file_path = save_to_project_dir(full_content, filename=filename, directory=directory)
-    update_reverse_lookup_table(url_hash, url)
-    return file_path
 
 if __name__ == "__main__":
     url = input("Enter the webpage URL: ").strip()
@@ -307,11 +309,7 @@ if __name__ == "__main__":
     links = smart_crawl(url, target_links=target_links_count, max_depth=3, max_links_per_page=10, key_id=key_id)
     
     if links:
-        links_text = "\n".join(links)
-        file_path = save_to_project_dir(links_text)
-        print(f"\nCrawled links saved at: {file_path}")
-        print(f"Total links collected: {len(links)}")
         project_root = find_project_root()
-        print(f"Extracted content saved to: {os.path.join(project_root, 'temp')}")
+        print(f"Extracted content saved to: {os.path.join(project_root, 'crawl_data')}")
     else:
         print("\nNo links were collected during crawling.")

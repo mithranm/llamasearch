@@ -1,5 +1,3 @@
-# llamasearch/core/vectordb.py
-
 import os
 import numpy as np
 import logging
@@ -10,13 +8,12 @@ import networkx as nx
 from collections import defaultdict
 from typing import Dict, Any, Optional, List
 
-from sklearn.metrics.pairwise import cosine_similarity
-
+from ..utils import find_project_root, log_query, NumpyEncoder
 from .embedder import EnhancedEmbedder
 from .bm25 import BM25Retriever
 from .chunker import MarkdownChunker, HtmlChunker
 from .knowledge_graph import KnowledgeGraph
-from ..setup_utils import find_project_root
+from sklearn.metrics.pairwise import cosine_similarity
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +68,8 @@ class VectorDB:
         else:
             project_root = find_project_root()
             suff = "pca" if use_pca else "no_pca"
-            self.storage_dir = os.path.join(project_root, f"vector_db_{suff}")
+            # Use the consolidated index directory structure
+            self.storage_dir = os.path.join(project_root, "index", f"vector_{suff}")
 
         if not self.persist and os.path.exists(self.storage_dir):
             logger.info(f"Clearing vector database dir at {self.storage_dir}")
@@ -113,6 +111,7 @@ class VectorDB:
         self.documents: List[str] = []
         self.document_metadata: List[Dict[str, Any]] = []
 
+        # Initialize the knowledge graph (which now includes inter-document relationships)
         self.kg = KnowledgeGraph()
 
         self.entity_to_chunks: Dict[str, set] = defaultdict(set)
@@ -130,6 +129,9 @@ class VectorDB:
         logger.info(f"Persistence: {self.persist}, use_pca: {self.use_pca}")
         logger.info(f"Search weights => vector={self.vector_weight}, bm25={self.bm25_weight}, graph={self.graph_weight}")
 
+        # Ensure llm_instance attribute exists (to be set externally)
+        self.llm_instance = None
+
     def _load_metadata(self) -> None:
         if os.path.exists(self.metadata_path):
             logger.info(f"Loading metadata from {self.metadata_path}")
@@ -139,7 +141,9 @@ class VectorDB:
                 self.documents = data.get("documents", [])
                 self.document_metadata = data.get("metadata", [])
                 for doc, meta in zip(self.documents, self.document_metadata):
-                    self.bm25.add_document(doc, meta)
+                    # Extract ID from metadata for BM25 indexing
+                    doc_id = str(meta.get('id', '')) if isinstance(meta, dict) else str(meta)
+                    self.bm25.add_document(doc, doc_id)
                 logger.info(f"Loaded {len(self.documents)} document entries from metadata")
             except Exception as e:
                 logger.error(f"Error loading metadata: {e}")
@@ -178,14 +182,14 @@ class VectorDB:
         temp_path = os.path.join(os.path.dirname(self.kg_path), temp_fn)
         try:
             with open(temp_path, "w", encoding="utf-8") as f:
-                json.dump(self.kg.entities, f, ensure_ascii=False)
+                json.dump(self.kg.entities, f, ensure_ascii=False, cls=NumpyEncoder)
             os.replace(temp_path, self.kg_path)
             project_root = find_project_root()
             data_dir = os.path.join(project_root, "data")
             os.makedirs(data_dir, exist_ok=True)
             data_path = os.path.join(data_dir, f"{self.collection_name}_knowledge_graph.json")
             with open(data_path, "w", encoding="utf-8") as f:
-                json.dump(self.kg.entities, f, ensure_ascii=False)
+                json.dump(self.kg.entities, f, ensure_ascii=False, cls=NumpyEncoder)
             logger.info(f"Knowledge graph saved to {self.kg_path} and {data_path}")
         except Exception as e:
             logger.error(f"Error saving knowledge graph: {e}")
@@ -248,9 +252,7 @@ class VectorDB:
         else:
             shutil.copy2(temp_path, self.embeddings_path)
 
-    # Re-introduced as a public method for external use
     def is_document_processed(self, file_path: str) -> bool:
-        """Checks if the given file has already been processed based on its metadata and modification time."""
         if not self.document_metadata:
             return False
         disk_mtime = os.path.getmtime(file_path)
@@ -280,7 +282,8 @@ class VectorDB:
         doc_mtime = os.path.getmtime(file_path)
         base_meta: Dict[str, Any] = {"source": file_path, "filename": os.path.basename(file_path), "mtime": doc_mtime}
         full_text = "\n\n".join(c["chunk"] for c in chunks)
-        self.kg.build_from_text(full_text, context_file=file_path)
+        # Here we pass an empty list for hyperlinks; you can modify this if hyperlink info is available.
+        self.kg.build_from_text(full_text, context_file=file_path, hyperlinks=[])
         added_chunks = 0
         dest_dir = os.path.dirname(self.embeddings_path)
         temp_fn = f"temp_embeddings_{os.path.basename(self.embeddings_path)}"
@@ -317,8 +320,20 @@ class VectorDB:
                     np.save(temp_path, embeddings, allow_pickle=False)
                 self.documents.extend(texts)
                 self.document_metadata.extend(meta_list)
-                for t, m in zip(texts, meta_list):
-                    self.bm25.add_document(t, m)
+                # Calculate the starting index for this batch
+                doc_start_idx = len(self.documents) - len(texts)
+                
+                for i, (t, m) in enumerate(zip(texts, meta_list)):
+                    # Generate a consistent document ID using the pattern doc_X
+                    # where X is the index of the document in the global document list
+                    doc_idx = doc_start_idx + i
+                    doc_id = f"doc_{doc_idx}"
+                    
+                    # Store the ID in the metadata for future reference
+                    m['id'] = doc_idx
+                    
+                    # Add to BM25 index with the consistent ID
+                    self.bm25.add_document(t, doc_id)
                 added_chunks += len(batch)
             if added_chunks > 0:
                 self._merge_embeddings(temp_path)
@@ -405,9 +420,8 @@ class VectorDB:
             for nbr in self.graph[ent]:
                 raw_weight = self.graph[ent][nbr].get("weight", 0.0)
                 try:
-                    # Handle case where raw_weight might be a dict or other complex type
                     if isinstance(raw_weight, dict):
-                        weight = 0.0  # Default value for dict type
+                        weight = 0.0
                     else:
                         weight = float(raw_weight)
                 except (ValueError, TypeError):
@@ -424,7 +438,6 @@ class VectorDB:
                         "score": rel_score
                     })
         if scores:
-            # Ensure all values are explicitly converted to float
             float_values = [float(v) for v in scores.values()]
             max_score = max(float_values) if float_values else 0.0
             if max_score > 0:
@@ -455,9 +468,284 @@ class VectorDB:
         final_details = {k: score_details[k] for k in final_scores}
         return {"scores": final_scores, "score_details": final_details}
 
-    def query(self, query_text: str, show_retrieved_chunks: bool = True, debug_mode: bool = False) -> Dict[str, Any]:
-        if not self.documents:
-            logger.warning("No docs in DB; returning empty results.")
+    def vectordb_query(self, query_text: str, show_retrieved_chunks: bool = True, query_entities: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Query the vector database with better error handling and diagnostics"""
+        try:
+            # Initialize empty response structure for fallback
+            empty_response = {
+                "query": query_text,
+                "ids": [],
+                "documents": [],
+                "metadatas": [],
+                "scores": [],
+                "distances": [],
+                "score_details": [],
+                "debug_chunks": [],
+                "error": None
+            }
+            
+            # Validate if documents are available
+            if not self.documents:
+                logger.warning("No docs in DB; returning empty results.")
+                empty_response["error"] = "No documents in database"
+                return empty_response
+                
+            # BM25 search with robust error handling
+            logger.info(f"Performing BM25 search for query: {query_text}")
+            bm_res = self.bm25.query(query_text, n_results=10)
+            bm_idx: List[int] = []
+            bm_scores: Dict[int, float] = {}
+            
+            # Log what we got from BM25
+            bm_ids = bm_res.get('ids', [])
+            logger.debug(f"BM25 returned {len(bm_ids)} results")
+            if bm_ids and len(bm_ids) > 0:
+                logger.debug(f"BM25 IDs sample: {bm_ids[:min(3, len(bm_ids))]}")
+            
+            # Safely convert IDs to indices, handling empty strings or other formatting issues
+            for i, iid in enumerate(bm_ids):
+                try:
+                    # Try to extract the numeric index from IDs in the format "doc_X"
+                    if isinstance(iid, str) and iid.startswith("doc_"):
+                        idx = int(iid[4:])
+                    else:
+                        # If no doc_ prefix, try to convert directly if it's numeric
+                        idx = int(iid) if iid and isinstance(iid, str) and iid.strip() else i
+                    
+                    # Validate that the index is within bounds
+                    if 0 <= idx < len(self.documents):
+                        bm_idx.append(idx)
+                        # Get the corresponding score
+                        scores = bm_res.get("scores", [])
+                        if i < len(scores):
+                            bm_scores[idx] = float(scores[i])
+                    else:
+                        logger.warning(f"BM25 returned out of bounds index: {idx} (max: {len(self.documents)-1})")
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Could not parse BM25 ID: '{iid}', error: {str(e)}")
+            
+            bm_details: Dict[int, Dict[str, Any]] = {}
+            for d in bm_res.get("score_details", []):
+                if isinstance(d, dict) and "index" in d:
+                    bm_details[d["index"]] = d
+            
+            # Vector search with robust error handling
+            logger.info(f"Performing vector search for query: {query_text}")
+            vec_res = self._vector_search(query_text, n_ret=10)
+            vec_idx: List[int] = []
+            vec_scores: Dict[int, float] = {}
+            
+            # Log what we got from vector search
+            vec_ids = vec_res.get('ids', [])
+            logger.debug(f"Vector search returned {len(vec_ids)} results")
+            if vec_ids and len(vec_ids) > 0:
+                logger.debug(f"Vector IDs sample: {vec_ids[:min(3, len(vec_ids))]}")
+            
+            # Safely convert IDs to indices with validation
+            for i, iid in enumerate(vec_ids):
+                try:
+                    # Try to extract the numeric index from IDs in the format "doc_X"
+                    if isinstance(iid, str) and iid.startswith("doc_"):
+                        idx = int(iid[4:])
+                    else:
+                        # If no doc_ prefix, try to convert directly if it's numeric
+                        idx = int(iid) if iid and isinstance(iid, str) and iid.strip() else i
+                    
+                    # Validate that the index is within bounds
+                    if 0 <= idx < len(self.documents):
+                        vec_idx.append(idx)
+                        # Get the corresponding score
+                        scores = vec_res.get("scores", [])
+                        if i < len(scores):
+                            vec_scores[idx] = float(scores[i])
+                    else:
+                        logger.warning(f"Vector search returned out of bounds index: {idx} (max: {len(self.documents)-1})")
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Could not parse vector search ID: '{iid}', error: {str(e)}")
+                    
+            vec_details: Dict[int, Dict[str, Any]] = {}
+            for d in vec_res.get("score_details", []):
+                if isinstance(d, dict) and "index" in d:
+                    vec_details[d["index"]] = d
+        
+            # Extract query entities using the knowledge graph's spaCy model if available.
+            if hasattr(self, 'kg') and self.kg.nlp is not None:
+                doc = self.kg.nlp(query_text)
+                query_entities = [ent.text.strip() for ent in doc.ents if ent.text.strip()]
+                logger.info(f"Extracted entities using KG NLP: {query_entities}")
+            else:
+                # Fallback: use title-cased tokens
+                query_entities = [token for token in query_text.split() if token.istitle()]
+                logger.info(f"Using title-cased tokens as entities (KG NLP not available): {query_entities}")
+            
+            # Graph search
+            graph_res = self._graph_search(query_entities, n_ret=10)
+            graph_scores: Dict[int, float] = {}
+            if graph_res is not None and "scores" in graph_res and graph_res["scores"] is not None:
+                for k, v in graph_res["scores"].items():
+                    try:
+                        graph_scores[int(k)] = float(v)
+                    except (ValueError, TypeError):
+                        logger.warning(f"Could not convert graph score key={k}, value={v}")
+            
+            graph_details: Dict[int, Dict[str, Any]] = {}
+            if graph_res is not None and "score_details" in graph_res and graph_res["score_details"] is not None:
+                graph_details = graph_res["score_details"]
+
+            combined_scores: Dict[int, float] = {}
+            score_details: Dict[int, Dict[str, Any]] = {}
+            all_indices = set(bm_idx) | set(vec_idx) | set(graph_scores.keys())
+            for idx in all_indices:
+                # Ensure index is valid
+                if not (0 <= idx < len(self.documents)):
+                    logger.warning(f"Skipping out of bounds index in combined scores: {idx}")
+                    continue
+                    
+                vec = vec_scores.get(idx, 0.0)
+                bm25 = bm_scores.get(idx, 0.0)
+                graph = graph_scores.get(idx, 0.0)
+                v = vec * self.vector_weight
+                b = bm25 * self.bm25_weight
+                g = graph * self.graph_weight
+                combined = v + b + g
+                combined_scores[idx] = combined
+                
+                vector_formula = f"{vec:.4f}"
+                if idx in vec_details and "formula" in vec_details[idx]:
+                    vector_formula = vec_details[idx]["formula"]
+                    
+                bm25_formula = f"{bm25:.4f}"
+                if idx in bm_details and "formula" in bm_details[idx]:
+                    bm25_formula = bm_details[idx]["formula"]
+                    
+                graph_formula = f"{graph:.4f}"
+                if idx in graph_details and "formula" in graph_details[idx]:
+                    graph_formula = graph_details[idx]["formula"]
+                
+                # Create document detail
+                detail = {
+                    "index": idx,
+                    "vector_score": vec,
+                    "bm25_score": bm25,
+                    "graph_score": graph,
+                    "vector_weight": self.vector_weight,
+                    "bm25_weight": self.bm25_weight,
+                    "graph_weight": self.graph_weight,
+                    "combined_score": combined,
+                    "vector_formula": vector_formula,
+                    "bm25_formula": bm25_formula,
+                    "graph_formula": graph_formula,
+                    "combined_formula": f"{v:.4f} + {b:.4f} + {g:.4f} = {combined:.4f}",
+                    "latex": f"\\text{{score}}_{{{idx}}} = {vec:.4f}\\times{self.vector_weight} + {bm25:.4f}\\times{self.bm25_weight} + {graph:.4f}\\times{self.graph_weight} = {combined:.4f}"
+                }
+                
+                # Safely add metadata
+                if idx < len(self.document_metadata):
+                    detail["metadata"] = self.document_metadata[idx]
+                else:
+                    detail["metadata"] = {"error": "metadata missing for this document"}
+                
+                score_details[idx] = detail
+
+            def jaccard_similarity(text1: str, text2: str) -> float:
+                """Calculate Jaccard similarity between two text strings"""
+                tokens1 = set(text1.lower().split())
+                tokens2 = set(text2.lower().split())
+                if not tokens1 or not tokens2:
+                    return 0.0
+                return len(tokens1.intersection(tokens2)) / len(tokens1.union(tokens2))
+
+            # Final results processing with bounds checking
+            final_indices: List[int] = []
+            logger.info(f"Processing {len(combined_scores)} candidate documents for final results")
+            
+            for idx in sorted(combined_scores, key=lambda i: combined_scores[i], reverse=True):
+                # Ensure index is valid
+                if not (0 <= idx < len(self.documents)):
+                    logger.warning(f"Combined scores had invalid index: {idx} (max: {len(self.documents)-1})")
+                    continue
+                    
+                candidate_content = self.documents[idx].strip()
+                if any(jaccard_similarity(candidate_content, self.documents[sel]) > 0.8 for sel in final_indices):
+                    continue
+                final_indices.append(idx)
+                if len(final_indices) >= 5:
+                    break
+                    
+            logger.info(f"Selected {len(final_indices)} final documents for context")
+
+            # Create final response with bounds checking
+            docs = []
+            metas = []
+            scores_list = []
+            distances = []
+            details_list = []
+            
+            for i in final_indices:
+                try:
+                    if 0 <= i < len(self.documents):
+                        docs.append(self.documents[i])
+                        
+                        # Ensure metadata exists for this document
+                        if i < len(self.document_metadata):
+                            metas.append(self.document_metadata[i])
+                        else:
+                            metas.append({"source": "unknown", "error": "metadata missing"})
+                            
+                        scores_list.append(combined_scores[i])
+                        distances.append(1.0 - min(combined_scores[i], 1.0))
+                        
+                        if i in score_details:
+                            details_list.append(score_details[i])
+                        else:
+                            details_list.append({"index": i, "error": "missing score details"})
+                    else:
+                        logger.warning(f"Document index out of bounds: {i}")
+                except Exception as e:
+                    logger.error(f"Error processing document {i}: {str(e)}")
+
+            # Create debug chunks safely
+            debug_chunks = []
+            for i, doc_text in enumerate(docs):
+                # Create safe metadata reference
+                safe_metadata = {}
+                if i < len(metas):
+                    safe_metadata = metas[i]
+                    
+                # Create safe score reference
+                safe_score = 0.0
+                if i < len(scores_list):
+                    safe_score = scores_list[i]
+                    
+                # Create document ID using index from final_indices
+                doc_id = f"doc_{i}"
+                if i < len(final_indices):
+                    doc_id = f"doc_{final_indices[i]}"
+                    
+                debug_chunks.append({
+                    "id": doc_id,
+                    "score": safe_score,
+                    "metadata": safe_metadata,
+                    "text": (doc_text[:200] + "...") if len(doc_text) > 200 else doc_text
+                })
+
+            # Return final response
+            return {
+                "query": query_text,
+                "ids": [f"doc_{i}" for i in final_indices],
+                "documents": docs,
+                "metadatas": metas,
+                "scores": scores_list,
+                "distances": distances,
+                "entities": query_entities,
+                "score_details": details_list,
+                "debug_chunks": debug_chunks,
+                "error": None
+            }
+            
+        except Exception as e:
+            # Log and return error
+            logger.error(f"Error in vectordb_query: {str(e)}", exc_info=True)
             return {
                 "query": query_text,
                 "ids": [],
@@ -466,96 +754,9 @@ class VectorDB:
                 "scores": [],
                 "distances": [],
                 "score_details": [],
+                "debug_chunks": [],
+                "error": str(e)
             }
-        # BM25 search
-        bm_res = self.bm25.query(query_text, n_results=10)
-        bm_idx: List[int] = [int(iid[4:]) for iid in bm_res.get("ids", [])]
-        bm_scores: Dict[int, float] = {idx: float(s) for idx, s in zip(bm_idx, bm_res.get("scores", []))}
-        bm_details: Dict[int, Dict[str, Any]] = {d["index"]: d for d in bm_res.get("score_details", [])}
-        # Vector search
-        vec_res = self._vector_search(query_text, n_ret=10)
-        vec_idx: List[int] = [int(iid[4:]) for iid in vec_res.get("ids", [])]
-        vec_scores: Dict[int, float] = {idx: float(s) for idx, s in zip(vec_idx, vec_res.get("scores", []))}
-        vec_details: Dict[int, Dict[str, Any]] = {d["index"]: d for d in vec_res.get("score_details", [])}
-        # For query entities, simply use title-cased tokens
-        query_entities = [token for token in query_text.split() if token.istitle()]
-        # Graph search
-        graph_res = self._graph_search(query_entities, n_ret=10)
-        graph_scores: Dict[int, float] = {int(k): float(v) for k, v in graph_res.get("scores", {}).items()}
-        graph_details: Dict[int, Dict[str, Any]] = graph_res.get("score_details", {})
-
-        combined_scores: Dict[int, float] = {}
-        score_details: Dict[int, Dict[str, Any]] = {}
-        all_indices = set(bm_idx) | set(vec_idx) | set(graph_scores.keys())
-        for idx in all_indices:
-            vec = vec_scores.get(idx, 0.0)
-            bm25 = bm_scores.get(idx, 0.0)
-            graph = graph_scores.get(idx, 0.0)
-            v = vec * self.vector_weight
-            b = bm25 * self.bm25_weight
-            g = graph * self.graph_weight
-            combined = v + b + g
-            combined_scores[idx] = combined
-            detail = {
-                "index": idx,
-                "vector_score": vec,
-                "bm25_score": bm25,
-                "graph_score": graph,
-                "vector_weight": self.vector_weight,
-                "bm25_weight": self.bm25_weight,
-                "graph_weight": self.graph_weight,
-                "combined_score": combined,
-                "vector_formula": vec_details.get(idx, {}).get("formula", f"{vec:.4f}"),
-                "bm25_formula": bm_details.get(idx, {}).get("formula", f"{bm25:.4f}"),
-                "graph_formula": graph_details.get(idx, {}).get("formula", f"{graph:.4f}"),
-                "combined_formula": f"{v:.4f} + {b:.4f} + {g:.4f} = {combined:.4f}",
-                "latex": f"\\text{{score}}_{{{idx}}} = {vec:.4f}\\times{self.vector_weight} + {bm25:.4f}\\times{self.bm25_weight} + {graph:.4f}\\times{self.graph_weight} = {combined:.4f}",
-                "metadata": self.document_metadata[idx] if idx < len(self.document_metadata) else {}
-            }
-            score_details[idx] = detail
-
-        def jaccard_similarity(text1: str, text2: str) -> float:
-            tokens1 = set(text1.lower().split())
-            tokens2 = set(text2.lower().split())
-            if not tokens1 or not tokens2:
-                return 0.0
-            return len(tokens1.intersection(tokens2)) / len(tokens1.union(tokens2))
-
-        final_indices: List[int] = []
-        for idx in sorted(combined_scores, key=lambda i: combined_scores[i], reverse=True):
-            candidate_content = self.documents[idx].strip()
-            if any(jaccard_similarity(candidate_content, self.documents[sel]) > 0.8 for sel in final_indices):
-                continue
-            final_indices.append(idx)
-            if len(final_indices) >= 5:
-                break
-
-        docs = [self.documents[i] for i in final_indices]
-        metas = [self.document_metadata[i] for i in final_indices]
-        scores_list = [combined_scores[i] for i in final_indices]
-        distances = [1.0 - min(s, 1.0) for s in scores_list]
-        details_list = [score_details[i] for i in final_indices]
-
-        debug_chunks = []
-        for i, doc_text in enumerate(docs):
-            debug_chunks.append({
-                "id": f"doc_{final_indices[i]}",
-                "score": scores_list[i],
-                "metadata": metas[i],
-                "text": (doc_text[:200] + "...") if len(doc_text) > 200 else doc_text
-            })
-
-        return {
-            "query": query_text,
-            "ids": [f"doc_{i}" for i in final_indices],
-            "documents": docs,
-            "metadatas": metas,
-            "scores": scores_list,
-            "distances": distances,
-            "entities": query_entities,
-            "score_details": details_list,
-            "debug_chunks": debug_chunks
-        }
 
     def close(self) -> None:
         self._save_metadata()
@@ -564,3 +765,61 @@ class VectorDB:
         self.document_metadata = []
         gc.collect()
         logger.info("VectorDB resources cleaned up.")
+
+    def _log_query(self, query, context_chunks, response, debug_info=None):
+        return log_query(query, context_chunks, response, debug_info)
+
+    def _build_prompt(self, query: str, context: str, intent: dict) -> str:
+        sys_msg = "You are a helpful AI assistant. Answer based on the provided context."
+        logger.info(f"Context length: {len(context)}")
+        if context:
+            logger.info(f"Context preview: {context[:100]}...")
+        prompt = f"assistant\n{sys_msg}\n\nuser\n"
+        if context.strip():
+            prompt += f"Context information:\n{context}\n\n"
+        else:
+            logger.warning("No context for prompt injection.")
+        prompt += f"Question: {query}\n\nassistant\n"
+        logger.info(f"Final prompt (truncated): {prompt[:300]}...")
+        return prompt
+
+    def _get_llm(self):
+        if self.llm_instance is None:
+            # Instead of trying to load LLM here, instruct that it must be set externally.
+            logger.error("LLM instance not set in VectorDB. Please set self.llm_instance externally.")
+            raise NotImplementedError("LLM loading should be handled by LlamaSearch; set self.llm_instance in VectorDB externally.")
+        return self.llm_instance
+
+    @property
+    def documents_map(self) -> Dict[str, int]:
+        """Map of document IDs to their index in the documents list."""
+        return {str(meta.get('id', i)): i for i, meta in enumerate(self.document_metadata) if meta.get('id')}
+
+    def add_document(self, doc_id: str, content: str, metadata: Dict[str, Any]) -> None:
+        """Add a document to the database with its associated metadata."""
+        # Ensure ID is in the metadata
+        metadata['id'] = doc_id
+        
+        # Check if document already exists
+        existing_idx = next((i for i, meta in enumerate(self.document_metadata) 
+                           if meta.get('id') == doc_id), None)
+        
+        if existing_idx is not None:
+            # Update existing document
+            self.documents[existing_idx] = content
+            self.document_metadata[existing_idx] = metadata
+            logger.info(f"Updated document {doc_id}")
+        else:
+            # Add new document
+            self.documents.append(content)
+            self.document_metadata.append(metadata)
+            logger.info(f"Added document {doc_id}")
+            
+        # Add to BM25 index
+        # Extract ID from metadata for BM25 indexing
+        bm25_doc_id = str(metadata.get('id', doc_id)) if isinstance(metadata, dict) else str(metadata)
+        self.bm25.add_document(content, bm25_doc_id)
+        
+        # Save if persistence is enabled
+        if self.persist:
+            self._save_metadata()

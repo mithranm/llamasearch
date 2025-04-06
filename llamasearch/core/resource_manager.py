@@ -7,6 +7,7 @@ import threading
 import concurrent.futures
 import psutil
 import torch
+import subprocess
 from typing import Dict, Any, List, Optional, Callable, TypeVar
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,9 @@ class HardwareProfile:
         self.gpu_count = torch.cuda.device_count() if self.has_cuda else 0
         self.gpu_info = []
         
+        # Check if llama-cpp-python has CUDA support
+        self.llama_cpp_has_cuda = self._check_llama_cpp_cuda_support()
+        
         # Detect Apple Silicon
         self.is_apple_silicon = (
             platform.system() == "Darwin" and platform.processor() == "arm"
@@ -64,7 +68,7 @@ class HardwareProfile:
                         free_memory = (
                             torch.cuda.memory_reserved(i) - torch.cuda.memory_allocated(i)
                         )
-                    except:
+                    except (AttributeError, RuntimeError):
                         # If memory_reserved is not available, use a percentage estimate
                         free_memory = total_memory * 0.8  # Assume ~80% free
                     
@@ -80,6 +84,90 @@ class HardwareProfile:
         
         # Log the detected hardware profile
         self._log_hardware_profile()
+    
+    def _check_llama_cpp_cuda_support(self) -> bool:
+        """Check if the installed llama-cpp-python has CUDA support."""
+        try:
+            # First check if the package is installed
+            result = subprocess.run(
+                ["pip", "show", "llama-cpp-python"],
+                capture_output=True,
+                text=True
+            )
+            
+            if result.returncode != 0:
+                logger.info("llama-cpp-python is not installed")
+                return False
+            
+            # Use the same approach as in setup_utils.py for version 0.3.8+
+            try:
+                import llama_cpp
+                # Method 1: Try using the llama_cpp library's load_shared_library function (0.3.x+)
+                try:
+                    from llama_cpp._ctypes_extensions import load_shared_library
+                    import pathlib
+                    lib_path = pathlib.Path(llama_cpp.__file__).parent / "lib"
+                    lib = load_shared_library('llama', lib_path)
+                    has_cuda = bool(lib.llama_supports_gpu_offload())
+                    if has_cuda:
+                        logger.info("CUDA support detected via llama_supports_gpu_offload()")
+                    return has_cuda
+                except (ImportError, AttributeError) as e:
+                    logger.warning(f"Could not check CUDA support via load_shared_library: {e}")
+                    
+                    # Method 2: Check if CUDA is in the version string (fallback)
+                    if hasattr(llama_cpp, "__version__") and "cuda" in llama_cpp.__version__.lower():
+                        logger.info("CUDA support detected via version string")
+                        return True
+                    
+                    # Try using a more direct approach for older versions
+                    try:
+                        # Import the Llama class
+                        from llama_cpp import Llama
+                        
+                        # Approach 1: Check if the class has is_cuda_available as a callable method
+                        if hasattr(Llama, 'is_cuda_available'):
+                            # Get the attribute as an object to inspect it
+                            attr = getattr(Llama, 'is_cuda_available')
+                            if callable(attr):
+                                try:
+                                    # Try to call it safely and convert result to bool
+                                    result = attr()
+                                    cuda_available = bool(result)
+                                    if cuda_available:
+                                        logger.info("CUDA support detected via is_cuda_available() class method")
+                                    return cuda_available
+                                except Exception as e:
+                                    logger.warning(f"Error calling is_cuda_available(): {e}")
+                                    # Continue to next approach
+                        
+                        # Approach 2: Try creating a model instance with GPU layers
+                        try:
+                            # This will likely fail, but we'll check the error message
+                            _ = Llama(model_path="", n_gpu_layers=1)
+                            # If we get here, CUDA might be working
+                            logger.info("CUDA support detected via successful Llama instantiation")
+                            return True
+                        except Exception as model_err:
+                            # Check if error message indicates CUDA support
+                            err_str = str(model_err).lower()
+                            if "cuda" in err_str and "not compiled with cuda" not in err_str:
+                                logger.info("CUDA support detected via model initialization exception")
+                                return True
+                    except Exception as e2:
+                        logger.warning(f"Could not check CUDA support via is_cuda_available: {e2}")
+                
+                # If all else fails, assume no CUDA support
+                logger.warning("No CUDA support detected in llama-cpp-python")
+                return False
+                
+            except Exception as e:
+                logger.error(f"Error during llama-cpp-python CUDA check: {e}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error checking llama-cpp-python CUDA support: {e}")
+            return False
     
     def _log_hardware_profile(self):
         """Log detected hardware capabilities."""
@@ -97,6 +185,13 @@ class HardwareProfile:
                     f"{gpu['free_memory_gb']:.1f}GB/{gpu['total_memory_gb']:.1f}GB free, "
                     f"Compute {gpu['compute_capability']}"
                 )
+            
+            if self.llama_cpp_has_cuda:
+                logger.info("llama-cpp-python has CUDA support: Yes")
+            else:
+                logger.warning("llama-cpp-python has CUDA support: No (library not built with CUDA)")
+                logger.warning("To enable CUDA support, reinstall llama-cpp-python with CUDA support")
+                
         elif self.has_mps:
             logger.info("GPU: Apple Silicon with Metal Performance Shaders support")
         else:
@@ -152,12 +247,16 @@ class HardwareProfile:
             "threads_per_worker": 1
         }
         
-        # If high-end CUDA device
+        # If high-end CUDA device and llama-cpp-python has CUDA support
         if self.has_cuda and self.gpu_info and self.gpu_info[0]["free_memory_gb"] > 4.0:
-            config["device"] = "cuda"
-            # For example, scale batch size with free GPU memory
-            config["batch_size"] = min(32, int(self.gpu_info[0]["free_memory_gb"] * 4))
-            config["multi_process"] = (self.gpu_count > 1)
+            if self.llama_cpp_has_cuda:
+                config["device"] = "cuda"
+                # For example, scale batch size with free GPU memory
+                config["batch_size"] = min(32, int(self.gpu_info[0]["free_memory_gb"] * 4))
+                config["multi_process"] = (self.gpu_count > 1)
+            else:
+                logger.warning("GPU detected but llama-cpp-python does not have CUDA support")
+                logger.warning("Falling back to CPU for embeddings")
             
         # Apple Silicon MPS
         elif self.has_mps:
@@ -188,6 +287,50 @@ class HardwareProfile:
             # Possibly enable multiprocess if we have a high-core CPU
             config["multi_process"] = (self.physical_cores > 4)
         
+        return config
+    
+    def get_llm_config(self) -> Dict[str, Any]:
+        """
+        Determine optimal configuration for an LLM.
+        
+        Returns:
+            Dict with config including GPU layers, threads, etc.
+        """
+        config = {
+            "n_threads": max(1, min(self.physical_cores - 1, 8)),
+            "n_gpu_layers": 0,
+            "use_gpu": False
+        }
+        
+        # If CUDA is available and llama-cpp-python has CUDA support
+        if self.has_cuda and self.llama_cpp_has_cuda:
+            config["use_gpu"] = True
+            
+            # GPU memory-based layer allocation
+            free_memory_gb = self.gpu_info[0]["free_memory_gb"] if self.gpu_info else 0
+            
+            if free_memory_gb > 16:
+                # High memory GPU - use all layers
+                config["n_gpu_layers"] = -1
+            elif free_memory_gb > 8:
+                # Medium memory GPU - use most layers
+                config["n_gpu_layers"] = 35  
+            elif free_memory_gb > 4:
+                # Low memory GPU - use fewer layers
+                config["n_gpu_layers"] = 20
+            else:
+                # Very low memory - minimal layers
+                config["n_gpu_layers"] = 10
+                
+            logger.info(f"LLM GPU config: Using {config['n_gpu_layers']} GPU layers")
+        # Apple Silicon MPS
+        elif self.has_mps:
+            config["use_gpu"] = True
+            config["n_gpu_layers"] = -1  # Use all layers for Metal
+            logger.info("LLM GPU config: Using Metal for all layers")
+        else:
+            logger.info("LLM GPU config: Using CPU-only inference")
+            
         return config
 
 
@@ -242,6 +385,10 @@ class ResourceManager:
         """Get optimal configuration for embedding based on hardware profile."""
         return self.hardware.get_optimal_embedding_config()
     
+    def get_llm_config(self) -> Dict[str, Any]:
+        """Get optimal configuration for LLM based on hardware profile."""
+        return self.hardware.get_llm_config()
+    
     def get_executor(self, pool_type: str = "cpu") -> SafeThreadPoolExecutor:
         """
         Get a (Safe)ThreadPoolExecutor for the specified task type.
@@ -253,7 +400,7 @@ class ResourceManager:
             SafeThreadPoolExecutor instance
         """
         if pool_type not in self._executor_pools:
-            # We’ll lock on a global basis to ensure we don't create multiple pools concurrently
+            # We'll lock on a global basis to ensure we don't create multiple pools concurrently
             with threading.RLock():
                 if pool_type not in self._executor_pools:
                     if pool_type == "io":
@@ -346,6 +493,10 @@ if __name__ == "__main__":
     manager = get_resource_manager()
     config = manager.get_embedding_config()
     print("Optimal embedding config:", config)
+    
+    # Test LLM config
+    llm_config = manager.get_llm_config()
+    print("Optimal LLM config:", llm_config)
     
     # A quick test of parallel_map
     def square(x: int) -> int:

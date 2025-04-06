@@ -6,9 +6,6 @@
 o.md
 logs/
 *.db
-vector_db/
-vector_db_no_pca/
-vector_db_pca/
 models/
 onepiece/
 bts/
@@ -19,9 +16,7 @@ game-of-thrones/
 wsl/
 conversation.txt
 temp/
-debug/
 gnu/
-data/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

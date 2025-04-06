@@ -1,8 +1,9 @@
 import logging
-import numpy as np
 from rank_bm25 import BM25Okapi
 from typing import Dict, Any, Optional, List
 import spacy
+import os
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -54,126 +55,111 @@ def extract_proper_nouns(text: str, nlp: Optional[spacy.language.Language]) -> L
     return proper_nouns
 
 
+def find_project_root():
+    """Finds the root of the project by looking for pyproject.toml."""
+    current_dir = os.path.abspath(os.path.dirname(__file__))
+    while current_dir != os.path.dirname(current_dir):
+        if os.path.exists(os.path.join(current_dir, "pyproject.toml")):
+            return current_dir
+        current_dir = os.path.dirname(current_dir)
+    raise RuntimeError("Could not find project root. Please check your project structure.")
+
+
 class BM25Retriever:
-    """
-    Enhanced BM25 retriever for keyword-based search with SpaCy integration.
-    Complements vector-based search with exact keyword matching and proper noun detection.
-    """
+    """Enhanced BM25 retriever for keyword-based search with SpaCy integration."""
 
-    def __init__(self, use_spacy: bool = True) -> None:
-        self.documents: List[str] = []  # List of document texts
-        self.document_metadata: List[Dict[str, Any]] = []  # List of document metadata
-        self.tokenized_corpus: List[List[str]] = []  # Tokenized corpus for BM25
-        self.bm25: Optional[BM25Okapi] = None  # BM25 model
-        self.use_spacy = use_spacy
-        self.nlp: Optional[spacy.language.Language] = load_nlp_model() if use_spacy else None
+    def __init__(self, storage_dir: Optional[str] = None):
+        """Initialize BM25 retriever.
 
-    def tokenize_text(self, text: str) -> List[str]:
-        """Tokenize text using SpaCy if available, otherwise fallback to simple tokenization."""
-        if self.nlp is not None:
-            doc = self.nlp(text.lower())
-            tokens: List[str] = [
-                token.lemma_
-                for token in doc
-                if not token.is_stop and not token.is_punct and len(token.text) > 1
-            ]
-            return tokens
-        else:
-            return text.lower().split()
+        Args:
+            storage_dir: Directory to store BM25 index files. If None, uses default index/bm25 directory.
+        """
+        if storage_dir is None:
+            project_root = find_project_root()
+            storage_dir = os.path.join(project_root, "index", "bm25")
 
-    def add_document(self, text: str, metadata: Optional[Dict[str, Any]] = None) -> None:
-        """Add a single document to the BM25 index."""
-        tokens = self.tokenize_text(text)
+        self.storage_dir = storage_dir
+        os.makedirs(self.storage_dir, exist_ok=True)
 
-        self.documents.append(text)
-        self.document_metadata.append(metadata or {})
+        self.index_path = os.path.join(self.storage_dir, "bm25_index.pkl")
+        self.docs_path = os.path.join(self.storage_dir, "documents.json")
+        self.vocab_path = os.path.join(self.storage_dir, "vocabulary.json")
+
+        # Initialize components
+        self.nlp = spacy.load("en_core_web_sm")
+        self.tokenized_corpus = []
+        self.documents = []
+        self.bm25 = None
+
+        # Load existing index if available
+        self._load_or_init_index()
+
+    def _load_or_init_index(self) -> None:
+        """Load existing index data or initialize new index."""
+        try:
+            with open(self.docs_path, "r", encoding="utf-8") as f:
+                self.documents = json.load(f)
+            with open(self.vocab_path, "r", encoding="utf-8") as f:
+                vocab_data = json.load(f)
+                self.tokenized_corpus = vocab_data.get("tokenized_corpus", [])
+            if self.tokenized_corpus:
+                self.bm25 = BM25Okapi(self.tokenized_corpus)
+            logger.info(f"Loaded BM25 index from {self.storage_dir}")
+        except (FileNotFoundError, json.JSONDecodeError):
+            self.documents = []
+            self.tokenized_corpus = []
+            self.bm25 = None
+            logger.info("Initialized new BM25 index")
+
+    def save(self) -> None:
+        """Save index data to storage directory."""
+        os.makedirs(self.storage_dir, exist_ok=True)
+
+        with open(self.docs_path, "w", encoding="utf-8") as f:
+            json.dump(self.documents, f, indent=2)
+
+        vocab_data = {
+            "tokenized_corpus": self.tokenized_corpus
+        }
+        with open(self.vocab_path, "w", encoding="utf-8") as f:
+            json.dump(vocab_data, f, indent=2)
+
+        logger.info(f"Saved BM25 index to {self.storage_dir}")
+
+    def add_document(self, text: str, doc_id: str) -> None:
+        """Add a document to the index."""
+        tokens = [token.text.lower() for token in self.nlp(text) if not token.is_stop and not token.is_punct]
+        self.documents.append({"id": doc_id, "text": text})
         self.tokenized_corpus.append(tokens)
+        self.bm25 = BM25Okapi(self.tokenized_corpus)
+        self.save()
 
-        # Rebuild BM25 index
-        self._build_index()
-
-    def add_documents(self, texts: List[str], metadatas: Optional[List[Dict[str, Any]]] = None) -> None:
-        """Add multiple documents at once to the BM25 index."""
-        if metadatas is None:
-            metadatas = [{} for _ in texts]
-
-        for text, metadata in zip(texts, metadatas):
-            tokens = self.tokenize_text(text)
-            self.documents.append(text)
-            self.document_metadata.append(metadata)
-            self.tokenized_corpus.append(tokens)
-
-        self._build_index()
-
-    def _build_index(self) -> None:
-        """Build or rebuild the BM25 index."""
-        if self.tokenized_corpus:
-            self.bm25 = BM25Okapi(self.tokenized_corpus)
-            logger.info(f"Built BM25 index with {len(self.tokenized_corpus)} documents")
-
-    def query(self, query_text: str, n_results: int = 5, boost_proper_nouns: bool = True) -> Dict[str, Any]:
-        """Search for documents using BM25 with optional proper noun boosting and filtering."""
+    def query(self, query_text: str, n_results: int = 5) -> Dict[str, Any]:
+        """Search the index for relevant documents."""
         if not self.bm25:
-            logger.warning("No documents indexed for BM25 search")
-            return {
-                "query": query_text,
-                "ids": [],
-                "documents": [],
-                "metadatas": [],
-                "scores": [],
-                "score_details": [],
-            }
+            return {"ids": [], "scores": [], "documents": [], "score_details": []}
 
-        # Tokenize the query normally
-        tokenized_query = self.tokenize_text(query_text)
-        base_scores = self.bm25.get_scores(tokenized_query)
-        scores = base_scores.copy()
-        
-        score_details: List[Dict[str, Any]] = []
-        
-        # Extract proper nouns using a title-cased query to help spaCy recognize them
-        proper_nouns: List[str] = []
-        if boost_proper_nouns and self.nlp is not None:
-            proper_nouns = extract_proper_nouns(query_text.title(), self.nlp)
-            logger.debug(f"Extracted proper nouns for query: {proper_nouns}")
-        
-        # Iterate over each document score
-        for i, score in enumerate(base_scores):
-            detail: Dict[str, Any] = {
-                "index": i,
-                "base_bm25": score,
-                "proper_noun_boost": 1.0,
-                "formula": f"BM25(doc_{i}) = {score:.4f}"
-            }
-            doc_tokens = self.tokenized_corpus[i]
-            if proper_nouns:
-                # Check if any proper noun from the query is present in the document tokens
-                if any(noun in doc_tokens for noun in [noun.lower() for noun in proper_nouns]):
-                    # Apply boost factor
-                    detail["proper_noun_boost"] = 1.5
-                    scores[i] *= 1.5
-                    detail["formula"] += f" × 1.5 (proper noun boost) = {scores[i]:.4f}"
-                    detail["latex"] = f"\\text{{BM25}}_{{{i}}} = {score:.4f} \\times 1.5 = {scores[i]:.4f}"
-                else:
-                    # If no proper noun match is found, filter out this document
-                    scores[i] = 0
-                    detail["filtered"] = True
-                    detail["reason"] = "No proper noun match from query"
-            else:
-                detail["latex"] = f"\\text{{BM25}}_{{{i}}} = {score:.4f}"
-            score_details.append(detail)
+        # Tokenize query
+        query_tokens = [token.text.lower() for token in self.nlp(query_text) if not token.is_stop and not token.is_punct]
 
-        # Determine top indices based on the (possibly boosted/filtered) scores
-        top_indices = np.argsort(scores)[::-1][:n_results]
-        top_indices = [idx for idx in top_indices if scores[idx] > 0]
+        # Get BM25 scores
+        scores = self.bm25.get_scores(query_tokens)
 
-        result: Dict[str, Any] = {
-            "query": query_text,
-            "ids": [f"doc_{i}" for i in top_indices],
-            "documents": [self.documents[i] for i in top_indices],
-            "metadatas": [self.document_metadata[i] for i in top_indices],
-            "scores": [scores[i] for i in top_indices],
-            "score_details": [score_details[i] for i in top_indices]
+        # Sort and get top results - convert numpy float64 to native float
+        top_n = sorted(enumerate(scores), key=lambda x: float(x[1]), reverse=True)[:n_results]
+
+        results = {
+            "ids": [self.documents[idx]["id"] for idx, _ in top_n],
+            "scores": [score for _, score in top_n],
+            "documents": [self.documents[idx]["text"] for idx, _ in top_n],
+            "score_details": [
+                {
+                    "index": idx,
+                    "score": score,
+                    "formula": f"BM25({query_text}, doc_{idx}) = {score:.4f}"
+                }
+                for idx, score in top_n
+            ]
         }
 
-        return result
+        return results

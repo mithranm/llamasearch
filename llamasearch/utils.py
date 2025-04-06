@@ -37,7 +37,8 @@ def setup_logging(name, level=logging.INFO):
 
 class NumpyEncoder(json.JSONEncoder):
     """
-    Custom JSON encoder that gracefully handles numpy types (e.g. float32, int64).
+    Custom JSON encoder that gracefully handles numpy types (e.g. float32, int64)
+    and other non-JSON-serializable types.
     """
     def default(self, o):
         # Convert float32/float64 -> float
@@ -49,6 +50,9 @@ class NumpyEncoder(json.JSONEncoder):
         # Convert array -> list (optional)
         if isinstance(o, np.ndarray):
             return o.tolist()
+        # Convert set -> list
+        if isinstance(o, set):
+            return list(o)
         return super().default(o)
 
 def log_query(query, context_chunks, response, debug_info=None):
@@ -73,3 +77,35 @@ def log_query(query, context_chunks, response, debug_info=None):
         # Use our custom NumpyEncoder
         json.dump(log_data, f, ensure_ascii=False, indent=2, cls=NumpyEncoder)
     return log_file
+
+def save_data(data, file_path):
+    """
+    Save data to a JSON file with proper encoding for numpy types.
+    
+    Args:
+        data: The data to save (dict, list, etc.)
+        file_path: Path to save the file
+    """
+    # Create directory if it doesn't exist
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    
+    with open(file_path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2, cls=NumpyEncoder)
+    return file_path
+
+def load_data(file_path, default=None):
+    """
+    Load data from a JSON file.
+    
+    Args:
+        file_path: Path to the file
+        default: Value to return if file doesn't exist
+        
+    Returns:
+        Loaded data or default value if file doesn't exist
+    """
+    if not os.path.exists(file_path):
+        return default
+    
+    with open(file_path, 'r', encoding='utf-8') as f:
+        return json.load(f)
