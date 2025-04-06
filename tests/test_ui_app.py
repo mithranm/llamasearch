@@ -1,5 +1,6 @@
 import os
 import gradio as gr
+import tempfile
 from llamasearch.ui.app import (
     generate_response,
     listen_answer,
@@ -7,6 +8,7 @@ from llamasearch.ui.app import (
     save_and_clear,
     new_chat,
     create_app,
+    upload_files,  # Make sure we import upload_files to test it
 )
 
 def test_generate_response():
@@ -70,3 +72,50 @@ def test_app_creation():
     essential_labels = ["Enter a Website Link", "Ask a Question", "AI Response", "Rate Response", "Audio Response"]
     for label in essential_labels:
         assert label in labels
+
+def test_upload_files_no_input():
+    """
+    If no files are passed, we expect the function to return 'No files selected.' 
+    and create no new files in llamasearch/temp.
+    """
+    result = upload_files([])
+    assert result == "No files selected."
+    # Also verify that llamasearch/temp folder is still present or empty
+    # It's optional to check if it exists:
+    temp_dir = "llamasearch/temp"
+    if os.path.exists(temp_dir):
+        # it might contain old files, so we won't strictly test for emptiness
+        pass
+
+def test_upload_files_single():
+    """
+    Test copying a single temporary file to llamasearch/temp.
+    """
+    # Create a temporary file to simulate an uploaded file
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as tmp:
+        tmp.write(b"Sample data")
+        tmp.flush()
+        tmp_path = tmp.name  # path to the temporary file
+
+    try:
+        # Now call upload_files with this single path
+        result = upload_files([tmp_path])
+        # The function should have returned "Uploaded: <filename>"
+        filename = os.path.basename(tmp_path)
+        expected_msg = f"Uploaded: {filename}"
+        assert result == expected_msg
+
+        # Verify that the file is actually copied
+        copied_path = os.path.join("llamasearch", "temp", filename)
+        assert os.path.exists(copied_path)
+
+        # Optional: Check contents match
+        with open(copied_path, "rb") as f:
+            copied_data = f.read()
+        assert copied_data == b"Sample data"
+
+        # Clean up the copied file
+        os.remove(copied_path)
+    finally:
+        # Remove original tmp file
+        os.remove(tmp_path)

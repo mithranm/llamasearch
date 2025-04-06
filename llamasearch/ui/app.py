@@ -1,5 +1,8 @@
 # Online sources and Gen AI has been used to help with adapting
 # the code and fixing minor mistakes
+import os
+import shutil
+import base64
 import gradio as gr
 from gradio import Blocks
 from llamasearch.ui.utils import save_to_db, QARecord, export_to_txt, delete_all_records
@@ -82,13 +85,77 @@ def new_chat():
         gr.update(visible=False),
     )
 
+def upload_files(file_paths):
+    """
+    Copies each selected file to llamasearch/temp.
+    Returns a status string to display in the UI.
+    """
+    if not file_paths:
+        return "No files selected."
+
+    # Ensure the temp folder exists
+    os.makedirs("llamasearch/temp", exist_ok=True)
+
+    # file_paths will be a list of strings if file_count="multiple" and type="filepath"
+    uploaded = []
+    for path in file_paths:
+        # Extract the original filename from the path
+        filename = os.path.basename(path)
+        destination = os.path.join("llamasearch", "temp", filename)
+        shutil.copy(path, destination)
+        uploaded.append(filename)
+
+    return f"Uploaded: {', '.join(uploaded)}"
 
 def create_app() -> Blocks:
-    with gr.Blocks() as demo:
-        gr.Markdown("# LLAMASEARCH - Next Gen AI Search Assistant")
+    with gr.Blocks(title="LlamaSearch") as demo:
+        icon_path = "temp/llamasearch.png"  # update if needed
+        if os.path.isfile(icon_path):
+            with open(icon_path, "rb") as f:
+                base64_data = base64.b64encode(f.read()).decode("utf-8")
+            # Create an <img> tag with a data URI
+            icon_html = f"""
+            <div style="display: flex; align-items: center;">
+              <img 
+                src="data:image/png;base64,{base64_data}"
+                alt="LlamaSearch Icon" 
+                style="width:80px; height:auto; margin-right:15px;"/>
+              <h2 style="margin:0;">LlamaSearch</h2>
+            </div>
+            """
+        else:
+            # Fallback: file not found
+            icon_html = "<h2 style='color:red;'>Icon not found!</h2>"
 
-        link_input = gr.Textbox(
-            label="Enter a Website Link", placeholder="https://example.com"
+        with gr.Row():
+            gr.HTML(icon_html)
+
+        with gr.Row():
+            # --- Column 1 ---
+            with gr.Column():
+                link_input = gr.Textbox(
+                    label="Enter a Website Link",
+                    placeholder="https://example.com"
+                )
+            
+            # --- Column 2 ---
+            with gr.Column():
+                file_input = gr.File(
+                    label="Attach Files",
+                    file_count="multiple",
+                    type="filepath"
+                )
+            
+            # --- Column 3 ---
+            with gr.Column():
+                upload_btn = gr.Button("Upload")
+                upload_status = gr.Textbox(label="Status", interactive=False)
+        
+        # Wire up the upload button
+        upload_btn.click(
+            fn=upload_files,
+            inputs=file_input,
+            outputs=upload_status
         )
 
         user_input = gr.Textbox(
@@ -96,21 +163,25 @@ def create_app() -> Blocks:
             placeholder="Type your question here...",
             elem_id="wider-textbox",
         )
-
+        
         with gr.Row():
             submit_btn = gr.Button("Search")
             next_question_btn = gr.Button("Next Question")
             new_chat_btn = gr.Button("New Chat")
 
-        chat_output = gr.Textbox(label="AI Response", interactive=False, lines=15)
-
         with gr.Row():
-            listen_btn = gr.Button("Listen Answer")
-            chat_btn = gr.Button("Download Chat History")
-            rating = gr.Radio(["", "👍", "👎"], label="Rate Response", value="")
-            review_btn = gr.Button("Leave a Review")
+            with gr.Column(scale=3):
+                # Large column for AI response
+                chat_output = gr.Textbox(label="AI Response", interactive=False, lines=15)
+                # Audio output can be under chat
 
-        audio_output = gr.Audio(label="Audio Response", interactive=False)
+            with gr.Column(scale=1):
+                # Stack all buttons on the right
+                listen_btn = gr.Button("Listen Answer")
+                audio_output = gr.Audio(label="Audio Response", interactive=False)
+                chat_btn = gr.Button("Download Chat History")
+                rating = gr.Radio(["", "👍", "👎"], label="Rate Response", value="")
+                review_btn = gr.Button("Leave a Review")
 
         review_prompt = gr.Textbox(
             label="Your Review", visible=False, placeholder="Write your review here..."
@@ -154,4 +225,4 @@ def create_app() -> Blocks:
 
 if __name__ == "__main__":
     app = create_app()
-    app.launch()
+    app.launch(favicon_path="temp/llamasearch.png")
