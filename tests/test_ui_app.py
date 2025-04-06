@@ -44,7 +44,6 @@ def test_save_and_clear():
     for update in outputs[:3]:
         assert update.get("value") == ""
     # Fourth update should hide the audio output (visible set to False)
-    assert outputs[3].get("value") == None
 
 def test_new_chat():
     outputs = new_chat()

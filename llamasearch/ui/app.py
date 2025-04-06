@@ -3,7 +3,6 @@
 import os
 import shutil
 import base64 
-import sys
 import gradio as gr
 from gradio import Blocks
 from llamasearch.ui.utils import save_to_db, QARecord, export_to_txt, delete_all_records
@@ -43,7 +42,7 @@ def download_chat() -> str:
 
     # 2) Build a base name and extension
     base = "conversation"
-    ext  = ".txt"
+    ext = ".txt"
 
     # 3) Find the first available filename
     dest_path = os.path.join(downloads_dir, base + ext)
@@ -201,7 +200,7 @@ def create_app() -> Blocks:
                 listen_btn = gr.Button("Listen Answer")
                 audio_output = gr.Audio(label="Audio Response", interactive=False)
 
-                #download_status = gr.Textbox(label="Download Status", interactive=False)
+                # download_status = gr.Textbox(label="Download Status", interactive=False)
                 download_btn = gr.Button("Download Chat History")
                 download_btn.click(
                     fn=download_chat,
