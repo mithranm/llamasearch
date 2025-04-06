@@ -17,6 +17,9 @@ wsl/
 conversation.txt
 temp/
 gnu/
+*.log
+crawl_data/
+index/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
