@@ -2,7 +2,8 @@
 # the code and fixing minor mistakes
 import os
 import shutil
-import base64
+import base64 
+import sys
 import gradio as gr
 from gradio import Blocks
 from llamasearch.ui.utils import save_to_db, QARecord, export_to_txt, delete_all_records
@@ -30,9 +31,29 @@ def listen_answer(answer_text):
     tts.save(tmp_file.name)
     return tmp_file.name
 
+def download_chat() -> str:
+    """
+    Exports chat history into a uniquely‑named file in ~/Downloads:
+    conversation.txt, conversation(1).txt, conversation(2).txt, etc.
+    Returns the full path so you can display it in the UI.
+    """
+    # 1) Ensure the Downloads folder exists
+    downloads_dir = os.path.join(os.path.expanduser("~"), "Downloads")
+    os.makedirs(downloads_dir, exist_ok=True)
 
-def download_chat():
-    export_to_txt("conversation.txt")
+    # 2) Build a base name and extension
+    base = "conversation"
+    ext  = ".txt"
+
+    # 3) Find the first available filename
+    dest_path = os.path.join(downloads_dir, base + ext)
+    counter = 1
+    while os.path.exists(dest_path):
+        dest_path = os.path.join(downloads_dir, f"{base}({counter}){ext}")
+        counter += 1
+
+    # 4) Export to that path
+    export_to_txt(dest_path)
 
 
 def rate_response(rating):
@@ -64,7 +85,7 @@ def save_and_clear(question, answer, rating):
         gr.update(value=""),
         gr.update(value=""),
         gr.update(value=""),
-        gr.update(visible=False),
+        gr.update(value=None),
     )
 
 
@@ -179,7 +200,14 @@ def create_app() -> Blocks:
                 # Stack all buttons on the right
                 listen_btn = gr.Button("Listen Answer")
                 audio_output = gr.Audio(label="Audio Response", interactive=False)
-                chat_btn = gr.Button("Download Chat History")
+
+                #download_status = gr.Textbox(label="Download Status", interactive=False)
+                download_btn = gr.Button("Download Chat History")
+                download_btn.click(
+                    fn=download_chat,
+                    inputs=None
+                )
+
                 rating = gr.Radio(["", "👍", "👎"], label="Rate Response", value="")
                 review_btn = gr.Button("Leave a Review")
 
@@ -192,7 +220,7 @@ def create_app() -> Blocks:
             generate_response, inputs=[link_input, user_input], outputs=chat_output
         )
         listen_btn.click(listen_answer, inputs=chat_output, outputs=audio_output)
-        chat_btn.click(download_chat, outputs=None)
+
         rating.change(rate_response, inputs=rating, outputs=None)
 
         new_chat_btn.click(
