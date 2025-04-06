@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head><base href="https://artanis.dev/blog/better-custody.html">
+<!-- 2025-04-02 Wed 22:04 -->
+
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A secure design of crypto custody with TEE</title>
+<meta name="author" content="NalaGinrut">
+<meta name="description" content="The first product-level modern Web framework of Scheme programming language.">
+<meta name="keywords" content="Scheme programming language, Web, Framework, GNU, Guile, GNU Artanis, Artanis, Web Application Framework, WAF, Functional Programming, Web Development, Web Server, Web Framework, Web Development, Web Application">
+<meta name="generator" content="Org Mode">
+
+<link rel="stylesheet" type="text/css" href="../style.css">
+</head>
+<body>
+<div id="content" class="content" style="color: rgb(86, 237, 86); background-color: rgba(19, 32, 27, 0.87); font-size: 30px;">
+<h1 class="title">A secure design of crypto custody with TEE</h1>
+<p id="nav">
+    <a href="../index.html">Home</a> |
+    <a href="../scheme.html">Scheme Intro</a> |
+    <a href="../blog.html" id="cursor">Blog</a> |
+    <a href="https://ftp.gnu.org/gnu/artanis/">Download</a> |
+    <a href="https://www.gnu.org/software/artanis/manual/">Document</a> |
+    <a href="https://gitlab.com/hardenedlinux/artanis">Repo</a>
+</p>
+
+
+<p>
+A friend of mine, an early Bitcoin adopter, always believed in self-sovereignty. “Not your keys, not your coins,” he would say. But as the years passed, the risks grew. Hacks, phishing attacks, even forced seizures, he had seen it all.
+</p>
+
+<p>
+He prided himself on keeping his assets secure. He had hardware wallets, multisig setups, and backups. But deep down, he knew there was still a flaw: trust.
+</p>
+
+<p>
+Trust in third-party firmware.
+Trust in cloud-based recovery solutions.
+Trust in the fact that his keys, even if protected, were still a single point of failure.
+</p>
+
+<p>
+One night, he called me.
+</p>
+
+<p>
+“I want a setup that no one, not hackers, not corporations, not even a government, can break. And I want to keep it in my own hands.”
+</p>
+
+<p>
+“Can you do something for it?” he asked me.
+</p>
+
+<p>
+I think the better way is warm wallets with TEE at home. Instead of relying on a single hardware wallet or a custodial service, I showed him how his private keys could be split into multiple secure enclaves, running across devices he controlled—his home server, a Raspberry Pi, even a friend’s node.
+</p>
+
+<p>
+TEE (Trusted Execution Environment) ensures that no one device ever sees the full key. GNU Artanis secures the communication between them, preventing tampering and leaks. Even if one part was stolen, hacked, or seized, it would be useless on its own.
+</p>
+
+<p>
+“This means… even if my laptop was stolen, they still can’t take my funds?” he asked.
+</p>
+
+<p>
+“Exactly. And you don’t have to trust me, or anyone, to do it.”
+</p>
+
+<div id="outline-container-org6b7c7ce" class="outline-2">
+<h2 id="org6b7c7ce">Hot wallet, warm wallet, and cold wallet</h2>
+<div class="outline-text-2" id="text-org6b7c7ce">
+<p>
+A hot wallet is a wallet that is connected to the internet. It is used for day-to-day transactions and is convenient but risky.
+</p>
+
+<p>
+A warm wallet is a wallet that is not connected to the internet but is still accessible. It is used for storing funds that you might need to access quickly.
+</p>
+
+<p>
+A cold wallet is a wallet that is completely offline. It is used for storing large amounts of funds that you do not need to access often.
+</p>
+
+<p>
+If we want to avoid to rely on any third-party service, we need to build a warm wallet with TEE at home. The basic idea is to send your funds from you own device to public exchange service when you need to trade. The funds are stored in your own device and you can access them anytime. This prevent you to reply on any third-party service and send all your funds to them.
+</p>
+
+<p>
+TEE is a technology that can protect your private keys from being stolen. It is a secure environment that is isolated from the rest of the system. It can be used to store your private keys and sign transactions without exposing them to the outside world.
+</p>
+
+<p>
+Furthermore, TEE can be used to encrypt your system, even if your device is stolen, the attacker can't access your data include private keys.
+</p>
+
+<p>
+That's why <a href="https://a16zcrypto.com/posts/article/trusted-execution-environments-tees-primer/">A16Z invested in TEE</a>. They believe that TEE will be a key technology for securing the future of crypto custody.
+</p>
+
+
+<div id="org9eb3bd6" class="figure">
+<p><img src="../img/TEEs.webp" alt="TEEs.webp" width="600px">
+</p>
+<p><span class="figure-number">Figure 1: </span>TEE architecture</p>
+</div>
+</div>
+</div>
+
+<div id="outline-container-org2289c49" class="outline-2">
+<h2 id="org2289c49">GNU Artanis custody solution</h2>
+<div class="outline-text-2" id="text-org2289c49">
+<p>
+GNU Artanis is a web application framework written in Guile Scheme. It's both GNU and HardenedLinux official project. It's designed to be secure and easy to use.
+</p>
+
+<p>
+In our GNU Artanis custody solution, we use GNU Artanis to build a secure service between RESTful, database, TEE and public exchange service.
+</p>
+
+
+<div id="org1e13356" class="figure">
+<p><img src="../img/artanis-custody.png" alt="artanis-custody.png" width="900px">
+</p>
+<p><span class="figure-number">Figure 2: </span>Artanis custody architecture</p>
+</div>
+
+<p>
+To implement the custody solution, we need at least two triplets of credentials. The first triplet is the public exchange service credentials, the second triplet is the local credentials stored in TEE.
+</p>
+
+<p>
+So what's the triplet?
+</p>
+<ul class="org-ul">
+<li>API key</li>
+<li>Private key</li>
+<li>Passphrase</li>
+</ul>
+
+<p>
+In modern authentication, the API key is used to authenticate the user to the service. The private key is used to sign the transaction. The passphrase is used to encrypt the private key.
+</p>
+</div>
+</div>
+
+<div id="outline-container-org09ae6d0" class="outline-2">
+<h2 id="org09ae6d0">The security best practices</h2>
+<div class="outline-text-2" id="text-org09ae6d0">
+<p>
+As mentioned, GNU Artanis is HardenedLinux official project. HardenedLinux is a security-focused collection of best practice. It provides a secure environment for running GNU Artanis.
+</p>
+
+<p>
+HardenedLinux is in a heavy development phase to adapt to TEE in a new hardware platform. We're working on it and will provide more details in the future.
+</p>
+
+<p>
+Besides, HardenedLinux provides Linux Kernel Vaccine, which is a security module that can protect the system from being attacked. This is named as <a href="https://github.com/hardenedlinux/ved">VED (Vault Exploit Defense)</a>. In the past system integration test, VED has been <a href="https://artanis.dev/blog/demystify-artanis-deployment.html">around only 3%~5% overhead</a> for GNU Artanis application. However, it provides a very high rate of protection for 0day exploit.
+</p>
+</div>
+
+<div id="outline-container-orgd20fea1" class="outline-3">
+<h3 id="orgd20fea1">About VED</h3>
+<div class="outline-text-3" id="text-orgd20fea1">
+<p>
+So far, there are only three runtime protection product in the world, which are GRSecurity, Hitachi AKO, and VED,
+</p>
+
+<p>
+<a href="https://grsecurity.net/">GRSecurity</a> is the top one, and it's GPL licensed. The most expensive solution, of course.
+</p>
+
+<p>
+AKO stands for <a href="https://ousar.lib.okayama-u.ac.jp/ja/60101">Additional Kernel Observer</a>, which was developed by Hitachi. It's proprietary software. And mainly designed and used for Hitachi's own product.
+</p>
+
+<p>
+VED is the third one, which is GPL licensed. It's <a href="https://hardenedvault.net/products/ved">developed by HardenedVault</a>, and HardenedLinux has a community edition. It's the most cost-effective solution.
+</p>
+
+
+<div id="org7dbc5ea" class="figure">
+<p><img src="../img/runtime-protect.png" alt="runtime-protect.png" width="900px">
+</p>
+<p><span class="figure-number">Figure 3: </span>Runtime protection solution comparison</p>
+</div>
+</div>
+</div>
+</div>
+
+<div id="outline-container-org4167ee0" class="outline-2">
+<h2 id="org4167ee0">The transaction flow</h2>
+<div class="outline-text-2" id="text-org4167ee0">
+<ol class="org-ol">
+<li>The user sends a request to the GNU Artanis service.</li>
+
+<li>The GNU Artanis service sends a request to the TEE.</li>
+
+<li>The TEE signs the transaction with the private key.</li>
+
+<li>The TEE sends the signed transaction back to the GNU Artanis service.</li>
+
+<li>The GNU Artanis service sends the signed transaction to the public exchange service.</li>
+
+<li>The public exchange service verifies the signed transaction and processes it.</li>
+
+<li>The public exchange service sends the result back to the GNU Artanis service.</li>
+
+<li>The GNU Artanis service sends the result back to the user.</li>
+</ol>
+
+<p>
+Users will be asked to input the passphrase to decrypt the private key in TEE. The passphrase is never stored in the TEE, it's only used to decrypt the private key.
+</p>
+
+<p>
+So we can come to these conclusions:
+</p>
+</div>
+</div>
+
+<div id="outline-container-org3100c3b" class="outline-2">
+<h2 id="org3100c3b">Conclusion</h2>
+<div class="outline-text-2" id="text-org3100c3b">
+<ul class="org-ul">
+<li>The transaction is secure because users will be asked to input the passphrase to decrypt the private key in TEE.</li>
+
+<li>The user's data (transaction history and trading strategy) and private keys are safe, even if the device is stolen, or the hard disk is taken out.</li>
+</ul>
+</div>
+</div>
+
+
+<div id="outline-container-orgcb50c6b" class="outline-2">
+<h2 id="orgcb50c6b">The roadmap</h2>
+<div class="outline-text-2" id="text-orgcb50c6b">
+<ul class="org-ul">
+<li><a href="https://github.com/hardenedlinux/artanis-custody">Artanis custody plugin (full support coinbsae, quicknode, etc)</a></li>
+<li>TEE support in HardenedLinux</li>
+<li>Credential management in TEE</li>
+<li>VED integration in HardenedLinux</li>
+<li>Hardware warm wallet solution</li>
+</ul>
+</div>
+</div>
+
+<div id="outline-container-org28f661e" class="outline-2">
+<h2 id="org28f661e">Feedback</h2>
+<div class="outline-text-2" id="text-org28f661e">
+<p>
+Welcome to raise issue or PR in <a href="https://github.com/hardenedlinux/artanis-custody">Artanis custody plugin</a>.
+</p>
+</div>
+</div>
+</div>
+<div id="postamble" class="status">
+<p class="author">Author: NalaGinrut</p>
+<p class="date">Created: 2025-04-02 Wed 22:04</p>
+<p class="validation"><a href="https://validator.w3.org/check?uri=referer">Validate</a></p>
+</div>
+
+
+</body></html>

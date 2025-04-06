@@ -107,7 +107,7 @@ def log_system_info() -> None:
 def detect_optimal_acceleration() -> Dict[str, Any]:
     """
     Detect the optimal acceleration configuration.
-    For Windows, check for the CUDA_PATH environment variable.
+    For Windows/Linux with NVIDIA GPUs, check for CUDA availability.
     For Darwin on arm64, enable Metal acceleration.
     Otherwise, default to CPU.
     """
@@ -118,6 +118,8 @@ def detect_optimal_acceleration() -> Dict[str, Any]:
         "nvcc_path": None,
         "cuda_wheel_version": None
     }
+    
+    # Check for Windows CUDA
     if platform.system() == "Windows":
         cuda_path = os.environ.get("CUDA_PATH")
         if cuda_path and os.path.exists(cuda_path):
@@ -138,8 +140,37 @@ def detect_optimal_acceleration() -> Dict[str, Any]:
             else:
                 result["cuda_version"] = "11.6"
                 result["cuda_wheel_version"] = "cu116"
+    # Check for Linux CUDA
+    elif platform.system() == "Linux":
+        try:
+            # Check if nvcc is available on Linux
+            process = subprocess.Popen(["nvcc", "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            stdout, _ = process.communicate()
+            if process.returncode == 0:
+                result["type"] = "cuda"
+                # Try to parse the CUDA version
+                output = stdout.decode("utf-8")
+                import re
+                match = re.search(r"release (\d+\.\d+)", output)
+                if match:
+                    cuda_version = match.group(1)
+                    result["cuda_version"] = cuda_version
+                    # Map to wheel version
+                    if cuda_version.startswith("12"):
+                        result["cuda_wheel_version"] = "cu121"
+                    elif cuda_version.startswith("11.8"):
+                        result["cuda_wheel_version"] = "cu118"
+                    elif cuda_version.startswith("11.7"):
+                        result["cuda_wheel_version"] = "cu117"
+                    elif cuda_version.startswith("11"):
+                        result["cuda_wheel_version"] = "cu116"
+        except (subprocess.SubprocessError, FileNotFoundError):
+            # CUDA not available, stay with CPU
+            pass
+    # Check for Apple Silicon
     elif platform.system() == "Darwin" and platform.machine() == "arm64":
         result["type"] = "metal"
+    
     return result
 
 def map_cuda_version_to_wheel(version: str) -> Optional[str]:
@@ -250,6 +281,25 @@ def install_llama_cpp_python() -> bool:
     print("\n[INFO] Installing llama-cpp-python with acceleration support...")
     acceleration_config = get_acceleration_config()
     acceleration_type = acceleration_config.get("type", "cpu")
+    
+    # Additional checks for platform compatibility
+    if acceleration_type == "metal" and (platform.system() != "Darwin" or platform.machine() != "arm64"):
+        logging.warning("Metal acceleration requested but not supported on this platform. Falling back to CPU.")
+        print("[WARNING] Metal acceleration requested but not supported on this platform. Falling back to CPU.")
+        acceleration_type = "cpu"
+        acceleration_config["type"] = "cpu"
+    elif acceleration_type == "cuda" and platform.system() == "Darwin":
+        logging.warning("CUDA acceleration is not available on macOS. Falling back to CPU or Metal depending on hardware.")
+        print("[WARNING] CUDA acceleration is not available on macOS. Falling back to CPU or Metal depending on hardware.")
+        if platform.machine() == "arm64":
+            acceleration_type = "metal"
+            acceleration_config["type"] = "metal"
+            logging.info("Detected Apple Silicon Mac. Using Metal acceleration instead.")
+            print("[INFO] Detected Apple Silicon Mac. Using Metal acceleration instead.")
+        else:
+            acceleration_type = "cpu"
+            acceleration_config["type"] = "cpu"
+    
     logging.info(f"Acceleration type: {acceleration_type}")
     print(f"[INFO] Detected acceleration type: {acceleration_type}")
     _, cmake_args, env_vars = configure_build_environment(acceleration_config)
@@ -331,52 +381,104 @@ def install_llama_cpp_python() -> bool:
 
 def install_torch_with_cuda() -> bool:
     """
-    Install PyTorch with CUDA support based on detected CUDA version.
-    Uses CUDA 12.4 by default as it's compatible with most recent drivers.
+    Install PyTorch with appropriate acceleration support based on platform:
+    - Windows/Linux with NVIDIA GPUs: CUDA support
+    - macOS with Apple Silicon: MPS (Metal Performance Shaders) support
+    - Other platforms: CPU-only
     """
+    system = platform.system()
+    
+    # For macOS (especially Apple Silicon), use the default PyTorch installation
+    if system == "Darwin":
+        logging.info("\n=== Installing PyTorch for macOS ===")
+        print("\n[INFO] Installing PyTorch for macOS...")
+        
+        cmd = [
+            sys.executable, "-m", "pip", "install", "-U", 
+            "--no-cache-dir",
+            "torch", "torchvision", "torchaudio"
+        ]
+        
+        try:
+            logging.info("Installing PyTorch with native macOS support...")
+            print("[INFO] Installing PyTorch with native macOS support...")
+            result = run_subprocess(cmd, check=True)
+            
+            # Verify the installation
+            verify_cmd = [
+                sys.executable, "-c", 
+                "import torch; print('MPS available:', torch.backends.mps.is_available() if hasattr(torch.backends, 'mps') else False); "
+                "print('PyTorch version:', torch.__version__); "
+                "print('Device:', 'MPS' if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available() else 'CPU')"
+            ]
+            verify_result = run_subprocess(verify_cmd, check=False)
+            output = verify_result.get("stdout", "")
+            
+            logging.info("Successfully installed PyTorch for macOS")
+            print("[INFO] Successfully installed PyTorch for macOS")
+            logging.info(output.strip())
+            print(output.strip())
+            return True
+            
+        except Exception as e:
+            logging.error(f"Error installing PyTorch for macOS: {e}")
+            print(f"[ERROR] Error installing PyTorch for macOS: {e}")
+            return False
+    
+    # For Windows/Linux, check for CUDA support
     logging.info("\n=== Installing PyTorch with CUDA support ===")
     print("\n[INFO] Installing PyTorch with CUDA support...")
     
     # Default to using CUDA 12.4 which is compatible with CUDA 12.8 drivers
     cuda_version = "cu124"
+    has_cuda = False
     
     # Try to determine installed CUDA version using nvcc (CUDA compiler)
     try:
         result = run_subprocess(["nvcc", "--version"], check=False)
-        output = result.get("stdout", "")
-        if "release" in output and "V" in output:
-            import re
-            # Look for patterns like "release 12.4, V12.4.99"
-            match = re.search(r"release (\d+\.\d+)", output)
-            if match:
-                detected_version = match.group(1)
-                logging.info(f"Detected CUDA version: {detected_version}")
-                print(f"[INFO] Detected CUDA version: {detected_version}")
-                
-                # Map detected version to closest supported PyTorch CUDA version
-                major_version = float(detected_version.split(".")[0])
-                if major_version < 11.0:
-                    cuda_version = "cu113"
-                elif 11.0 <= major_version < 12.0:
-                    cuda_version = "cu118"  # CUDA 11.x → use 11.8
-                else:
-                    cuda_version = "cu124"  # CUDA 12.x → use 12.4
+        if result["returncode"] == 0:
+            has_cuda = True
+            output = result.get("stdout", "")
+            if "release" in output and "V" in output:
+                import re
+                # Look for patterns like "release 12.4, V12.4.99"
+                match = re.search(r"release (\d+\.\d+)", output)
+                if match:
+                    detected_version = match.group(1)
+                    logging.info(f"Detected CUDA version: {detected_version}")
+                    print(f"[INFO] Detected CUDA version: {detected_version}")
+                    
+                    # Map detected version to closest supported PyTorch CUDA version
+                    major_version = float(detected_version.split(".")[0])
+                    if major_version < 11.0:
+                        cuda_version = "cu113"
+                    elif 11.0 <= major_version < 12.0:
+                        cuda_version = "cu118"  # CUDA 11.x → use 11.8
+                    else:
+                        cuda_version = "cu124"  # CUDA 12.x → use 12.4
     except Exception as e:
-        logging.warning(f"Error detecting CUDA version: {e}")
-        logging.warning(f"Defaulting to PyTorch with {cuda_version}")
-        print(f"[WARNING] Error detecting CUDA version. Defaulting to PyTorch with {cuda_version}")
+        has_cuda = False
+        logging.warning(f"CUDA not detected: {e}")
+        logging.warning("Installing CPU-only version of PyTorch")
+        print("[WARNING] CUDA not detected. Installing CPU-only version of PyTorch")
     
-    # Install PyTorch with CUDA support
+    # Install PyTorch with appropriate support
     cmd = [
         sys.executable, "-m", "pip", "install", "-U", 
         "--no-cache-dir",
-        "torch", "torchvision", "torchaudio", 
-        f"--index-url=https://download.pytorch.org/whl/{cuda_version}"
+        "torch", "torchvision", "torchaudio"
     ]
     
-    try:
+    # Add CUDA-specific index URL only if CUDA is detected
+    if has_cuda:
+        cmd.append(f"--index-url=https://download.pytorch.org/whl/{cuda_version}")
         logging.info(f"Installing PyTorch with {cuda_version} support...")
         print(f"[INFO] Installing PyTorch with {cuda_version} support...")
+    else:
+        logging.info("Installing CPU-only PyTorch...")
+        print("[INFO] Installing CPU-only PyTorch...")
+    
+    try:
         result = run_subprocess(cmd, check=True)
         
         # Verify the installation
@@ -389,21 +491,25 @@ def install_torch_with_cuda() -> bool:
         verify_result = run_subprocess(verify_cmd, check=False)
         output = verify_result.get("stdout", "")
         
-        if "CUDA available: True" in output:
+        if has_cuda and "CUDA available: True" in output:
             logging.info("Successfully installed PyTorch with CUDA support")
             print("[INFO] Successfully installed PyTorch with CUDA support")
             logging.info(output.strip())
             print(output.strip())
             return True
         else:
-            logging.warning("PyTorch installed but CUDA support is not available")
-            print("[WARNING] PyTorch installed but CUDA support is not available")
-            logging.warning(output.strip())
+            if has_cuda:
+                logging.warning("PyTorch installed but CUDA support is not available")
+                print("[WARNING] PyTorch installed but CUDA support is not available")
+            else:
+                logging.info("Successfully installed CPU-only PyTorch")
+                print("[INFO] Successfully installed CPU-only PyTorch")
+            logging.info(output.strip())
             print(output.strip())
-            return False
+            return True  # Return True for CPU-only as it's a successful install
     except Exception as e:
-        logging.error(f"Error installing PyTorch with CUDA support: {e}")
-        print(f"[ERROR] Error installing PyTorch with CUDA support: {e}")
+        logging.error(f"Error installing PyTorch: {e}")
+        print(f"[ERROR] Error installing PyTorch: {e}")
         return False
 
 def download_qwen_model() -> None:
@@ -521,11 +627,11 @@ def setup_dependencies() -> None:
         copy_cuda_visual_studio_files()
         create_windows_cuda_installer()
     
-    # Install PyTorch with CUDA support first
-    installed_torch_with_cuda = install_torch_with_cuda()
-    if not installed_torch_with_cuda:
-        logging.warning("Failed to install PyTorch with CUDA support. Some features may not work properly.")
-        print("[WARNING] Failed to install PyTorch with CUDA support. Some features may not work properly.")
+    # Install PyTorch with appropriate acceleration support first
+    installed_torch = install_torch_with_cuda()
+    if not installed_torch:
+        logging.warning("Failed to install PyTorch. Some features may not work properly.")
+        print("[WARNING] Failed to install PyTorch. Some features may not work properly.")
     
     if install_llama_cpp_python():
         install_spacy_model()

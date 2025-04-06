@@ -302,7 +302,7 @@ if __name__ == "__main__":
         print("\nError: Invalid URL format. URL must start with http:// or https://")
         exit(1)
     
-    key_id = os.environ.get("SCRAPING_API_KEY_ID", "mithran-windows")
+    key_id = os.environ.get("SCRAPING_API_KEY_ID", "mithran-macos")
     print(f"Using API key ID: {key_id}")
     
     target_links_count = 15
