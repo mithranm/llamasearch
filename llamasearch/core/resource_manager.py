@@ -10,6 +10,7 @@ import torch
 import subprocess
 from typing import Dict, Any, List, Optional, Callable, TypeVar
 
+from llamasearch.setup_utils import check_llama_cpp_cuda_support
 logger = logging.getLogger(__name__)
 
 T = TypeVar('T')
@@ -47,7 +48,7 @@ class HardwareProfile:
         self.gpu_info = []
         
         # Check if llama-cpp-python has CUDA support
-        self.llama_cpp_has_cuda = self._check_llama_cpp_cuda_support()
+        self.llama_cpp_has_cuda = check_llama_cpp_cuda_support()
         
         # Detect Apple Silicon
         self.is_apple_silicon = (
@@ -84,90 +85,66 @@ class HardwareProfile:
         
         # Log the detected hardware profile
         self._log_hardware_profile()
-    
-    def _check_llama_cpp_cuda_support(self) -> bool:
-        """Check if the installed llama-cpp-python has CUDA support."""
+        
+    def get_nvidia_gpu_info(self) -> Optional[Dict[str, Any]]:
+        """Returns NVIDIA GPU info using nvidia-smi if available."""
         try:
-            # First check if the package is installed
             result = subprocess.run(
-                ["pip", "show", "llama-cpp-python"],
+                ["nvidia-smi", "--query-gpu=name,memory.total,memory.free,compute_cap", "--format=csv,noheader"],
                 capture_output=True,
-                text=True
+                text=True,
+                check=True
             )
+            if result.returncode == 0:
+                output = result.stdout.strip().split(',')
+                if len(output) >= 3:
+                    return {
+                        "name": output[0].strip(),
+                        "total_memory_mb": int(output[1].strip().split()[0]),
+                        "free_memory_mb": int(output[2].strip().split()[0]),
+                        "compute_cap": output[3].strip() if len(output) > 3 else None
+                    }
+        except (subprocess.SubprocessError, FileNotFoundError):
+            pass
+        return None
+
+    def get_gpu_info(self) -> Dict[str, Any]:
+        """Returns a dictionary with basic GPU info."""
+        gpu_info = {"available": False, "type": None, "details": None, "n_gpu_layers": 0}
+        
+        # Check for NVIDIA GPU (CUDA)
+        nvidia_info = self.get_nvidia_gpu_info()
+        if nvidia_info:
+            gpu_info["available"] = True
+            gpu_info["type"] = "cuda"
+            gpu_info["details"] = nvidia_info
+            # Use all layers for CUDA
+            gpu_info["n_gpu_layers"] = -1
             
-            if result.returncode != 0:
-                logger.info("llama-cpp-python is not installed")
-                return False
+            # Verify if CUDA is actually supported by llama-cpp-python
+            if not check_llama_cpp_cuda_support():
+                logger.warning("NVIDIA GPU detected, but llama-cpp-python doesn't have CUDA support")
+                logger.warning("Will use CPU-only mode. Reinstall llama-cpp-python with CUDA support")
+                # Force CPU mode
+                gpu_info["available"] = False
+                gpu_info["type"] = "cpu"
+                gpu_info["n_gpu_layers"] = 0
             
-            # Use the same approach as in setup_utils.py for version 0.3.8+
-            try:
-                import llama_cpp
-                # Method 1: Try using the llama_cpp library's load_shared_library function (0.3.x+)
-                try:
-                    from llama_cpp._ctypes_extensions import load_shared_library
-                    import pathlib
-                    lib_path = pathlib.Path(llama_cpp.__file__).parent / "lib"
-                    lib = load_shared_library('llama', lib_path)
-                    has_cuda = bool(lib.llama_supports_gpu_offload())
-                    if has_cuda:
-                        logger.info("CUDA support detected via llama_supports_gpu_offload()")
-                    return has_cuda
-                except (ImportError, AttributeError) as e:
-                    logger.warning(f"Could not check CUDA support via load_shared_library: {e}")
-                    
-                    # Method 2: Check if CUDA is in the version string (fallback)
-                    if hasattr(llama_cpp, "__version__") and "cuda" in llama_cpp.__version__.lower():
-                        logger.info("CUDA support detected via version string")
-                        return True
-                    
-                    # Try using a more direct approach for older versions
-                    try:
-                        # Import the Llama class
-                        from llama_cpp import Llama
-                        
-                        # Approach 1: Check if the class has is_cuda_available as a callable method
-                        if hasattr(Llama, 'is_cuda_available'):
-                            # Get the attribute as an object to inspect it
-                            attr = getattr(Llama, 'is_cuda_available')
-                            if callable(attr):
-                                try:
-                                    # Try to call it safely and convert result to bool
-                                    result = attr()
-                                    cuda_available = bool(result)
-                                    if cuda_available:
-                                        logger.info("CUDA support detected via is_cuda_available() class method")
-                                    return cuda_available
-                                except Exception as e:
-                                    logger.warning(f"Error calling is_cuda_available(): {e}")
-                                    # Continue to next approach
-                        
-                        # Approach 2: Try creating a model instance with GPU layers
-                        try:
-                            # This will likely fail, but we'll check the error message
-                            _ = Llama(model_path="", n_gpu_layers=1)
-                            # If we get here, CUDA might be working
-                            logger.info("CUDA support detected via successful Llama instantiation")
-                            return True
-                        except Exception as model_err:
-                            # Check if error message indicates CUDA support
-                            err_str = str(model_err).lower()
-                            if "cuda" in err_str and "not compiled with cuda" not in err_str:
-                                logger.info("CUDA support detected via model initialization exception")
-                                return True
-                    except Exception as e2:
-                        logger.warning(f"Could not check CUDA support via is_cuda_available: {e2}")
-                
-                # If all else fails, assume no CUDA support
-                logger.warning("No CUDA support detected in llama-cpp-python")
-                return False
-                
-            except Exception as e:
-                logger.error(f"Error during llama-cpp-python CUDA check: {e}")
-                return False
-                
-        except Exception as e:
-            logger.error(f"Error checking llama-cpp-python CUDA support: {e}")
-            return False
+            return gpu_info
+        
+        # Check for Apple Metal GPU
+        try:
+            import torch
+            if torch.backends.mps.is_available():
+                gpu_info["available"] = True
+                gpu_info["type"] = "metal"
+                gpu_info["details"] = {"name": "Apple GPU", "framework": "MPS"}
+                # Use all layers for Metal
+                gpu_info["n_gpu_layers"] = -1
+                return gpu_info
+        except (ImportError, AttributeError):
+            pass
+        return gpu_info
     
     def _log_hardware_profile(self):
         """Log detected hardware capabilities."""
@@ -194,6 +171,36 @@ class HardwareProfile:
                 
         elif self.has_mps:
             logger.info("GPU: Apple Silicon with Metal Performance Shaders support")
+            
+            # Check if we need to provide guidance for Apple Silicon
+            try:
+                import llama_cpp
+                # If we reach here, llama_cpp is installed
+                logger.info("llama-cpp-python installed, checking Metal support...")
+                
+                # Check for Metal support in llama-cpp-python
+                # This is a simple check that could be improved with direct Metal detection
+                # Similar to how we check for CUDA, but for Metal
+                try:
+                    # Try loading a small model with Metal (this is a theoretical API example)
+                    # Actual implementation would depend on how llama-cpp-python exposes Metal support
+                    import pathlib
+                    lib_path = pathlib.Path(llama_cpp.__file__).parent / "lib"
+                    
+                    # This is a simplified heuristic - in reality would need to check specific Metal markers
+                    if any("metal" in str(f).lower() for f in lib_path.glob("*") if f.is_file()):
+                        logger.info("llama-cpp-python appears to have Metal support")
+                    else:
+                        logger.warning("WARNING - Model is not using Metal acceleration despite Apple Silicon being available")
+                        logger.warning("WARNING - This suggests llama-cpp-python was not compiled with Metal support")
+                        logger.warning("WARNING - To fix: reinstall llama-cpp-python with Metal support using:")
+                        logger.warning("WARNING - CMAKE_ARGS=\"-DLLAMA_METAL=on\" pip install --force-reinstall llama-cpp-python --no-binary llama-cpp-python")
+                except Exception as e:
+                    logger.warning(f"Could not determine Metal support status: {e}")
+                    logger.warning("If experiencing performance issues, consider reinstalling llama-cpp-python with Metal support")
+                    
+            except ImportError:
+                logger.info("llama-cpp-python not installed")
         else:
             logger.info("GPU: None detected")
     

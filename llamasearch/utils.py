@@ -3,6 +3,7 @@ import json
 import logging
 import numpy as np
 from datetime import datetime
+import time
 from .setup_utils import find_project_root
 
 def setup_logging(name, level=logging.INFO):
@@ -55,57 +56,81 @@ class NumpyEncoder(json.JSONEncoder):
             return list(o)
         return super().default(o)
 
-def log_query(query, context_chunks, response, debug_info=None):
+def log_query(query: str, chunks: list, response: str, debug_info: dict, full_logging: bool = False) -> str:
     """
-    Log query, retrieved chunks, and generated response to a JSON file.
-    Converting all np.float32 to python float so it won't crash.
+    Logs the query along with optimized chunk information to save disk space and improve performance.
+    
+    Args:
+        query: The search query
+        chunks: List of chunks returned by the search
+        response: The generated response
+        debug_info: Additional debugging information
+        full_logging: Whether to log full chunk data (default: False for storage efficiency)
+        
+    Returns:
+        Path to the generated log file
     """
     project_root = find_project_root()
     logs_dir = os.path.join(project_root, "logs")
     os.makedirs(logs_dir, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = os.path.join(logs_dir, f"query_{timestamp}.json")
-    log_data = {
-        "timestamp": datetime.now().isoformat(),
-        "query": query,
-        "context_chunks": context_chunks,
-        "response": response,
-    }
-    if debug_info is not None:
-        log_data["debug_info"] = debug_info
-    with open(log_file, "w", encoding="utf-8") as f:
-        # Use our custom NumpyEncoder
-        json.dump(log_data, f, ensure_ascii=False, indent=2, cls=NumpyEncoder)
-    return log_file
-
-def save_data(data, file_path):
-    """
-    Save data to a JSON file with proper encoding for numpy types.
     
-    Args:
-        data: The data to save (dict, list, etc.)
-        file_path: Path to save the file
-    """
-    # Create directory if it doesn't exist
-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    # Process chunks to reduce storage space if not full logging
+    if not full_logging and chunks:
+        simplified_chunks = []
+        for chunk in chunks:
+            # Create a simplified version with only essential info
+            simplified_chunk = {
+                "id": chunk.get("id", ""),
+                "score": chunk.get("score", 0),
+                "source": chunk.get("metadata", {}).get("source", "") if chunk.get("metadata") else "",
+            }
+            
+            # Include a truncated version of the text for context
+            if "text" in chunk:
+                text = chunk["text"]
+                simplified_chunk["text_preview"] = text[:2000] + "..." if len(text) > 2000 else text
+            
+            # Include entity information if available (useful for debugging entity queries)
+            if chunk.get("metadata") and "entities" in chunk["metadata"]:
+                simplified_chunk["entities"] = chunk["metadata"]["entities"]
+                
+            simplified_chunks.append(simplified_chunk)
+        chunks_to_log = simplified_chunks
+    else:
+        chunks_to_log = chunks
     
-    with open(file_path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2, cls=NumpyEncoder)
-    return file_path
-
-def load_data(file_path, default=None):
-    """
-    Load data from a JSON file.
-    
-    Args:
-        file_path: Path to the file
-        default: Value to return if file doesn't exist
+    # Also optimize debug_info to reduce storage
+    optimized_debug_info = {}
+    if debug_info:
+        # Always include timing information
+        for key in ["retrieval_time", "generation_time", "total_time"]:
+            if key in debug_info:
+                optimized_debug_info[key] = debug_info[key]
         
-    Returns:
-        Loaded data or default value if file doesn't exist
-    """
-    if not os.path.exists(file_path):
-        return default
+        # Include intent analysis if available
+        if "intent" in debug_info:
+            optimized_debug_info["intent"] = debug_info["intent"]
+            
+        # Only include other debug info if full logging is enabled
+        if full_logging:
+            for key, value in debug_info.items():
+                if key not in optimized_debug_info and key != "chunks":
+                    optimized_debug_info[key] = value
     
-    with open(file_path, 'r', encoding='utf-8') as f:
-        return json.load(f)
+    log_data = {
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "query": query,
+        "chunks": chunks_to_log,
+        "response": response,
+        "debug_info": optimized_debug_info
+    }
+    
+    # Use timestamp to create unique log file name
+    log_file = os.path.join(logs_dir, f"query_{int(time.time())}.json")
+    try:
+        with open(log_file, "w", encoding="utf-8") as f:
+            json.dump(log_data, f, ensure_ascii=False, indent=2, cls=NumpyEncoder)
+    except Exception as e:
+        print(f"Error saving log: {e}")
+        
+    return log_file

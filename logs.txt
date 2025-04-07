@@ -1,0 +1,31 @@
+(llamasearch) mithranmohanraj@Mac llamasearch % python -m llamasearch.core.llm --query "tell me about Georgi"
+2025-04-07 07:07:47,927 - llamasearch.core.resource_manager - INFO - CPU: 8 logical cores (8 physical)
+2025-04-07 07:07:47,928 - llamasearch.core.resource_manager - INFO - Memory: 16.0GB total, 6.1GB available
+2025-04-07 07:07:47,928 - llamasearch.core.resource_manager - INFO - GPU: Apple Silicon with Metal Performance Shaders support
+2025-04-07 07:07:47,928 - llamasearch.core.resource_manager - INFO - llama-cpp-python installed, checking Metal support...
+2025-04-07 07:07:47,928 - llamasearch.core.resource_manager - INFO - llama-cpp-python appears to have Metal support
+2025-04-07 07:07:47,928 - llamasearch.core.resource_manager - INFO - ResourceManager initialized with auto_optimize=False
+INFO - Using model: qwen2.5-1.5b-instruct-q4_k_m (/Users/mithranmohanraj/Documents/llamasearch/models/qwen2.5-1.5b-instruct-q4_k_m.gguf)
+2025-04-07 07:07:47,928 - __main__ - INFO - Using model: qwen2.5-1.5b-instruct-q4_k_m (/Users/mithranmohanraj/Documents/llamasearch/models/qwen2.5-1.5b-instruct-q4_k_m.gguf)
+2025-04-07 07:07:47,928 - llamasearch.core.embedder - INFO - Loading primary embedding model: intfloat/multilingual-e5-large-instruct on mps
+2025-04-07 07:07:47,929 - sentence_transformers.SentenceTransformer - INFO - Load pretrained SentenceTransformer: intfloat/multilingual-e5-large-instruct
+2025-04-07 07:07:52,672 - llamasearch.core.embedder - INFO - EnhancedEmbedder initialized with device=mps, batch_size=8, workers=1, threads_per_worker=1
+INFO - Loading NER model: Babelscape/wikineural-multilingual-ner
+2025-04-07 07:07:52,673 - llamasearch.core.vectordb - INFO - Loading NER model: Babelscape/wikineural-multilingual-ner
+Device set to use mps
+INFO - NER pipeline initialized successfully
+[llama cpp logs]
+2025-04-07 07:11:12,395 - __main__ - INFO - Generated response in 5.19s, total 5.69s
+INFO - Query log saved to /Users/mithranmohanraj/Documents/llamasearch/logs/query_1744024272.json
+2025-04-07 07:11:12,396 - __main__ - INFO - Query log saved to /Users/mithranmohanraj/Documents/llamasearch/logs/query_1744024272.json
+Chunk 1 - Source: https://gomason.com/news/2025/4/4/mens-volleyball-patriots-drop-the-first-game-against-19-princeton.aspx
+Snippet: Patriots Drop the First Game Against #19 Princeton - George Mason University Athletics Skip To Main Content Skip To Main Content George Mason University Athletics Scoreboard Set Scores Team 1 2 3 4 F 
+
+
+
+Response:
+
+The context information provided does not contain any mention of a player named Georgi. The text discusses George Mason University Athletics, including a game against Princeton where Sebastian Sanchez had the most kills in three sets and Liam French recorded three service aces for George Mason. However, there is no detailed description or information about a player named Georgi.
+
+Query took 7.59s
+ggml_metal_free: deallocating

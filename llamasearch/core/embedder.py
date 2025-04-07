@@ -1,29 +1,41 @@
-# llamasearch/core/enhanced_embedder.py
+# llamasearch/core/embedder.py
 
 import numpy as np
 import logging
 import torch
 import gc
 import time
-from typing import List, Optional, Dict
+from typing import List, Dict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
-
 from sentence_transformers import SentenceTransformer
-from .resource_manager import get_resource_manager
 
 # Instead of using torch.multiprocessing.Lock (a runtime variable),
 # we import the Lock type from the standard library.
 from multiprocessing.synchronize import Lock as SyncLock
 
+from .resource_manager import get_resource_manager
+
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+DEFAULT_MODEL_NAME = "intfloat/multilingual-e5-large-instruct"
 
+def get_detailed_instruct(task_description: str, query: str) -> str:
+    """
+    Create an instruction template for the E5 instruct model.
+    
+    Args:
+        task_description: The description of the task
+        query: The query text
+        
+    Returns:
+        Formatted instruction text
+    """
+    return f'Instruct: {task_description}\nQuery: {query}'
 
 class EnhancedEmbedder:
     """
-    Enhanced embedder with multi-threading and multi-GPU support.
+    Enhanced embedder with multi-threading and multi-GPU support using multilingual E5 instruct model.
     
     Features:
     - Uses thread pools for parallel processing
@@ -36,11 +48,13 @@ class EnhancedEmbedder:
     def __init__(
         self,
         model_name: str = DEFAULT_MODEL_NAME,
-        device: Optional[str] = None,
+        device: str = "",
         max_length: int = 512,
-        batch_size: Optional[int] = None,
+        batch_size: int = 0,
         auto_optimize: bool = True,
-        num_workers: Optional[int] = None
+        num_workers: int = 0,
+        instruction: str = "",
+        embedding_config: dict = {}
     ):
         """
         Initialize the embedder with dynamic hardware detection.
@@ -48,29 +62,32 @@ class EnhancedEmbedder:
         self.model_name = model_name
         self.max_length = max_length
         
+        # Set default instruction for embedding retrieval
+        self.instruction = instruction if instruction else "Given a passage, represent its content for retrieval."
+        
         # Get resource manager for hardware optimization
         self.resource_manager = get_resource_manager(auto_optimize=auto_optimize)
         
         if auto_optimize:
             config = self.resource_manager.get_embedding_config()
-            self.device = device or config.get("device", "cpu")
-            self.batch_size = batch_size or config.get("batch_size", 32)
+            self.device = device if device else config.get("device", "cpu")
+            self.batch_size = batch_size if batch_size else config.get("batch_size", 32)
             if self.device.startswith("cuda") and torch.cuda.device_count() <= 1:
                 self.num_workers = 1
             else:
-                self.num_workers = num_workers or config.get("num_workers", 2)
+                self.num_workers = num_workers if num_workers else config.get("num_workers", 2)
             self.threads_per_worker = config.get("threads_per_worker", 1)
         else:
-            self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-            self.batch_size = batch_size or 8
-            self.num_workers = num_workers or 1
+            self.device = device if device else ("cuda" if torch.cuda.is_available() else "cpu")
+            self.batch_size = batch_size if batch_size else 8
+            self.num_workers = num_workers if num_workers else 1
             self.threads_per_worker = 1
 
         if self.device.startswith("cuda"):
             torch.backends.cudnn.benchmark = True
         
         self.models: Dict[int, SentenceTransformer] = {}
-        self.model_locks: Dict[int, Optional[SyncLock]] = {}
+        self.model_locks: Dict[int, SyncLock | None] = {}
         
         logger.info(f"Loading primary embedding model: {model_name} on {self.device}")
         self._load_primary_model()
@@ -83,25 +100,38 @@ class EnhancedEmbedder:
         try:
             if self.device == "cpu":
                 torch.set_num_threads(self.threads_per_worker)
-            self.models[0] = SentenceTransformer(model_name_or_path=self.model_name, device=self.device)
+            
+            # Load Sentence Transformer model
+            model = SentenceTransformer(self.model_name, device=self.device)
+            
             if self.device.startswith("cuda"):
                 try:
-                    self.models[0].half()
+                    # Apply half precision if on CUDA
+                    model.half()
                     logger.info("Converted primary model to FP16 for CUDA acceleration.")
                 except Exception as e:
                     logger.warning(f"Could not convert model to FP16: {e}")
+            
+            # Store model
+            self.models[0] = model
             self.model_locks[0] = torch.multiprocessing.Lock() if self.num_workers > 1 else None
 
+            # Load additional models on multi-GPU systems
             if self.num_workers > 1 and self.device.startswith("cuda") and torch.cuda.device_count() > 1:
                 for gpu_id in range(1, min(self.num_workers, torch.cuda.device_count())):
                     device_str = f"cuda:{gpu_id}"
                     logger.info(f"Loading additional model on {device_str}")
-                    self.models[gpu_id] = SentenceTransformer(model_name_or_path=self.model_name, device=device_str)
+                    
+                    # Load model for this GPU
+                    model = SentenceTransformer(self.model_name, device=device_str)
+                    
                     try:
-                        self.models[gpu_id].half()
+                        model.half()  # Convert to FP16
                         logger.info(f"Converted model on {device_str} to FP16.")
                     except Exception as e:
                         logger.warning(f"Could not convert model on {device_str} to FP16: {e}")
+                    
+                    self.models[gpu_id] = model
                     self.model_locks[gpu_id] = torch.multiprocessing.Lock()
         except Exception as e:
             logger.error(f"Error loading model '{self.model_name}': {e}")
@@ -119,12 +149,25 @@ class EnhancedEmbedder:
         """Embed a batch of texts using a specific worker."""
         if not texts:
             return np.array([])
+        
         model, lock = self._get_model_for_worker(worker_id)
+        
+        # Create instruction-based inputs
+        input_texts = [get_detailed_instruct(self.instruction, text) for text in texts]
+        
         if lock:
             lock.acquire()
+            
         try:
-            with torch.no_grad():
-                embeddings = model.encode(texts, convert_to_numpy=True)
+            # Use sentence_transformers encode method
+            embeddings = model.encode(
+                input_texts,
+                batch_size=min(len(input_texts), self.batch_size),
+                show_progress_bar=False,
+                convert_to_numpy=True,
+                normalize_embeddings=True
+            )
+            
             return embeddings
         finally:
             if lock:
@@ -136,7 +179,9 @@ class EnhancedEmbedder:
         """
         if not strings:
             return np.array([])
-        truncated = [s if len(s) <= 2000 else s[:2000] for s in strings]
+        
+        # Truncate very long strings to avoid excessive tokenization time
+        truncated = [s if len(s) <= 5000 else s[:5000] for s in strings]
         total = len(truncated)
         batch_size = self.batch_size
         progress_bar = tqdm(total=total, desc="Generating embeddings", unit="text") if show_progress and total > batch_size else None
@@ -165,39 +210,48 @@ class EnhancedEmbedder:
                     all_embeddings.append(fut.result())
                     if progress_bar:
                         progress_bar.update(batch_size)
+        
         if progress_bar:
             progress_bar.close()
+            
         if not all_embeddings:
             return np.array([])
+            
         combined = np.vstack(all_embeddings)
         result = np.ascontiguousarray(combined, dtype=np.float32)
+        
         gc.collect()
         if torch.cuda.is_available() and self.device.startswith("cuda"):
             torch.cuda.empty_cache()
+            
         return result
-
-    def _process_worker_batches(self, batches: List[List[str]], worker_id: int, progress_bar=None) -> List[np.ndarray]:
-        results = []
-        for batch in batches:
-            emb = self._embed_batch_with_worker(batch, worker_id)
-            results.append(emb)
-            if progress_bar:
-                progress_bar.update(len(batch))
-        return results
 
     def embed_string(self, text: str) -> np.ndarray:
         """Embed a single string."""
-        if not isinstance(text, str):
-            raise TypeError("Input must be a string")
+        
+        # Truncate very long text
         if len(text) > 2000:
             text = text[:2000]
             logger.debug("Truncated string to 2000 chars.")
+        
+        # Get model
         model, lock = self._get_model_for_worker(0)
+        
+        # Format with instruction
+        input_text = get_detailed_instruct(self.instruction, text)
+        
         if lock:
             lock.acquire()
+            
         try:
-            with torch.no_grad():
-                embedding = model.encode(text, convert_to_numpy=True)
+            # Use sentence_transformers encode method
+            embedding = model.encode(
+                input_text,
+                show_progress_bar=False,
+                convert_to_numpy=True,
+                normalize_embeddings=True
+            )
+            
             return embedding
         finally:
             if lock:
@@ -206,6 +260,10 @@ class EnhancedEmbedder:
     def embed_batch(self, strings: List[str]) -> np.ndarray:
         """Legacy alias for embed_strings."""
         return self.embed_strings(strings)
+        
+    def similarity(self, embeddings1: np.ndarray, embeddings2: np.ndarray) -> np.ndarray:
+        """Calculate cosine similarity between two sets of embeddings."""
+        return embeddings1 @ embeddings2.T
 
     def close(self):
         """Release resources."""
@@ -219,13 +277,32 @@ class EnhancedEmbedder:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, 
                         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-    test_texts = ["sample " * (5 + (i % 50)) for i in range(100)]
+    
+    # Test with different languages
+    test_texts = [
+        "sample document about machine learning",
+        "文档示例关于机器学习",
+        "exemple de document sur l'apprentissage automatique",
+        "пример документа о машинном обучении",
+        "muestras de documentos sobre aprendizaje automático"
+    ]
+    
     embedder = EnhancedEmbedder(auto_optimize=True)
+    
     start = time.time()
     embeddings = embedder.embed_strings(test_texts)
     duration = time.time() - start
+    
     print(f"Generated {len(embeddings)} embeddings in {duration:.2f} seconds")
     print(f"Embedding shape: {embeddings.shape}")
+    
+    # Test single embedding
     single_embedding = embedder.embed_string("This is a test")
     print(f"Single embedding shape: {single_embedding.shape}")
+    
+    # Calculate similarity matrix using the new similarity method
+    similarity = embedder.similarity(embeddings, embeddings)
+    print("Similarity matrix:")
+    print(similarity)
+    
     embedder.close()

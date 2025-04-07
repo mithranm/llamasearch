@@ -20,6 +20,7 @@ gnu/
 *.log
 crawl_data/
 index/
+debug/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

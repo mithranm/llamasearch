@@ -10,5 +10,6 @@
     "**/data/**",
     "o.md",
   ],
-  "reportMissingImports": true
+  "reportMissingImports": true,
+  "reportPrivateImportUsage": false,
 }

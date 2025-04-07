@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-import os
+# llamasearch/core/apiauth.py
 import datetime
 import jwt
 from cryptography.hazmat.primitives import serialization

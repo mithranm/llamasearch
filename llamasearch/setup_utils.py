@@ -210,29 +210,68 @@ def get_acceleration_config() -> Dict[str, Any]:
     return config
 
 def check_llama_cpp_cuda_support() -> bool:
-    """
-    Check if the installed llama-cpp-python package has CUDA support.
-    For version 0.3.8, we first try to check for a module-level attribute __cuda_supported__,
-    and if that doesn't exist, we check for the attribute llama_backend and see if it contains 'cuda'.
-    """
-    try:
-        import llama_cpp
-        # Method 1: Try using the llama_cpp library's load_shared_library function (0.3.x+)
+        """Check if the installed llama-cpp-python has CUDA support."""
         try:
-            from llama_cpp._ctypes_extensions import load_shared_library
-            import pathlib
-            lib_path = pathlib.Path(llama_cpp.__file__).parent / "lib"
-            lib = load_shared_library('llama', lib_path)
-            return bool(lib.llama_supports_gpu_offload())
-        except (ImportError, AttributeError):
-            # Method 2: Check if CUDA is in the version string (fallback)
-            if hasattr(llama_cpp, "__version__") and "cuda" in llama_cpp.__version__.lower():
-                return True
-            # If all else fails, assume no CUDA support
+            # First check if the package is installed
+            result = subprocess.run(
+                ["pip", "show", "llama-cpp-python"],
+                capture_output=True,
+                text=True
+            )
+            
+            if result.returncode != 0:
+                print("llama-cpp-python is not installed")
+                return False
+            try:
+                import llama_cpp                    
+                
+                # Method 3: Check if CUDA is in the version string
+                if hasattr(llama_cpp, "__version__") and "cuda" in llama_cpp.__version__.lower():
+                    print("CUDA support detected via version string")
+                    return True
+                
+                # Method 4: Try using the Llama class approach
+                try:
+                    from llama_cpp import Llama
+                    
+                    # Check if the class has is_cuda_available as a callable method
+                    if hasattr(Llama, 'is_cuda_available'):
+                        attr = getattr(Llama, 'is_cuda_available')
+                        if callable(attr):
+                            try:
+                                cuda_available = bool(attr())
+                                if cuda_available:
+                                    print("CUDA support detected via is_cuda_available() class method")
+                                return cuda_available
+                            except Exception as e:
+                                print(f"Error calling is_cuda_available(): {e}")
+                    
+                    # Try creating a model instance with GPU layers
+                    try:
+                        _ = Llama(model_path="", n_gpu_layers=1)
+                        # If we get here, CUDA might be working
+                        print("CUDA support detected via successful Llama instantiation")
+                        return True
+                    except Exception as model_err:
+                        # Check if error message indicates CUDA support
+                        err_str = str(model_err).lower()
+                        if "cuda" in err_str and "not compiled with cuda" not in err_str:
+                            print("CUDA support detected via model initialization exception")
+                            return True
+                except Exception as e2:
+                    print(f"Could not check CUDA support via Llama class: {e2}")
+                
+                # If all else fails, assume no CUDA support
+                print("No CUDA support detected in llama-cpp-python")
+                return False
+                
+            except Exception as e:
+                print(f"Error during llama-cpp-python CUDA check: {e}")
+                return False
+                
+        except Exception as e:
+            print(f"Error checking llama-cpp-python CUDA support: {e}")
             return False
-    except Exception as e:
-        logging.debug(f"Error checking CUDA support: {e}")
-        return False
 
 def configure_build_environment(config: Dict[str, Any]) -> Tuple[str, List[str], Dict[str, str]]:
     """
@@ -540,20 +579,29 @@ def download_qwen_model() -> None:
         print(f"[ERROR] Error downloading Qwen model: {e}")
         logging.error(f"Please download manually and place it into {models_dir}")
 
-def install_spacy_model() -> None:
+def install_spacy_models() -> None:
     """
-    Install spaCy's English model.
+    Install all necessary spaCy models for the application:
+      - English: en_core_web_trf
+      - Chinese: zh_core_web_trf
+      - Russian: ru_core_news_trf
+
+    This function iterates over each language and model pair, attempts to download it using spaCy’s CLI,
+    and logs the outcome. If installation fails for any model, it prompts manual installation.
     """
-    logging.info("Installing spaCy English model...")
-    print("[INFO] Installing spaCy English model...")
-    try:
-        run_subprocess([sys.executable, "-m", "spacy", "download", "en_core_web_sm"], check=True)
-        logging.info("spaCy English model installed successfully")
-        print("[INFO] spaCy English model installed successfully")
-    except subprocess.CalledProcessError as e:
-        logging.error(f"Error installing spaCy model: {e}")
-        print(f"[ERROR] Error installing spaCy model: {e}")
-        logging.error("Please install manually using: python -m spacy download en_core_web_sm")
+    models = {
+        "English": "en_core_web_trf",
+        "Chinese": "zh_core_web_trf",
+        "Russian": "ru_core_news_trf"
+    }
+    
+    for language, model in models.items():
+        print(f"[INFO] Installing spaCy {language} model: {model}...")
+        try:
+            subprocess.run([sys.executable, "-m", "spacy", "download", model], check=True)
+            print(f"[INFO] spaCy {language} model installed successfully")
+        except subprocess.CalledProcessError as e:
+            print(f"[ERROR] Error installing spaCy {language} model: {e}")
 
 # -----------------------------------------------------------------------------
 # Optional Windows CUDA integration helpers
@@ -634,7 +682,7 @@ def setup_dependencies() -> None:
         print("[WARNING] Failed to install PyTorch. Some features may not work properly.")
     
     if install_llama_cpp_python():
-        install_spacy_model()
+        install_spacy_models()
         download_qwen_model()
         logging.info("=" * 80)
         logging.info("Setup Complete!".center(80))
