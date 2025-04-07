@@ -145,7 +145,7 @@ def test_save_crawled_links():
 
     mock_root = tempfile.mkdtemp()
 
-    with patch("llamasearch.core.crawler.find_project_root", return_value=mock_root):
+    with patch("llamasearch.core.crawler.get_llamasearch_dir", return_value=mock_root):
         with patch("builtins.open", mock_open()) as mock_file:
             file_path = save_crawled_links(mock_text, "test_link.txt")
 

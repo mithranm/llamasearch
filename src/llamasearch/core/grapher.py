@@ -4,7 +4,7 @@ import logging
 import re
 from typing import Dict, Any, List, Optional
 
-from llamasearch.setup_utils import find_project_root
+from llamasearch.setup_utils import get_llamasearch_dir
 from transformers.pipelines import pipeline
 
 logger = logging.getLogger(__name__)
@@ -278,7 +278,7 @@ class KnowledgeGraph:
 
     def __init__(self, storage_dir: Optional[str] = None) -> None:
         if storage_dir is None:
-            project_root = find_project_root()
+            project_root = get_llamasearch_dir()
             storage_dir = os.path.join(project_root, "index", "knowledge_graph")
         self.storage_dir = storage_dir
         os.makedirs(self.storage_dir, exist_ok=True)

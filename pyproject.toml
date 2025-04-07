@@ -13,31 +13,54 @@ authors = [
     { name = "Malek Bashagha", email = "abashagh@gmu.edu" }
 ]
 dependencies = [
-    "pytest>=8.3.4",
-    "pytest-cov>=6.0.0",
-    "flake8>=7.1.2",
-    "requests>=2.32.3",
-    "beautifulsoup4>=4.13.3",
-    "black>=25.1.0",
-    "gradio>=5.18.0",
-    "gTTS>=2.5.4",
-    "chromadb>=0.6.3",
-    "transformers>=4.50.3",
-    "sentence-transformers>=4.0.1",
+    "torch",
+    "transformers",
+    "sentence-transformers",
+    "markdown",
+    "beautifulsoup4",
+    "colorama",
+    "scikit-learn",
+    "numpy",
+    "huggingface_hub",
+    "gradio",
+    "requests",
+    "pydantic",
+    "gTTS",
+    "rank-bm25",
+    "spacy>=3.0.0",
+    "tqdm",
+    "psutil",
+    "cryptography",
+    "accelerate",
+    "langsmith",
+    "PyJWT>=2.8.0",
     "sentencepiece>=0.2.0"
 ]
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=3.0.0",
+    "black>=22.0.0",
+    "flake8>=5.0.0",
+]
 
-[tool.scikit-build]
-# This block is used by scikit-build-core
-# We do not explicitly set -DCMAKE_CUDA_ARCHITECTURES=all-major here anymore
-cmake.minimum-version = "3.26"
-cmake.args = []
-cmake.build-type = "Release"
-cmake.verbose = true
+[build-system]
+requires = [
+    "setuptools>=42",
+    "wheel",
+    "cmake>=3.22",
+    "ninja>=1.11",
+    "scikit-build>=0.17.6"
+]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+packages = ["llamasearch"]
+
+[project.scripts]
+llamasearch-setup = "llamasearch.setup_utils:run_setup_command"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

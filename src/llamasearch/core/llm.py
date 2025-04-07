@@ -9,7 +9,7 @@ from typing import Dict, Any
 from llama_cpp import Llama
 from pathlib import Path
 
-from llamasearch.setup_utils import find_project_root
+from llamasearch.setup_utils import get_llamasearch_dir
 from llamasearch.utils import setup_logging, log_query
 from llamasearch.core.vectordb import VectorDB
 from llamasearch.core.embedder import EnhancedEmbedder
@@ -152,7 +152,7 @@ class LlamaSearch:
         Ingests all documents from the crawl_data/raw directory.
         Processes each file with the VectorDB's chunker and indexes the resulting chunks.
         """
-        project_root = find_project_root()
+        project_root = get_llamasearch_dir()
         crawl_data_dir = os.path.join(project_root, "crawl_data", "raw")
         if not os.path.exists(crawl_data_dir):
             logger.info(f"Crawl data directory {crawl_data_dir} not found.")
@@ -373,7 +373,7 @@ def main():
     parser.add_argument("--recursive", action="store_true", help="Recursively process subdirectories")
     args = parser.parse_args()
     
-    project_root = find_project_root()
+    project_root = get_llamasearch_dir()
     models_dir = Path(os.path.join(project_root, "models"))
     storage_dir = Path(os.path.join(project_root, "index"))
     st = time.time()

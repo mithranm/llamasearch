@@ -20,7 +20,7 @@ logger = setup_logging(__name__)
 # API URL for scraping
 SCRAPING_API_URL = "https://api.mithran.org/markdown/"
 
-def find_project_root():
+def get_llamasearch_dir():
     """Finds the root of the project by looking for pyproject.toml."""
     current_dir = os.path.abspath(os.path.dirname(__file__))
     while current_dir != os.path.dirname(current_dir):
@@ -32,7 +32,7 @@ def find_project_root():
 def clear_crawl_data_directory() -> None:
     """Clears all content from the crawl_data directory structure."""
 
-    project_root = find_project_root()
+    project_root = get_llamasearch_dir()
     crawl_data_dir = os.path.join(project_root, "crawl_data")
     shutil.rmtree(crawl_data_dir, ignore_errors=True)
     logger.info(f"Cleared crawl data directory: {crawl_data_dir}")
@@ -41,7 +41,7 @@ def clear_crawl_data_directory() -> None:
 
 def save_to_crawl_dir(text: str, filename: str, subdir: Optional[str] = None) -> str:
     """Saves text to a file in the crawl_data directory structure."""
-    project_root = find_project_root()
+    project_root = get_llamasearch_dir()
     base_dir = os.path.join(project_root, "crawl_data")
     target_dir = os.path.join(base_dir, subdir) if subdir else base_dir
     os.makedirs(target_dir, exist_ok=True)
@@ -52,7 +52,7 @@ def save_to_crawl_dir(text: str, filename: str, subdir: Optional[str] = None) ->
 
 def update_reverse_lookup_table(hash_value: str, url: str) -> None:
     """Updates the reverse lookup table mapping file hashes to original URLs."""
-    project_root = find_project_root()
+    project_root = get_llamasearch_dir()
     lookup_path = os.path.join(project_root, "crawl_data", "reverse_lookup.json")
     try:
         with open(lookup_path, "r", encoding="utf-8") as file:
@@ -354,7 +354,7 @@ if __name__ == "__main__":
     links = smart_crawl(url, target_links=int(link_count) if link_count else 15, max_depth=3, key_id=key_id)
     
     if links:
-        project_root = find_project_root()
+        project_root = get_llamasearch_dir()
         print(f"Extracted content saved to: {os.path.join(project_root, 'crawl_data')}")
     else:
         print("\nNo links were collected during crawling.")

@@ -37,7 +37,7 @@ def test_save_to_project_tempdir():
     mock_url = "https://example.com/test-page"
     mock_root = tempfile.mkdtemp()
 
-    with patch("llamasearch.core.extractor.find_project_root", return_value=mock_root):
+    with patch("llamasearch.core.extractor.get_llamasearch_dir", return_value=mock_root):
         with patch("builtins.open", mock_open()) as mock_file:
             file_path = save_to_project_tempdir(mock_text, mock_url)
 
@@ -51,7 +51,7 @@ def test_read_links_from_temp():
     mock_links = "https://example.com/page1\nhttps://example.com/page2"
     mock_root = tempfile.mkdtemp()
 
-    with patch("llamasearch.core.extractor.find_project_root", return_value=mock_root):
+    with patch("llamasearch.core.extractor.get_llamasearch_dir", return_value=mock_root):
         with patch("os.path.exists", return_value=True):
             with patch("builtins.open", mock_open(read_data=mock_links)):
                 links = read_links_from_temp()

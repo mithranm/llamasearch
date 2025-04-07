@@ -4,13 +4,13 @@ import logging
 import numpy as np
 from datetime import datetime
 import time
-from .setup_utils import find_project_root
+from .setup_utils import get_llamasearch_dir
 
 def setup_logging(name, level=logging.INFO):
     """
     Set up logging to both console and file.
     """
-    project_root = find_project_root()
+    project_root = get_llamasearch_dir()
     logs_dir = os.path.join(project_root, "logs")
     os.makedirs(logs_dir, exist_ok=True)
     logger = logging.getLogger(name)
@@ -69,7 +69,7 @@ def log_query(query: str, chunks: list, response: str, debug_info: dict, full_lo
     Returns:
         Path to the generated log file
     """
-    project_root = find_project_root()
+    project_root = get_llamasearch_dir()
     logs_dir = os.path.join(project_root, "logs")
     os.makedirs(logs_dir, exist_ok=True)
     

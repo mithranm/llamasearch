@@ -12,7 +12,7 @@ import traceback  # Import traceback
 from llamasearch.core.teapotai import TeapotAI, TeapotAISettings
 from transformers import AutoTokenizer
 
-from llamasearch.setup_utils import find_project_root
+from llamasearch.setup_utils import get_llamasearch_dir
 from llamasearch.utils import setup_logging, log_query
 from llamasearch.core.vectordb import VectorDB
 from llamasearch.core.embedder import EnhancedEmbedder
@@ -261,7 +261,7 @@ class TeapotSearch:
         Ingests all documents from the crawl_data/raw directory.
         Processes each file with the VectorDB's chunker and indexes the resulting chunks.
         """
-        project_root = find_project_root()
+        project_root = get_llamasearch_dir()
         crawl_data_dir = os.path.join(project_root, "crawl_data", "raw")
         if not os.path.exists(crawl_data_dir):
             logger.info(f"Crawl data directory {crawl_data_dir} not found.")
@@ -465,7 +465,7 @@ def main():
     parser.add_argument("--recursive", action="store_true", help="Recursively process subdirectories")
     args = parser.parse_args()
 
-    storage_dir = Path(os.path.join(find_project_root(), "index"))
+    storage_dir = Path(os.path.join(get_llamasearch_dir(), "index"))
     st = time.time()
     if not args.persist:
         logger.info("Clearing vector database")
