@@ -7,6 +7,7 @@ import shutil
 import json
 from typing import Dict, Any, List
 from pathlib import Path
+import traceback  # Import traceback
 
 from llamasearch.core.teapotai import TeapotAI, TeapotAISettings
 from transformers import AutoTokenizer
@@ -320,7 +321,7 @@ class TeapotSearch:
                 docs=docs,
                 meta=metas,
                 query=query_text,
-                max_tokens=768  # Leave room for system prompt and query
+                max_tokens=512  # Leave room for system prompt and query
             )
             
             # Save optimization info for debugging
@@ -342,7 +343,7 @@ class TeapotSearch:
             return {"response": f"Error retrieving information: {str(e)}", "debug_info": debug_info, "retrieved_display": ""}
         
         # Define our custom system prompt optimized for entity extraction
-        system_prompt = """You are a helpful AI assistant. Answer based ONLY on the provided context. Pay special attention to any entities marked with ** or mentioned in the context. When asked about a specific person, carefully examine the entire context for ANY mention of that person, even brief mentions. If information exists but is limited, provide what is available and acknowledge its limitations. Always cite your sources."""
+        system_prompt = """You are a helpful AI assistant. Answer based ONLY on the provided context. Include information about fictional characters, real people, or any entities mentioned in the context. Pay special attention to any entities marked with ** or mentioned in the context. Always cite your sources."""
         
         # Generate response using TeapotLLM
         llm = self._get_llm()
@@ -350,10 +351,15 @@ class TeapotSearch:
         response = ""
         
         try:
-            # Generate the response using TeapotAI
+            # Format the query T5-style to work with TeapotAI (Flan-T5 based)
+            t5_formatted_query = f"Context: {optimized_context} Query: {query_text}"
+            
+            # Generate the response using TeapotAI with properly passed system prompt
+            # Fix: Make sure parameters match the method signature in TeapotAI
             response = llm.query(
-                query=query_text,
-                context=optimized_context
+                query=t5_formatted_query,
+                context="",  # Context is already in the formatted query
+                system_prompt=system_prompt  # Explicitly pass the system prompt
             )
             
             # Check if response acknowledges important entities
@@ -370,6 +376,7 @@ class TeapotSearch:
                     enhanced_prompt = system_prompt + f" Make sure to address information about {main_entity} if present in the context."
                     
                     # Try again
+                    # Fix: Make sure parameters match the method signature in TeapotAI
                     response = llm.query(
                         query=f"Tell me about {main_entity} based on the context",
                         context=optimized_context,
@@ -458,52 +465,57 @@ def main():
     parser.add_argument("--recursive", action="store_true", help="Recursively process subdirectories")
     args = parser.parse_args()
 
-    storage_dir = os.path.join(find_project_root(), "index")
+    storage_dir = Path(os.path.join(find_project_root(), "index"))
     st = time.time()
-    if args.persist:
-        logger.info("Persisting vector database")
-        # If persisting, we assume data is already in the index.
-    else:
+    if not args.persist:
         logger.info("Clearing vector database")
         shutil.rmtree(storage_dir, ignore_errors=True)
-        llm.ingest_crawl_data()
     
-    llm = TeapotSearch(
-        force_cpu=True,
-        max_workers=args.workers,
-        debug=args.debug,
-        storage_dir=Path(storage_dir, "index"),
-    )
+    try:
+        llm = TeapotSearch(
+            force_cpu=True,
+            max_workers=args.workers,
+            debug=args.debug,
+            storage_dir=storage_dir
+        )
+        
+        if not args.persist:
+            llm.ingest_crawl_data()
 
-    result = llm.llm_query(args.query, debug_mode=args.debug)
-    response = result.get("response", "")
-    retrieved_display = result.get("retrieved_display", "")
-    
-    if retrieved_display.strip():
-        print(retrieved_display)
-    else:
-        print("No retrieved chunks to display.")
-    
-    if args.debug:
-        debug_info = result.get("debug_info", {})
-        print("\nDebug info:\n")
-        for key, value in debug_info.items():
-            if key != "chunks":
-                logger.info(f"  {key}: {value}")
-        print("\nChunk Sources:")
-        for chunk in debug_info.get("chunks", []):
-            source = chunk.get("metadata", {}).get("source", "N/A")
-            print(f"  {chunk['id']}: {source}")
-        print("\nResponse:\n")
-    else:
-        print("\nResponse:\n")
-    
-    if response.strip():
-        print(response)
-    else:
-        print("[No response text returned by LLM.]")
-    
-    print(f"\nQuery took {time.time() - st:.2f}s")
+        result = llm.llm_query(args.query, debug_mode=args.debug)
+        response = result.get("response", "")
+        retrieved_display = result.get("retrieved_display", "")
+        
+        if retrieved_display.strip():
+            print(retrieved_display)
+        else:
+            print("No retrieved chunks to display.")
+        
+        if args.debug:
+            debug_info = result.get("debug_info", {})
+            print("\nDebug info:\n")
+            for key, value in debug_info.items():
+                if key != "chunks":
+                    logger.info(f"  {key}: {value}")
+            print("\nChunk Sources:")
+            for chunk in debug_info.get("chunks", []):
+                source = chunk.get("metadata", {}).get("source", "N/A")
+                print(f"  {chunk['id']}: {source}")
+            print("\nResponse:\n")
+        else:
+            print("\nResponse:\n")
+        
+        if response.strip():
+            print(response)
+        else:
+            print("[No response text returned by LLM.]")
+        
+        print(f"\nQuery took {time.time() - st:.2f}s")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
+        logger.error(traceback.format_exc())
+        print(f"[ERROR] Fatal error: {e}")
+        print(traceback.format_exc())
 
 if __name__ == "__main__":
     main()

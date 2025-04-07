@@ -5,7 +5,7 @@ from transformers import pipeline, AutoTokenizer, AutoModelForSeq2SeqLM, logging
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from pydantic import BaseModel
-from typing import List, Any, Type
+from typing import List, Any, Type, Optional
 from tqdm import tqdm
 import re
 from langsmith import traceable
@@ -81,10 +81,13 @@ class TeapotAI:
        
 
         self.documents = [chunk for document in documents for chunk in self._chunk_document(document)]
-
+        
         if self.settings.use_rag:
             self.embedding_model = pipeline("feature-extraction", model="teapotai/teapotembedding", truncation=True)
             self.document_embeddings = self._generate_document_embeddings(self.documents)
+        else:
+            self.embedding_model = None
+            self.document_embeddings = None
     
     def _chunk_document(self, context: str) -> List[str]:
         """
@@ -128,26 +131,29 @@ class TeapotAI:
         """
         embeddings = []
 
-        if self.settings.verbose:
-            print("Generating embeddings for documents...")
-            for doc in tqdm(documents, desc="Document Embedding", unit="doc"):
-                # Extract embedding in a way that handles different output structures
-                embedding_result = self.embedding_model(doc)
-                processed_embedding = self._process_embedding_result(embedding_result)
-                embeddings.append(processed_embedding)
-        else:
-            for doc in documents:
-                embedding_result = self.embedding_model(doc)
-                processed_embedding = self._process_embedding_result(embedding_result)
-                embeddings.append(processed_embedding)
+        if self.settings.use_rag and self.embedding_model is not None:  # Added check for embedding_model
+            if self.settings.verbose:
+                print("Generating embeddings for documents...")
+                for doc in tqdm(documents, desc="Document Embedding", unit="doc"):
+                    # Extract embedding in a way that handles different output structures
+                    embedding_result = self.embedding_model(doc)
+                    processed_embedding = self._process_embedding_result(embedding_result)
+                    embeddings.append(processed_embedding)
+            else:
+                for doc in documents:
+                    embedding_result = self.embedding_model(doc)
+                    processed_embedding = self._process_embedding_result(embedding_result)
+                    embeddings.append(processed_embedding)
 
-        # Ensure all embeddings have the same shape before converting to array
-        if embeddings and isinstance(embeddings[0], np.ndarray):
-            # Make sure all embeddings have the same shape
-            first_shape = embeddings[0].shape
-            embeddings = [e for e in embeddings if e.shape == first_shape]
-            
-        return np.array(embeddings)
+            # Ensure all embeddings have the same shape before converting to array
+            if embeddings and isinstance(embeddings[0], np.ndarray):
+                # Make sure all embeddings have the same shape
+                first_shape = embeddings[0].shape
+                embeddings = [e for e in embeddings if e.shape == first_shape]
+                
+            return np.array(embeddings)
+        else:
+            return np.array([])
     
     def _process_embedding_result(self, result: Any) -> np.ndarray:
         """
@@ -173,19 +179,22 @@ class TeapotAI:
         # This is a fallback and should be rare
         return np.zeros(768)  # Default embedding dimension
 
-    def _retrieval(self, query: str, documents: List[str], document_embeddings: np.ndarray) -> List[str]:
+    def _retrieval(self, query: str, documents: List[str], document_embeddings: Optional[np.ndarray] = None) -> List[str]:
         """
         Retrieve the most relevant documents based on cosine similarity to the query.
 
         Args:
             query (str): The query string for retrieval.
             documents (List[str]): List of document strings to search through.
-            document_embeddings (np.ndarray): The embeddings for the documents.
+            document_embeddings (Optional[np.ndarray]): The embeddings for the documents.
 
         Returns:
             List[str]: A list of top relevant documents based on the query.
         """
         # Process the query embedding
+        if self.embedding_model is None or document_embeddings is None:
+            return []
+
         query_embedding_result = self.embedding_model(query)
         query_embedding = self._process_embedding_result(query_embedding_result)
         
@@ -208,12 +217,13 @@ class TeapotAI:
         Returns:
             List[str]: A list of top documents retrieved using RAG.
         """
-        if not self.settings.use_rag or not self.documents:
+        if not self.settings.use_rag or not self.documents or self.document_embeddings is None:
             return []
 
         return self._retrieval(query, self.documents, self.document_embeddings)
 
-    @traceable
+    # Fix positional argument issue with @traceable decorator
+    @traceable()
     def generate(self, input_text: str) -> str:
         """
         Generate text based on the input string using the TeapotLLM model.
@@ -239,39 +249,27 @@ class TeapotAI:
 
         return result
 
-    @traceable
+    # Fix positional argument issue with @traceable decorator
+    @traceable()
     def query(self, query: str, context: str = "", system_prompt: str = DEFAULT_SYSTEM_PROMPT) -> str:
         """
         Handle a query and context, using RAG if no context is provided, and return a generated response.
-
-        Args:
-            query (str): The query string to be answered.
-            context (str): The context to guide the response. Defaults to an empty string.
-            system_prompt (str): The system prompt to use. Defaults to DEFAULT_SYSTEM_PROMPT.
-
-        Returns:
-            str: The generated response based on the input query and context.
         """
-        # Initialize rag_context to empty string to avoid "possibly unbound" errors
-        rag_context = ""
+        # Format for T5 architecture which works best with explicit labeling
+        if context and "Context:" not in query:
+            # If context is passed separately but query doesn't have "Context:" prefix
+            input_text = f"{system_prompt}\nContext: {context}\nQuery: {query}"
+        elif "Context:" in query:
+            # If query already has context embedded in T5 format
+            input_text = f"{system_prompt}\n{query}"
+        else:
+            # Fallback case
+            input_text = f"{system_prompt}\nQuery: {query}"
         
-        if self.settings.use_rag:
-            rag_context = "\n\n".join(self.rag(query))
-
-        full_context = f"{rag_context}\n{context}"
-
-        if self.settings.context_chunking:
-            documents = self._chunk_document(context)
-            if len(documents) > self.settings.rag_num_results:
-                document_embeddings = self._generate_document_embeddings(documents)
-                rag_documents = self._retrieval(query, documents, document_embeddings)
-                full_context = f"{rag_context}\n\n" + "\n\n".join(rag_documents)
-
-        input_text = f"{full_context}\n{system_prompt}\n{query}"
-
         return self.generate(input_text)
 
-    @traceable
+    # Fix positional argument issue with @traceable decorator
+    @traceable()
     def chat(self, conversation_history: List[dict]) -> str:
         """
         Engage in a chat by taking a list of previous messages and generating a response.
@@ -302,7 +300,8 @@ class TeapotAI:
 
         return self.query(query=formatted_last_user, context=chat_history)
 
-    @traceable
+    # Fix positional argument issue with @traceable decorator
+    @traceable()
     def extract(self, class_annotation: Type[BaseModel], query: str = "", context: str = "") -> BaseModel:
         """
         Extract fields from a Pydantic class annotation by querying and processing each field.

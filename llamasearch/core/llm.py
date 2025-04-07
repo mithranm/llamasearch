@@ -35,6 +35,7 @@ class LlamaSearch:
     def __init__(
         self,
         storage_dir: Path,
+        models_dir: Path,
         model_name: str = DEFAULT_MODEL_NAME,
         verbose: bool = True,
         context_length: int = 4096,
@@ -59,7 +60,7 @@ class LlamaSearch:
         self.resource_manager = get_resource_manager(auto_optimize=self.auto_optimize)
         self.device = self.resource_manager.get_embedding_config()['device']
         
-        self.models_dir = os.path.join(storage_dir, "models")
+        self.models_dir = models_dir
         self.storage_dir = storage_dir
         os.makedirs(self.models_dir, exist_ok=True)
 
@@ -372,47 +373,25 @@ def main():
     parser.add_argument("--recursive", action="store_true", help="Recursively process subdirectories")
     args = parser.parse_args()
     
-    storage_dir = Path(os.path.join(find_project_root(), "index"))
-    
+    project_root = find_project_root()
+    models_dir = Path(os.path.join(project_root, "models"))
+    storage_dir = Path(os.path.join(project_root, "index"))
     st = time.time()
-    if args.persist:
-        logger.info("Persisting vector database")
-    else:
-        logger.info(f"Clearing vector database: {storage_dir}")
-
-        # Check if the directory exists before attempting to delete it
-        if os.path.exists(storage_dir):
-            logger.info(f"Vector database directory exists at: {storage_dir}")
-
-            # Log the contents of the directory
-            try:
-                contents = os.listdir(storage_dir)
-                logger.info(f"Contents of {storage_dir}: {contents}")
-            except Exception as e:
-                logger.error(f"Error listing contents of {storage_dir}: {e}")
-
-            try:
-                shutil.rmtree(storage_dir, ignore_errors=False)
-                logger.info(f"Successfully cleared vector database at {storage_dir}")
-            except Exception as e:
-                logger.error(f"Error clearing vector database at {storage_dir}: {e}")
-
-            # Check if the directory still exists after attempting to delete it
-            if os.path.exists(storage_dir):
-                logger.warning(f"Vector database directory STILL EXISTS at {storage_dir} after deletion attempt!")
-            else:
-                logger.info(f"Vector database directory successfully deleted at {storage_dir}")
-        else:
-            logger.info(f"Vector database directory does not exist at: {storage_dir}, skipping deletion.")
+    if not args.persist:
+        logger.info("Clearing vector database")
+        shutil.rmtree(storage_dir, ignore_errors=True)
     
     llm = LlamaSearch(
-        custom_model_path=args.custom_model,
-        force_cpu=args.force_cpu,
+        force_cpu=True,
         max_workers=args.workers,
         debug=args.debug,
-        storage_dir=storage_dir
+        storage_dir=storage_dir,
+        models_dir=models_dir,
     )
-    llm.ingest_crawl_data()
+    
+    if not args.persist:
+        llm.ingest_crawl_data()
+        
     result = llm.llm_query(args.query, debug_mode=args.debug)
     response = result.get("response", "")
     retrieved_display = result.get("retrieved_display", "")
