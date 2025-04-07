@@ -7,7 +7,8 @@ import spacy
 import numpy as np
 from rank_bm25 import BM25Okapi
 
-logger = logging.getLogger(__name__)
+from llamasearch.utils import setup_logging
+logger = setup_logging(__name__)
 
 def load_nlp_model_for_lang(lang: str = "en") -> spacy.language.Language:
     """

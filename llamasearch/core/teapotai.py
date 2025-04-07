@@ -1,3 +1,6 @@
+"""
+This code is not our property, but is licensed under the Apache License 2.0.
+"""
 from transformers import pipeline, AutoTokenizer, AutoModelForSeq2SeqLM, logging
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity

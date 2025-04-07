@@ -5,6 +5,8 @@ import re
 import os
 import json
 import hashlib
+import shutil
+
 from urllib.parse import urlparse, urljoin
 from bs4 import BeautifulSoup, Tag
 from datetime import datetime
@@ -12,6 +14,9 @@ from typing import Optional, List, Tuple, cast
 
 from . import apiauth
 
+from llamasearch.utils import setup_logging
+
+logger = setup_logging(__name__)
 # API URL for scraping
 SCRAPING_API_URL = "https://api.mithran.org/markdown/"
 
@@ -26,21 +31,13 @@ def find_project_root():
 
 def clear_crawl_data_directory() -> None:
     """Clears all content from the crawl_data directory structure."""
-    import shutil
+
     project_root = find_project_root()
     crawl_data_dir = os.path.join(project_root, "crawl_data")
-    
-    if os.path.exists(crawl_data_dir):
-        print(f"Clearing previous crawl data from: {crawl_data_dir}")
-        for item in os.listdir(crawl_data_dir):
-            item_path = os.path.join(crawl_data_dir, item)
-            if os.path.isdir(item_path):
-                shutil.rmtree(item_path)
-            elif os.path.isfile(item_path):
-                os.remove(item_path)
-    else:
-        os.makedirs(crawl_data_dir, exist_ok=True)
-        print(f"Created crawl data directory: {crawl_data_dir}")
+    shutil.rmtree(crawl_data_dir, ignore_errors=True)
+    logger.info(f"Cleared crawl data directory: {crawl_data_dir}")
+    os.makedirs(crawl_data_dir, exist_ok=True)
+    logger.info(f"Created crawl data directory: {crawl_data_dir}")
 
 def save_to_crawl_dir(text: str, filename: str, subdir: Optional[str] = None) -> str:
     """Saves text to a file in the crawl_data directory structure."""
@@ -344,7 +341,6 @@ def smart_crawl(start_url: str, target_links: int = 50, max_depth: int = 3, max_
 
 if __name__ == "__main__":
     clear_crawl_data_directory()
-    
     url = input("Enter the webpage URL: ").strip()
     link_count = input("Enter the number of links to collect (default 15): ").strip()
     if not url:

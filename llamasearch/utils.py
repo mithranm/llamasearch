@@ -18,9 +18,8 @@ def setup_logging(name, level=logging.INFO):
     # Clear existing handlers to avoid duplicates
     if logger.hasHandlers():
         logger.handlers.clear()
-    # File handler with daily filename
-    today = datetime.now().strftime("%Y-%m-%d")
-    log_file = os.path.join(logs_dir, f"{name.split('.')[-1]}_{today}.log")
+    # File handler with a single log file
+    log_file = os.path.join(logs_dir, "llamasearch.log")  # Single log file
     file_handler = logging.FileHandler(log_file, encoding="utf-8")
     file_handler.setLevel(level)
     # Console handler: changed to INFO so you see ingestion logs, etc.
@@ -125,11 +124,12 @@ def log_query(query: str, chunks: list, response: str, debug_info: dict, full_lo
         "debug_info": optimized_debug_info
     }
     
-    # Use timestamp to create unique log file name
-    log_file = os.path.join(logs_dir, f"query_{int(time.time())}.json")
+    # Use a single log file for all queries
+    log_file = os.path.join(logs_dir, "query_log.jsonl")  # JSON Lines format
     try:
-        with open(log_file, "w", encoding="utf-8") as f:
-            json.dump(log_data, f, ensure_ascii=False, indent=2, cls=NumpyEncoder)
+        with open(log_file, "a", encoding="utf-8") as f:  # Append to the file
+            json.dump(log_data, f, ensure_ascii=False, cls=NumpyEncoder)
+            f.write('\n')  # Add a newline to separate JSON objects
     except Exception as e:
         print(f"Error saving log: {e}")
         

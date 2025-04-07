@@ -4,7 +4,7 @@ import numpy as np
 import json
 import shutil
 from typing import Dict, Any, Optional, List, Set, cast, Tuple
-
+from pathlib import Path
 from llamasearch.utils import setup_logging
 from llamasearch.core.embedder import EnhancedEmbedder
 from llamasearch.core.chunker import MarkdownChunker, HtmlChunker
@@ -31,7 +31,7 @@ class VectorDB:
 
     def __init__(
         self,
-        storage_dir: str,
+        storage_dir: Path,
         collection_name: str,
         embedder: Optional[EnhancedEmbedder] = None,
         max_chunk_size: int = 512,

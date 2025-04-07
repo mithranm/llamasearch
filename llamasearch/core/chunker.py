@@ -20,8 +20,8 @@ from transformers.models.auto.tokenization_auto import AutoTokenizer
 from transformers.models.auto.modeling_auto import AutoModelForTokenClassification
 
 # Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+from llamasearch.utils import setup_logging
+logger = setup_logging(__name__)
 
 ###############################################
 # Entity Recognition Components

@@ -6,6 +6,7 @@ import argparse
 import shutil
 import json
 from typing import Dict, Any, List
+from pathlib import Path
 
 from llamasearch.core.teapotai import TeapotAI, TeapotAISettings
 from transformers import AutoTokenizer
@@ -25,6 +26,7 @@ class TeapotSearch:
     """
     def __init__(
         self,
+        storage_dir: Path,
         verbose: bool = True,
         max_results: int = 3,
         auto_optimize: bool = False,
@@ -42,9 +44,7 @@ class TeapotSearch:
         self.debug = debug
         self.resource_manager = get_resource_manager(auto_optimize=self.auto_optimize)
         self.device = self.resource_manager.get_embedding_config()['device']
-        
-        project_root = find_project_root()
-        self.storage_dir = os.path.join(project_root, "index")
+        self.storage_dir = storage_dir
 
         embedding_config = {}
         if self.auto_optimize:
@@ -458,21 +458,23 @@ def main():
     parser.add_argument("--recursive", action="store_true", help="Recursively process subdirectories")
     args = parser.parse_args()
 
-    llm = TeapotSearch(
-        force_cpu=True,
-        max_workers=args.workers,
-        debug=args.debug
-    )
-    
+    storage_dir = os.path.join(find_project_root(), "index")
     st = time.time()
     if args.persist:
         logger.info("Persisting vector database")
         # If persisting, we assume data is already in the index.
     else:
         logger.info("Clearing vector database")
-        shutil.rmtree(llm.storage_dir, ignore_errors=True)
+        shutil.rmtree(storage_dir, ignore_errors=True)
         llm.ingest_crawl_data()
     
+    llm = TeapotSearch(
+        force_cpu=True,
+        max_workers=args.workers,
+        debug=args.debug,
+        storage_dir=Path(storage_dir, "index"),
+    )
+
     result = llm.llm_query(args.query, debug_mode=args.debug)
     response = result.get("response", "")
     retrieved_display = result.get("retrieved_display", "")
