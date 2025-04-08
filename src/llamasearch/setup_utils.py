@@ -462,22 +462,56 @@ def install_torch_with_cuda() -> bool:
             logging.error(f"Error installing PyTorch: {e}")
             return False
 
-def download_qwen_model() -> None:
-    """Download the Qwen model if not already present."""
+def download_model(model_id="Qwen/Qwen2.5-1.5B-Instruct-GGUF", filename="qwen2.5-1.5b-instruct-q4_k_m.gguf", model_type="gguf"):
+    """
+    Download a model from Hugging Face.
+    
+    Args:
+        model_id: Model ID or path on Hugging Face (e.g. "Qwen/Qwen2.5-1.5B-Instruct-GGUF")
+        filename: Filename to save as (e.g. "qwen2.5-1.5b-instruct-q4_k_m.gguf")
+        model_type: Either "gguf" for llama.cpp models or "hf" for regular Hugging Face models
+        
+    Returns:
+        Path to the downloaded model
+    """
     paths = get_data_paths()
     models_dir = paths["models"]
-    model_file = models_dir / "qwen2.5-1.5b-instruct-q4_k_m.gguf"
-    if model_file.exists():
-        logging.info(f"Qwen model already exists at {model_file}; skipping download.")
-        return
-    try:
-        logging.info("Downloading Qwen2.5-1.5B-Instruct-GGUF model...")
-        run_subprocess(["huggingface-cli", "download", "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
-                        "qwen2.5-1.5b-instruct-q4_k_m.gguf", "--local-dir", str(models_dir)], check=True)
-        logging.info(f"Model downloaded successfully to {models_dir}.")
-    except subprocess.CalledProcessError as e:
-        logging.error(f"Error downloading Qwen model: {e}")
-        logging.error(f"Please download manually and place it into {models_dir}")
+    
+    if model_type == "gguf":
+        model_file = models_dir / filename
+        if model_file.exists():
+            logging.info(f"Model already exists at {model_file}; skipping download.")
+            return str(model_file)
+        
+        try:
+            logging.info(f"Downloading {model_id}/{filename}...")
+            run_subprocess(["huggingface-cli", "download", model_id, 
+                          filename, "--local-dir", str(models_dir)], check=True)
+            logging.info(f"Model downloaded successfully to {model_file}.")
+            return str(model_file)
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Error downloading model: {e}")
+            logging.error(f"Please download manually and place it into {models_dir}")
+            return ""
+    else:
+        # For Hugging Face models, we just need to ensure the transformers package is installed
+        # The model will be downloaded automatically when first loaded
+        try:
+            logging.info("Ensuring transformers package is installed...")
+            run_subprocess([sys.executable, "-m", "pip", "install", "transformers"], check=True)
+            logging.info("Model will be downloaded automatically when first used.")
+            return model_id  # Return the model_id for HF models
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Error installing transformers: {e}")
+            return ""
+
+def download_qwen_model() -> None:
+    """Download the default Qwen model if not already present."""
+    download_model(
+        model_id="Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+        filename="qwen2.5-1.5b-instruct-q4_k_m.gguf",
+        model_type="gguf"
+    )
 
 def install_spacy_models() -> None:
     """Install required spaCy models."""
@@ -594,12 +628,27 @@ def run_setup_command() -> None:
     parser = argparse.ArgumentParser(description="LlamaSearch Setup Utility")
     parser.add_argument("--force", action="store_true", help="Force setup to run again")
     parser.add_argument("--dev-mode", action="store_true", help="Run in development mode")
+    parser.add_argument("--model", help="Specify a model to download (default: qwen2.5-1.5b-instruct-q4_k_m)")
     args = parser.parse_args()
     if args.force:
         os.environ["LLAMASEARCH_FORCE_SETUP"] = "1"
     if args.dev_mode:
         os.environ["LLAMASEARCH_DEV_MODE"] = "1"
     setup_dependencies()
+    
+    # Download specific model if requested
+    if args.model:
+        model_parts = args.model.split("/")
+        if len(model_parts) > 1:
+            # Format: org/model
+            model_id = args.model
+            filename = model_parts[-1] + ".gguf"
+        else:
+            # Just model name
+            model_id = f"Qwen/{args.model}"
+            filename = f"{args.model}.gguf"
+        
+        download_model(model_id=model_id, filename=filename)
 
 if __name__ == "__main__":
     run_setup_command()

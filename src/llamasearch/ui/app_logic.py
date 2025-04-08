@@ -12,7 +12,7 @@ import time
 
 from llamasearch.setup_utils import get_data_paths
 from llamasearch.core.crawler import smart_crawl, clear_crawl_data_directory
-from llamasearch.core.llm_combined import LLMSearch  # unified RAG + LLM code
+from llamasearch.core.llm import LLMSearch  # unified RAG + LLM code
 
 # A custom logging handler that writes messages to a queue.
 class QueueHandler(logging.Handler):
@@ -48,6 +48,11 @@ class LlamaSearchApp:
         if threading.current_thread() is threading.main_thread():
             signal.signal(signal.SIGINT, self.signal_handler)
             signal.signal(signal.SIGTERM, self.signal_handler)
+        
+        # Store model configuration
+        self.model_name = "qwen2.5-1.5b-instruct-q4_k_m"  # Default model
+        self.model_engine = "llamacpp"  # Default engine (llamacpp or hf)
+        self.custom_model_path = ""
     
     def setup_logging(self) -> None:
         # Configure root logger first to capture all logs
@@ -101,15 +106,58 @@ class LlamaSearchApp:
     def get_llm(self) -> LLMSearch:
         if self.llm_instance is not None:
             return self.llm_instance
-        self.logger.info("Initializing LLMSearch from llm_combined...")
+        self.logger.info(f"Initializing LLMSearch with model_engine='{self.model_engine}' and model_name='{self.model_name}'")
         self.llm_instance = LLMSearch(
             storage_dir=self.data_paths["index"],
             models_dir=self.data_paths["models"],
-            model_engine="llamacpp",  # or "hf"
+            model_name=self.model_name,
+            model_engine=self.model_engine,
+            custom_model_path=self.custom_model_path,
             force_cpu=self.use_cpu,
             debug=self.debug
         )
         return self.llm_instance
+
+    def set_model_config(self, model_name: str, model_engine: str, custom_model_path: str = "") -> bool:
+        """
+        Update model configuration. Returns True if configuration changed.
+        """
+        changed = False
+        if model_name != self.model_name or model_engine != self.model_engine or custom_model_path != self.custom_model_path:
+            changed = True
+            
+        self.model_name = model_name
+        self.model_engine = model_engine
+        self.custom_model_path = custom_model_path
+        
+        if changed and self.llm_instance is not None:
+            # Unload existing model to apply new configuration
+            self.llm_instance.unload_model()
+            self.llm_instance = None
+            self.logger.info(f"Model configuration changed to {model_engine}:{model_name}")
+            
+        return changed
+
+    def get_model_config(self) -> Dict[str, str]:
+        """
+        Get current model configuration
+        """
+        return {
+            "model_name": self.model_name,
+            "model_engine": self.model_engine,
+            "custom_model_path": self.custom_model_path
+        }
+
+    def get_available_models(self) -> Dict[str, Any]:
+        """
+        Get list of available models
+        """
+        try:
+            llm = self.get_llm()
+            return llm.get_available_models()
+        except Exception as e:
+            self.logger.error(f"Error getting available models: {e}")
+            return {"local_models": [], "huggingface_suggestions": []}
 
     def get_live_logs(self) -> List[List[str]]:
         """
@@ -286,18 +334,21 @@ class LlamaSearchApp:
             def search_thread():
                 try:
                     result = llm.llm_query(query, debug_mode=self.debug)
-                    response_text = result.get("response", "No response generated.")
-                    retrieved_display = result.get("retrieved_display", "")
+                    
+                    # Get the response - prefer formatted_response if available
+                    if "formatted_response" in result:
+                        response_text = result.get("formatted_response", "No response generated.")
+                    else:
+                        # Fall back to original format
+                        response_text = (
+                            "## AI Summary\n"
+                            f"{result.get('response', 'No response generated.')}\n\n"
+                            "## Retrieved Chunks\n"
+                            f"{result.get('retrieved_display', '')}"
+                        )
                     
                     # Update the results in the main thread
-                    search_result = (
-                        "## AI Summary\n"
-                        f"{response_text}\n\n"
-                        "## Retrieved Chunks\n"
-                        f"{retrieved_display}"
-                    )
-                    
-                    self.search_result = search_result
+                    self.search_result = response_text
                     
                     # Emit search_finished signal after search completes
                     if self.signals:

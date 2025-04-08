@@ -1,4 +1,4 @@
-# src/llamasearch/core/llm_combined.py
+# src/llamasearch/core/llm.py
 import os
 import re
 import time
@@ -12,8 +12,10 @@ from llamasearch.core.embedder import EnhancedEmbedder
 from llamasearch.core.resource_manager import get_resource_manager
 from llamasearch.core.chunker import process_directory
 
-# Optional imports (only used if model_engine=='hf')
-from transformers import AutoModelForCausalLM, AutoModelForSeq2SeqLM, AutoTokenizer, pipeline
+from transformers import (
+    AutoModelForCausalLM, AutoModelForSeq2SeqLM, AutoTokenizer, 
+    pipeline, AutoConfig
+)
 from llama_cpp import Llama
 
 logger = setup_logging(__name__)
@@ -179,37 +181,91 @@ class LLMSearch:
             logger.error(f"Error loading llama-cpp model: {e}")
             raise RuntimeError(f"Failed to load llama-cpp model: {str(e)}")
 
+    def _detect_model_architecture(self, model_id):
+        """
+        Auto-detect the model architecture (causal LM vs seq2seq) using both
+        model config and name-based heuristics.
+        """
+        try:
+            # First try to load the config
+            config = AutoConfig.from_pretrained(model_id)
+            
+            # Check for encoder-decoder architectures
+            if hasattr(config, 'is_encoder_decoder') and config.is_encoder_decoder:
+                return "seq2seq"
+            
+            # Check model type attributes
+            model_type = getattr(config, 'model_type', '').lower()
+            if model_type in ('t5', 'bart', 'pegasus', 'marian', 'mt5'):
+                return "seq2seq"
+            
+            # Name-based heuristics for common models
+            model_id_lower = model_id.lower()
+            seq2seq_models = ['t5', 'bart', 'pegasus', 'flan-t5', 'marian', 'mt5']
+            if any(name in model_id_lower for name in seq2seq_models):
+                return "seq2seq"
+                
+            # Default to causal LM for others
+            return "causal"
+            
+        except Exception as e:
+            logger.warning(f"Error detecting model architecture: {e}. Defaulting to causal LM.")
+            return "causal"
+
     def _load_huggingface_model(self):
         """
-        Load a hugging face model. By default we assume a causal LM (e.g. GPT2, LLaMA, etc.).
-        If your model is a seq2seq model (like T5), you can adapt the code below or auto-detect.
+        Load a hugging face model, auto-detecting architecture.
         """
         try:
             logger.info(f"Loading Hugging Face model: {self.model_path}")
-            # If user wants a large context, some models might not support it. We'll ignore that for now.
-            tokenizer = AutoTokenizer.from_pretrained(self.model_path, use_fast=False)
-            # pick a suitable model class
-            # if you have a T5 or BART model, you'd want AutoModelForSeq2SeqLM
-            # if you have a GPT- or llama-based HF model, you'd want AutoModelForCausalLM
-            # For now we assume a causal LM:
-            model = AutoModelForCausalLM.from_pretrained(self.model_path)
-            # We'll wrap with a pipeline for convenience
+            
+            # Determine model architecture - causal LM (like GPT) or seq2seq (like T5)
+            model_type = self._detect_model_architecture(self.model_path)
+            
+            # Load the tokenizer
+            tokenizer = AutoTokenizer.from_pretrained(self.model_path)
+            
+            # Determine device
             device_name = "cpu"
-            if not self.force_cpu and self.resource_manager.hardware.has_cuda:
-                device_name = "cuda:0"
-            elif not self.force_cpu and self.resource_manager.hardware.has_mps:
-                # pipeline can accept "mps" device string in some versions
-                device_name = "mps"
-
-            # We create a text-generation pipeline
-            llm_instance = pipeline(
-                "text-generation",
+            if not self.force_cpu:
+                if self.resource_manager.hardware.has_cuda:
+                    device_name = "cuda:0"
+                elif self.resource_manager.hardware.has_mps:
+                    device_name = "mps"
+            
+            # Load the appropriate model class based on architecture
+            if model_type == "seq2seq":
+                model = AutoModelForSeq2SeqLM.from_pretrained(self.model_path)
+                task = "text2text-generation"
+                logger.info(f"Loaded sequence-to-sequence model: {self.model_path}")
+            else:
+                model = AutoModelForCausalLM.from_pretrained(self.model_path)
+                task = "text-generation"
+                logger.info(f"Loaded causal language model: {self.model_path}")
+            
+            # Move model to the appropriate device
+            model.to(device_name)
+            
+            # Create a Hugging Face pipeline
+            pipe = pipeline(
+                task,
                 model=model,
                 tokenizer=tokenizer,
                 device=device_name
             )
+            
             logger.info(f"Hugging Face model loaded: {self.model_path}")
-            return llm_instance
+            
+            # Store model metadata for future reference
+            self.model_metadata = {
+                "model_type": model_type,
+                "task": task,
+                "device": device_name,
+                "has_tokenizer": tokenizer is not None
+            }
+            
+            return pipe
+            
         except Exception as e:
             logger.error(f"Error loading Hugging Face model: {e}")
             raise RuntimeError(f"Failed to load huggingface model: {str(e)}")
@@ -249,31 +305,62 @@ class LLMSearch:
 
     def _call_huggingface(self, prompt: str, max_tokens=512, temperature=0.7, top_p=0.9, repeat_penalty=1.1):
         """Call the HF pipeline and return a text response or error."""
-        pipe = self.llm_instance  # must be a pipeline
+        pipe = self._get_llm()  # must be a pipeline
         if not pipe:
             logger.error("No HF pipeline loaded.")
             return "Error: no pipeline loaded", None
 
-        # The pipeline for text-generation usually returns a list of dict
-        # e.g. [ { 'generated_text': 'some text...' } ]
-        # We'll pass the arguments as needed
         try:
-            # Usually the pipeline uses 'max_new_tokens' not 'max_tokens'
-            # We'll just pass them as is, and hope it works
-            result = pipe(prompt, max_tokens=max_tokens, temperature=temperature, top_p=top_p)
+            # Determine model type from metadata 
+            model_type = getattr(self, 'model_metadata', {}).get('model_type', 'causal')
+            
+            # Different handling for seq2seq vs causal models
+            if model_type == "seq2seq":
+                # For seq2seq models like T5, adjust parameters accordingly
+                kwargs = {
+                    "max_length": max_tokens,
+                    "temperature": temperature,
+                    "top_p": top_p,
+                }
+                # Only add do_sample if temperature > 0
+                if temperature > 0:
+                    kwargs["do_sample"] = True
+                    
+                result = pipe(prompt, **kwargs)
+            else:
+                # For causal models like GPT, adjust parameters accordingly
+                kwargs = {
+                    "max_new_tokens": max_tokens,
+                    "temperature": temperature,
+                    "top_p": top_p,
+                }
+                # Add repetition_penalty and do_sample conditionally
+                if repeat_penalty > 1.0:
+                    kwargs["repetition_penalty"] = repeat_penalty
+                if temperature > 0:
+                    kwargs["do_sample"] = True
+                    
+                result = pipe(prompt, **kwargs)
         except Exception as e:
             logger.error(f"Error calling HF pipeline: {e}")
             return f"Error: {str(e)}", None
 
-        # The pipeline returns a list of dict e.g. [{'generated_text': 'some text...'}]
-        if isinstance(result, list) and len(result)>0 and "generated_text" in result[0]:
-            text = result[0]["generated_text"]
-            # remove the prompt from the start if it's included
-            if text.startswith(prompt):
-                text = text[len(prompt):]
-            return text.strip(), result
+        # Handle different return formats from the pipeline
+        if isinstance(result, list) and len(result) > 0:
+            if "generated_text" in result[0]:
+                text = result[0]["generated_text"]
+                model_type = getattr(self, 'model_metadata', {}).get('model_type', 'causal')
+                
+                # For causal LMs, remove the prompt from the start if it's included
+                if model_type == "causal" and text.startswith(prompt):
+                    text = text[len(prompt):]
+                    
+                return text.strip(), result
+            else:
+                logger.warning(f"Unexpected HF pipeline format: {result}")
+                return str(result), result
         else:
-            logger.warning(f"Unexpected HF pipeline format: {result}")
+            logger.warning(f"Unexpected HF pipeline result type: {type(result)}")
             return str(result), result
 
     def query_model(self, prompt: str, max_tokens=512, temperature=0.7, top_p=0.9, repeat_penalty=1.1):
@@ -281,8 +368,6 @@ class LLMSearch:
         Unified entry point for calling the underlying model (llama-cpp or HF).
         Returns (text, raw_completion).
         """
-        llm = self._get_llm()
-
         if self.model_engine == "llamacpp":
             return self._call_llamacpp(
                 prompt=prompt,
@@ -299,6 +384,36 @@ class LLMSearch:
                 top_p=top_p,
                 repeat_penalty=repeat_penalty,
             )
+
+    def get_available_models(self):
+        """
+        Returns information about available models on the system
+        """
+        models_info = {
+            "local_models": [],
+            "huggingface_suggestions": [
+                "teapotai/teapotllm", 
+                "microsoft/phi-2",
+                "gpt2",
+                "google/flan-t5-small",
+                "facebook/bart-large-cnn",
+                "Qwen/Qwen2.5-1.5B-Instruct"
+            ]
+        }
+        
+        # Search for local GGUF models
+        try:
+            for file in os.listdir(self.models_dir):
+                if file.endswith((".gguf", ".bin")):
+                    models_info["local_models"].append({
+                        "name": file,
+                        "path": str(os.path.join(self.models_dir, file)),
+                        "type": "llamacpp"
+                    })
+        except Exception as e:
+            logger.error(f"Error scanning local models: {e}")
+            
+        return models_info
 
     ############################################################################
     # The advanced RAG methods from older LlamaSearch code (like llm.py)
@@ -353,6 +468,7 @@ class LLMSearch:
 
         final_context = ""
         retrieved_display = ""
+        formatted_display = ""
         logger.info("Retrieving context from vectordb...")
         entity_found = False
 
@@ -379,16 +495,43 @@ class LLMSearch:
                         logger.info(f"Entity '{target_entity}' found in retrieved docs")
                         break
 
-            # Build a textual context
+            # Build a textual context for the LLM prompt
             for i, doc_text in enumerate(docs):
                 score = results.get("scores", [0]*len(docs))[i]
-                final_context += f"[Doc {i+1} (score={score:.2f})]\n{doc_text}\n\n"
+                source = metas[i].get("source", "N/A") if isinstance(metas[i], dict) else "N/A"
+                
+                # Include source in the context to make it more informative
+                final_context += f"[Document {i+1}, Source: {source}, Relevance: {score:.2f}]\n{doc_text}\n\n"
             
+            # Build a formatted display for the UI
             for i, meta in enumerate(metas):
                 source = meta.get("source", "N/A") if isinstance(meta, dict) else "N/A"
                 content = docs[i]
+                score = results.get("scores", [0]*len(docs))[i] if i < len(results.get("scores", [])) else 0.0
+                
+                # Better formatting for display
                 retrieved_display += f"Chunk {i+1} - Source: {source}\nContent: {content}\n\n"
-
+                
+                # Create a more structured format for UI display
+                chunk_info = {
+                    "index": i+1,
+                    "source": source,
+                    "content": content,
+                    "score": score
+                }
+                
+                # Store additional metadata for debugging
+                chunk_info.update({
+                    "id": results.get("ids", [])[i] if i < len(results.get("ids", [])) else f"doc_{i}",
+                    "metadata": meta
+                })
+                
+                # Add to debug info
+                if "formatted_chunks" not in debug_info:
+                    debug_info["formatted_chunks"] = []
+                debug_info["formatted_chunks"].append(chunk_info)
+            
+            # Store original chunks for debugging
             debug_info["chunks"] = [
                 {
                     "id": results.get("ids", [])[i] if i<len(results.get("ids", [])) else f"doc_{i}",
@@ -405,12 +548,16 @@ class LLMSearch:
             return {"response": f"Error retrieving context: {str(e)}", "debug_info": debug_info, "retrieved_display": ""}
 
         # Step 2: Build an appropriate system instruction
-        system_instruction = "You are a helpful AI assistant. Answer based on the provided context."
+        system_instruction = """You are a helpful AI assistant that answers questions based on the provided context.
+    1. Focus on the specific query and answer directly using the provided context.
+    2. If the context contains information about a named entity, make sure to include relevant details in your answer.
+    3. If the query is about a person, entity, or topic mentioned in the context, be sure to acknowledge this and provide whatever information is available.
+    4. If there is very little information about the query subject, acknowledge what limited information exists rather than saying there is no information.
+    5. Be accurate and don't make up information not present in the context."""
+
         if is_entity_query and target_entity:
-            system_instruction = (
-                f"You are a helpful AI assistant. Answer based on the provided context. "
-                f"Focus specifically on information about '{target_entity}'."
-            )
+            system_instruction += f"\n\nThe user is specifically asking about '{target_entity}'. Focus on information relevant to this entity."
+        
         # Build final prompt
         prompt = (
             f"<|im_start|>system\n{system_instruction}<|im_end|>\n"
@@ -436,7 +583,7 @@ class LLMSearch:
             if target_entity.lower() not in text_response.lower():
                 logger.warning(f"Entity '{target_entity}' is not found in the final answer text.")
                 if not text_response.startswith("I couldn't find"):
-                    text_response = f"The context includes info about {target_entity}, specifically: {text_response}"
+                    text_response = f"The context includes information about {target_entity}. {text_response}"
         
         # Save query logs
         debug_info["generation_time"] = generation_time
@@ -444,18 +591,24 @@ class LLMSearch:
         log_file = log_query(query_text, debug_info.get("chunks", []), text_response, debug_info, full_logging=debug_mode)
         logger.info(f"Query log saved to {log_file}")
 
+        # Format the response for display
+        formatted_response = f"## AI Summary\n{text_response}\n\n## Retrieved Chunks\n{retrieved_display}"
+
         if debug_mode:
             debug_info["raw_completion"] = raw_completion
+            debug_info["prompt"] = prompt
             return {
                 "response": text_response,
                 "debug_info": debug_info,
-                "retrieved_display": retrieved_display
+                "retrieved_display": retrieved_display,
+                "formatted_response": formatted_response
             }
         else:
             return {
                 "response": text_response,
                 "debug_info": {},
-                "retrieved_display": retrieved_display
+                "retrieved_display": retrieved_display,
+                "formatted_response": formatted_response
             }
 
     def unload_model(self) -> None:
