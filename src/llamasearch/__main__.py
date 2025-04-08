@@ -1,3 +1,5 @@
-from llamasearch.ui import app
+#!/usr/bin/env python3
+from llamasearch.ui.main import main
 
-app.create_app().launch()
+if __name__ == "__main__":
+    main()

@@ -1,13 +1,13 @@
 import os
 import json
-import logging
 import re
 from typing import Dict, Any, List, Optional
 
+from llamasearch.utils import setup_logging
 from llamasearch.setup_utils import get_llamasearch_dir
 from transformers.pipelines import pipeline
 
-logger = logging.getLogger(__name__)
+logger = setup_logging(__name__)
 
 # --- Helper functions and classes for transformer-based NER and disambiguation ---
 

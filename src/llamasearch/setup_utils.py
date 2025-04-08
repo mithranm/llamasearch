@@ -65,7 +65,7 @@ def get_data_paths() -> Dict[str, Path]:
         "index": base / "index",
         "logs": base / "logs",
         "crawl_data": base / "crawl_data",
-        "temp": base / "temp",
+        "public": base / "public",
     }
     for path in paths.values():
         path.mkdir(parents=True, exist_ok=True)
@@ -278,7 +278,7 @@ def check_llama_cpp_cuda_support() -> bool:
         
         # Method 3: Check if shared library supports GPU offload
         try:
-            from llama_cpp.llama_cpp import load_shared_library
+            from llama_cpp._ctypes_extensions import load_shared_library
             import pathlib
             lib_path = pathlib.Path(llama_cpp.__file__).parent / "lib"
             lib = load_shared_library('llama', lib_path)
@@ -314,8 +314,14 @@ def configure_build_environment(config: Dict[str, Any]) -> Tuple[str, List[str],
     acc_type = config.get("type", "cpu")
     if acc_type == "metal":
         if platform.system() == "Darwin" and platform.machine() == "arm64":
-            cmake_args.append("-DLLAMA_METAL=on")
-            logging.info("Configuring for Metal acceleration.")
+            # Fixed Metal configuration for Apple Silicon
+            cmake_args.extend([
+                "-DGGML_METAL=on",  # Changed from LLAMA_METAL to GGML_METAL
+                "-DCMAKE_OSX_ARCHITECTURES=arm64",
+                "-DCMAKE_APPLE_SILICON_PROCESSOR=arm64"
+            ])
+            env_vars["FORCE_CMAKE"] = "1"  # Ensure cmake rebuild
+            logging.info("Configuring for Metal acceleration with proper ARM64 architecture settings.")
         else:
             logging.warning("Metal acceleration requested but not supported; defaulting to CPU.")
             acc_type = "cpu"
@@ -338,7 +344,7 @@ def configure_build_environment(config: Dict[str, Any]) -> Tuple[str, List[str],
 
 def install_llama_cpp_python() -> bool:
     """Install llama-cpp-python from source with proper acceleration support."""
-    LATEST_VERSION = "0.3.8"
+    LATEST_VERSION = "0.3.8"  # Could be updated if needed
     logging.info("=== Installing llama-cpp-python with acceleration support ===")
     acc_config = get_acceleration_config()
     acc_type = acc_config.get("type", "cpu")
@@ -376,6 +382,12 @@ def install_llama_cpp_python() -> bool:
             build_env["CMAKE_ARGS"] = " ".join(cmake_args)
         build_env["FORCE_CMAKE"] = "1"
     build_env["CMAKE_VERBOSE_MAKEFILE"] = "1"
+    
+    # For macOS ARM, ensure we're using the right build flags for Metal
+    if platform.system() == "Darwin" and platform.machine() == "arm64" and acc_type == "metal":
+        logging.info("macOS ARM detected, ensuring proper Metal configuration")
+        build_env["CMAKE_ARGS"] = "-DGGML_METAL=on -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_APPLE_SILICON_PROCESSOR=arm64"
+    
     cmd = [
         sys.executable, "-m", "pip", "install",
         "--no-cache-dir", "--verbose", "--force-reinstall",

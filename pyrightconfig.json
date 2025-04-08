@@ -1,12 +1,12 @@
 {
   "include": [
-    "llamasearch",
+    "src",
     "tests"
   ],
   "exclude": [
-    "**/.git",
-    "**/__pycache__",
-    "**/*.egg-info",
+    ".git",
+    "__pycache__",
+    "*.egg-info",
     "**/data/**",
     "o.md",
   ],

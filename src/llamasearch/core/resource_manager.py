@@ -11,7 +11,8 @@ import subprocess
 from typing import Dict, Any, List, Optional, Callable, TypeVar
 
 from llamasearch.setup_utils import check_llama_cpp_cuda_support
-logger = logging.getLogger(__name__)
+from llamasearch.utils import setup_logging
+logger = setup_logging(__name__)
 
 T = TypeVar('T')
 R = TypeVar('R')

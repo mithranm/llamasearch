@@ -9,14 +9,12 @@ from typing import List, Dict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 from sentence_transformers import SentenceTransformer
-
-# Instead of using torch.multiprocessing.Lock (a runtime variable),
-# we import the Lock type from the standard library.
 from multiprocessing.synchronize import Lock as SyncLock
 
-from .resource_manager import get_resource_manager
+from llamasearch.utils import setup_logging
+from llamasearch.core.resource_manager import get_resource_manager
 
-logger = logging.getLogger(__name__)
+logger = setup_logging(__name__)
 
 DEFAULT_MODEL_NAME = "intfloat/multilingual-e5-large-instruct"
 

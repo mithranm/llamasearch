@@ -2,7 +2,7 @@
 name = "llamasearch"
 version = "0.1.0"
 description = "RAG-based search application"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [
     { name = "Leo Angulo", email = "langulo@gmu.edu" },
     { name = "Georgi Zahariev", email = "gzaharie@gmu.edu" },
@@ -22,10 +22,9 @@ dependencies = [
     "scikit-learn",
     "numpy",
     "huggingface_hub",
-    "gradio",
+    "streamlit",
     "requests",
     "pydantic",
-    "gTTS",
     "rank-bm25",
     "spacy>=3.0.0",
     "tqdm",
@@ -33,6 +32,7 @@ dependencies = [
     "cryptography",
     "accelerate",
     "langsmith",
+    "PySide6",
     "PyJWT>=2.8.0",
     "sentencepiece>=0.2.0"
 ]
