@@ -33,6 +33,7 @@ dependencies = [
     "accelerate",
     "langsmith",
     "PySide6",
+    "protobuf",
     "PyJWT>=2.8.0",
     "sentencepiece>=0.2.0"
 ]
