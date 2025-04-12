@@ -4,17 +4,34 @@ import tldextract
 from pathlib import Path
 
 def extract_domain(url):
+    if isinstance(url, str) is False or url.strip() is False:
+        raise ValueError("Invalid URL: Input must be a non-empty string.")
+    
     ext = tldextract.extract(url)
-    # This will return the TLD
+    # This will return the TLD if found
+
+    if ext.domain is False or ext.suffix is False:
+        raise ValueError(f"Invalid URL format: '{url}'")
+    
     return ext.domain
 
-def check_links_domain(md_file, database):
-
-    # Dynamically resolve md_file if not an absolute path
-    if not Path(md_file).is_absolute():
+def resolve_md_file_path(md_file):
+    """Resolve the absolute path for the markdown file."""
+    path = Path(md_file)
+    if not path.is_absolute():
         project_root = Path(__file__).resolve().parents[2]
-        md_file = project_root / "temp" / "links.md"
+        path = project_root / "temp" / "links.md"
+    return path
 
+
+def validate_file_exists(path):
+    """Check if the file exists and is readable."""
+    if not path.exists() or not path.is_file():
+        print(f"Error: Markdown file '{path}' does not exist or is not a file.")
+        return False
+    return True
+
+def check_links_domain(md_file, database):
     # Sets the trusted source links to read from
     trusted_sources = set(database.trustedSources)
 
@@ -40,25 +57,12 @@ def check_links_domain(md_file, database):
             # after finishing add to the total looked through
             total += 1
 
-    # create the ratio to output as a percent and avoid division by 0
-    if total > 0:
-        ratio = (count/total) * 100
-    else:
-        ratio = 0
-
-    return ratio
+    return count, total
 
 
 def check_links_end(md_file):
-
-    # Initializes the count of trusted sources and the amount read through
     count = 0
     total = 0
-
-    # Dynamically resolve md_file if not an absolute path
-    if not Path(md_file).is_absolute():
-        project_root = Path(__file__).resolve().parents[2]
-        md_file = project_root / "temp" / "links.md"
     
     with open(md_file, 'r', encoding='utf-8') as f:
         for line in f:
@@ -72,6 +76,9 @@ def check_links_end(md_file):
             # add to the total amount of lines looked through
             total += 1
 
+    return count, total
+
+def create_ratio(count, total):
     # create the ratio to output as a percent and avoid division by 0
     if total > 0:
         ratio = (count/total) * 100
@@ -81,13 +88,18 @@ def check_links_end(md_file):
     return ratio
             
 def main():
-    # defines the command line arguments for testing the functionality of just linkChecker.py
+    # defines the command line arguments for testing the functionality of linkChecker.py
     if len(sys.argv) != 3:
-        print("Usage: python linkChecker.py <links.md> <trusted_sources.py>")
+        print("Usage: python linkChecker.py <links.md> <trustedSources.py>")
         return
 
-    md_file = sys.argv[1]
+    md_file_input = sys.argv[1]
     db_module_name = sys.argv[2].replace('.py', '')
+
+    # Check the md_file and validate the markdown file
+    md_file = resolve_md_file_path(md_file_input)
+    if validate_file_exists(md_file) is False:
+        return
 
     try:
         # Dynamically import the database module
@@ -100,8 +112,10 @@ def main():
         return
 
     # Call your checking functions
-    domain_ratio = check_links_domain(md_file, database)
-    tld_ratio = check_links_end(md_file)
+    count_domain, total_domain = check_links_domain(md_file, database)
+    count_tld, total_tld = check_links_end(md_file)
+    domain_ratio = create_ratio(count_domain, total_domain)
+    tld_ratio = create_ratio(count_tld, total_tld)
 
     # Print results
     print(f"Percentage of links from trusted domains: {domain_ratio:.2f}%")

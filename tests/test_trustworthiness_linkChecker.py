@@ -1,68 +1,48 @@
 import sys
-import importlib
+from pathlib import Path
+import pytest
 from llamasearch.trustworthiness.linkChecker import (
-    extract_domain,
-    check_links_domain,
-    check_links_end
+    extract_domain
 )
 
-def extractDomainTest1():
-    return True
+# Add the parent directory of llamasearch to sys.path
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-def extractDomainTest2():
-    return True
+@pytest.fixture
+def sample_url1():
+    return "https://www.nasa.gov"
 
-def extractDomainTest3():
-    return True
+@pytest.fixture
+def sample_domain1():
+    return "nasa"
 
-def checkLinksDomainTest1():
-    return True
+@pytest.fixture
+def sample_url2():
+    return "https://audio-video.gnu.org/video/2015-03-16--rms--free-software-and-your-freedom.webm"
 
-def checkLinksDomainTest2():
-    return True
+@pytest.fixture
+def sample_domain2():
+    return "gnu"
 
-def checkLinksDomainTest3():
-    return True
+@pytest.fixture
+def sample_url3():
+    return "https://www.nasa.gov"
 
-def main():
-    passedTests = 0
-    failedTests = 0
-    
-    if (extractDomainTest1 is True):
-        passedTests += 1
-    else:
-        failedTests += 1
+@pytest.fixture
+def sample_domain3():
+    return "nasa"
 
-    if (extractDomainTest2 is True):
-        passedTests += 1
-    else:
-        failedTests += 1
-    
-    if (extractDomainTest3 is True):
-        passedTests += 1
-    else:
-        failedTests += 1
 
-    if (checkLinksDomainTest1 is True):
-        passedTests += 1
-    else:
-        failedTests += 1
-    
-    if (checkLinksDomainTest2 is True):
-        passedTests += 1
-    else:
-        failedTests += 1
-    
-    if (checkLinksDomainTest3 is True):
-        passedTests += 1
-    else:
-        failedTests += 1
+def test_extractDomainBasic(sample_url1, sample_domain1):
+    assert extract_domain(sample_url1) == sample_domain1
 
-    total = passedTests/ (passedTests+failedTests)
-    print(f"Number of Passed Tests: {passedTests}")
-    print(f"Number of Failed Tests: {failedTests}")
-    print(f"Cases Passed Percentage: {total:.2f}")
+def test_extractDomainAdvanced(sample_url2, sample_domain2):
+    assert extract_domain(sample_url2) == sample_domain2
 
-if __name__ == "__main__":
-    main()
+def test_extractDomainInvalid():
+    with pytest.raises(ValueError):
+        extract_domain("not_a_url")
 
+def test_extractDomainEmpty():
+    with pytest.raises(ValueError):
+        extract_domain("")

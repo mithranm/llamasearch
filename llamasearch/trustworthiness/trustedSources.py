@@ -3,5 +3,20 @@ trustedSources = [
     "gnu",
     "nasa",
     "mit",
-    "un"
+    "un",
+    "pubmed",
+    "pubs",
+    "arxiv",
+    "doaj",
+    "dl.acm",
+    "ieeexplore",
+    "journals.plos",
+    "nytimes",
+    "sciencedirect",
+    "springer",
+    "scopus",
+    "ebsco",
+    "wiley",
+    "proquest",
+    "sagepub"
 ]
