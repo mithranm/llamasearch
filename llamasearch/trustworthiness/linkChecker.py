@@ -4,13 +4,13 @@ import tldextract
 from pathlib import Path
 
 def extract_domain(url):
-    if isinstance(url, str) is False or url.strip() is False:
+    if isinstance(url, str) is False or url.strip() == "":
         raise ValueError("Invalid URL: Input must be a non-empty string.")
     
     ext = tldextract.extract(url)
     # This will return the TLD if found
 
-    if ext.domain is False or ext.suffix is False:
+    if ext.domain == "" or ext.suffix == "":
         raise ValueError(f"Invalid URL format: '{url}'")
     
     return ext.domain

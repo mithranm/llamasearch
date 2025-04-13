@@ -2,7 +2,8 @@ import sys
 from pathlib import Path
 import pytest
 from llamasearch.trustworthiness.linkChecker import (
-    extract_domain
+    extract_domain,
+    resolve_md_file_path
 )
 
 # Add the parent directory of llamasearch to sys.path
@@ -43,6 +44,41 @@ def test_extractDomainInvalid():
     with pytest.raises(ValueError):
         extract_domain("not_a_url")
 
+def test_extractDomainInvalidDomain():
+    with pytest.raises(ValueError):
+        extract_domain("https://.gov")
+
+def test_extractDomainInvalidSuffix():
+    with pytest.raises(ValueError):
+        extract_domain("https://www.nasa")
+
 def test_extractDomainEmpty():
     with pytest.raises(ValueError):
         extract_domain("")
+
+def test_extractDomainNumber():
+    with pytest.raises(ValueError):
+        extract_domain(123)
+
+def test_resolve_md_file_path_absolute():
+    abs_path = Path(__file__).resolve()
+    result = resolve_md_file_path(abs_path)
+    assert result == abs_path
+
+def test_resolve_md_file_path_relative():
+    # Provide a relative path and check if it returns the expected default path
+    result = resolve_md_file_path("links.md")
+    
+    # Expected default path constructed from project structure
+    expected_path = Path(__file__).resolve().parents[2] / "temp" / "links.md"
+    assert result == expected_path
+
+"""def main():
+    if test_resolve_md_file_path_relative() is True:
+        return "Result True"
+    else:
+        return "Wrong"
+
+if __name__ == "__main__":
+    main()
+"""
