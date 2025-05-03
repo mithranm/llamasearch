@@ -3,20 +3,25 @@ import pytest
 import os
 from unittest.mock import patch, mock_open
 from llamasearch.core.crawler import (
-    fetch_links_with_jina,
+    fetch_links,
     filter_links_by_structure,
-    save_to_project_tempdir,
+    save_crawled_links,
 )
 
 JINA_API_URL = "https://r.jina.ai/"
 DUMMY_URL = "https://example.com"
 
 MOCK_JINA_RESPONSE = """
-https://example.com/page1
-https://example.com/page2
-https://otherdomain.com/notallowed
-https://example.com/image.jpg
-https://example.com/video.mp4
+<html>
+<body>
+    <a href="https://example.com/page1">Page 1</a>
+    <a href="https://example.com/page2">Page 2</a>
+    <a href="https://otherdomain.com/notallowed">External Link</a>
+    <a href="https://example.com/image.jpg">Image</a>
+    <a href="https://example.com/video.mp4">Video</a>
+    <a href="/relative/path">Relative Link</a>
+</body>
+</html>
 """
 
 
@@ -26,16 +31,17 @@ def mock_requests_get():
     with patch("requests.get") as mock_get:
         mock_get.return_value.status_code = 200
         mock_get.return_value.text = MOCK_JINA_RESPONSE
+        mock_get.return_value.content = MOCK_JINA_RESPONSE.encode("utf-8")
         yield mock_get
 
 
-def test_fetch_links_with_jina(mock_requests_get):
+def test_fetch_links(mock_requests_get):
     """Test fetching links using Jina API."""
-    links = fetch_links_with_jina(DUMMY_URL, max_links=5)
-
+    links = fetch_links(DUMMY_URL, max_links=5)
     assert mock_requests_get.called
     assert len(links) == 5
     assert "https://example.com/page1" in links
+    # External links are allowed at depth 1
     assert "https://otherdomain.com/notallowed" in links
 
 
@@ -132,16 +138,16 @@ def test_complex_domains():
     assert "https://other.co.uk/page" not in filtered
 
 
-def test_save_to_project_tempdir():
-    """Test saving filtered links to a temp directory."""
+def test_save_crawled_links():
+    """Test saving crawled links to a temp directory."""
     mock_text = "https://example.com/page1\nhttps://example.com/page2"
     import tempfile
 
     mock_root = tempfile.mkdtemp()
 
-    with patch("llamasearch.core.crawler.find_project_root", return_value=mock_root):
+    with patch("llamasearch.core.crawler.get_llamasearch_dir", return_value=mock_root):
         with patch("builtins.open", mock_open()) as mock_file:
-            file_path = save_to_project_tempdir(mock_text, "test_link.md")
+            file_path = save_crawled_links(mock_text, "test_link.txt")
 
             assert mock_file.called
-            assert file_path == os.path.join(mock_root, "temp", "test_link.md")
+            assert file_path == os.path.join(mock_root, "data", "test_link.txt")
