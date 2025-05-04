@@ -4,10 +4,10 @@ version = "0.1.0"
 description = "RAG-based search application"
 requires-python = ">=3.11"
 authors = [
-    { name = "Leo Angulo", email = "langulo@gmu.edu" },
-    { name = "Georgi Zahariev", email = "gzaharie@gmu.edu" },
-    { name = "Robin Hwang",   email = "rhwang4@gmu.edu" },
     { name = "Mithran Mohanraj", email = "mithran.mohanraj@gmail.com" },
+    { name = "Georgi Zahariev", email = "gzaharie@gmu.edu" },
+    { name = "Leo Angulo", email = "langulo@gmu.edu" },
+    { name = "Robin Hwang",   email = "rhwang4@gmu.edu" },
     { name = "Dhanush Reddy Kandukuri", email = "kandukuri.dhanush@gmail.com" },
     { name = "Shaheda Tawakalyar", email = "stawakal@gmu.edu" },
     { name = "Malek Bashagha", email = "abashagh@gmu.edu" }
@@ -32,10 +32,10 @@ dependencies = [
     "cryptography",
     "accelerate",
     "langsmith",
-    "PySide6",
     "protobuf",
     "PyJWT>=2.8.0",
-    "sentencepiece>=0.2.0"
+    "sentencepiece>=0.2.0",
+    "killeraiagent @ git+https://github.com/mithranm/killeraiagent.git"
 ]
 
 [project.optional-dependencies]
@@ -44,6 +44,12 @@ dev = [
     "pytest-cov>=3.0.0",
     "black>=22.0.0",
     "flake8>=5.0.0",
+]
+gui = [
+    "PySide6"
+]
+mcp = [
+    "fastapi[all]>=0.110.0"
 ]
 
 [build-system]
@@ -60,12 +66,16 @@ build-backend = "setuptools.build_meta"
 package-dir = {"" = "src"}
 packages = ["llamasearch"]
 
-[project.scripts]
-llamasearch-setup = "llamasearch.setup_utils:run_setup_command"
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-ra -v --cov=llamasearch --cov-report=term-missing"
 log_cli = true
 log_cli_level = "INFO"
+
+[tool.vibelint]
+include_globs = [
+    "src/**/*.py",
+    "tests/**/*.p.y",
+    "pyroject.toml"
+]

@@ -5,7 +5,6 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QHBoxLayout,
                               )
 from PySide6.QtCore import Qt, QTimer
 import os
-from pathlib import Path
 
 class SettingsView(QWidget):
     def __init__(self, app):
@@ -78,11 +77,11 @@ class SettingsView(QWidget):
         
         # Add available local models
         available_models = self.app.get_available_models()
-        for model in available_models.get("local_models", []):
+        for model in available_models.get("llamacpp"):
             self.gguf_combo.addItem(model["name"], userData=model["path"])
         
         # Select current model if it's in the list
-        current_model = self.app.get_model_config()["model_name"]
+        current_model = self.app.get_model_config()["model_id"]
         model_path = self.app.get_model_config()["custom_model_path"]
         
         # Initialize field for custom path
@@ -113,7 +112,7 @@ class SettingsView(QWidget):
         self.hf_combo.setEditable(True)
         
         # Add suggested models
-        for model in available_models.get("huggingface_suggestions", []):
+        for model in available_models.get("hf", []):
             self.hf_combo.addItem(model)
         
         # Add current model if not in list
@@ -214,24 +213,24 @@ class SettingsView(QWidget):
     
     def _apply_model_settings(self):
         engine = self.engine_combo.currentText()
-        model_name = ""
+        model_id = ""
         custom_path = ""
         
         if engine == "llamacpp":
             if self.gguf_combo.currentIndex() == 0:  # Custom path
-                # Use the filename as model_name
+                # Use the filename as model_id
                 custom_path = self.custom_model_path.text()
-                model_name = os.path.basename(custom_path)
+                model_id = os.path.basename(custom_path)
             else:
-                model_name = self.gguf_combo.currentText()
+                model_id = self.gguf_combo.currentText()
                 # Store the full path in custom_path
                 custom_path = self.gguf_combo.currentData() or ""
         else:  # hf
-            model_name = self.hf_combo.currentText()
+            model_id = self.hf_combo.currentText()
             custom_path = ""
         
         # Apply model settings
-        self.app.set_model_config(model_name, engine, custom_path)
+        self.app.set_model_config(model_id, engine, custom_path)
         
         # Apply other settings
         self.app.debug = self.debug_checkbox.isChecked()
@@ -244,19 +243,6 @@ class SettingsView(QWidget):
         tab.setWidgetResizable(True)
         content = QWidget()
         layout = QVBoxLayout(content)
-        
-        # Force CPU option
-        cpu_group = QGroupBox("Processing Options")
-        cpu_layout = QVBoxLayout(cpu_group)
-        
-        self.cpu_checkbox = QCheckBox("Force CPU Usage (disable GPU)")
-        self.cpu_checkbox.setChecked(self.app.use_cpu)
-        cpu_layout.addWidget(self.cpu_checkbox)
-        
-        # Apply CPU setting
-        cpu_button = QPushButton("Apply CPU Setting")
-        cpu_button.clicked.connect(self._apply_cpu_setting)
-        cpu_layout.addWidget(cpu_button)
         
         # Data paths
         paths_group = QGroupBox("Data Paths")
@@ -273,23 +259,11 @@ class SettingsView(QWidget):
         paths_layout.addWidget(paths_label)
         
         # Add to layout
-        layout.addWidget(cpu_group)
         layout.addWidget(paths_group)
         layout.addStretch()
         
         tab.setWidget(content)
         return tab
-    
-    def _apply_cpu_setting(self):
-        self.app.use_cpu = self.cpu_checkbox.isChecked()
-        
-        # Force reload of model if needed
-        if self.app.llm_instance:
-            self.app.llm_instance.unload_model()
-            self.app.llm_instance = None
-        
-        # Show success message using our dedicated method
-        self.show_status_message("CPU setting applied. Model will reload with new setting.")
 
 def settings_view(app):
     """Create and return a SettingsView instance"""

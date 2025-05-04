@@ -3,7 +3,7 @@ from PySide6.QtWidgets import QWidget, QLabel, QHBoxLayout
 from PySide6.QtGui import QPixmap
 from pathlib import Path
 
-def header_component():
+def header_component(data_paths):
     """
     Creates a header widget with a square logo and title.
     """
@@ -11,7 +11,7 @@ def header_component():
     layout = QHBoxLayout(widget)
     
     # Get path to logo (adjust path as needed)
-    logo_path = Path("public/llamasearch.png")
+    logo_path = Path(data_paths["public"] / "llamasearch.png")
     logo_label = QLabel()
     if logo_path.exists():
         pixmap = QPixmap(str(logo_path))

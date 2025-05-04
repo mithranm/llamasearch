@@ -6,7 +6,6 @@ using transformer-based models to handle diverse entities across languages.
 import os
 import re
 import json
-import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import List, Dict, Any, Generator, Optional, Tuple
@@ -368,7 +367,6 @@ class BaseChunker(ABC):
         
         # Extract entities using the transformer model
         entities = self.entity_recognizer.extract_entities(text)
-        entity_texts = [e["entity_text"] for e in entities]
         
         # Find section headers (e.g., "By the numbers:")
         section_headers = []
@@ -696,13 +694,12 @@ class HtmlChunker(BaseChunker):
 
 # --- Module-level Helper Function ---
 
-def process_directory(markdown_chunker: MarkdownChunker, html_chunker: HtmlChunker, directory_path: str, debug: bool = False) -> Dict[str, List[Dict[str, Any]]]:
+def process_directory(markdown_chunker: MarkdownChunker, html_chunker: HtmlChunker, directory_path: Path, debug: bool = False) -> Dict[str, List[Dict[str, Any]]]:
     """
     Process all supported files in a directory.
     Returns a dict mapping file paths to lists of chunk dictionaries.
     This version is case-insensitive: it accepts .md, .html, or .htm in any case.
     """
-    from pathlib import Path
     p = Path(directory_path)
     logger.info(f"Processing directory: {directory_path}")
     markdown_files = [x for x in p.glob("**/*") if x.suffix.lower() in {".md"}]

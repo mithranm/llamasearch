@@ -1,20 +1,18 @@
 # src/llamasearch/ui/app_logic.py
-import threading
-import queue
-import shutil
-import atexit
-import signal
-import sys
-import json
-from typing import Dict, Any, Optional, Tuple, List
+
 import logging
-import time
+import sys
+import signal
+import queue
+import threading
+from typing import List, Optional, Dict, Any
+from pathlib import Path
 
-from llamasearch.setup_utils import get_data_paths
-from llamasearch.core.crawler import smart_crawl, clear_crawl_data_directory
-from llamasearch.core.llm import LLMSearch  # unified RAG + LLM code
+from killeraiagent.models import LLM, ModelInfo, LlamaCppCLI, HuggingFaceLLM, NullModel
+from llamasearch.core.llmsearch import LLMSearch
+from llamasearch.core.concurrent_crawler import ConcurrentAsyncCrawler
+from llamasearch.utils import setup_logging, get_llamasearch_dir
 
-# A custom logging handler that writes messages to a queue.
 class QueueHandler(logging.Handler):
     def __init__(self, log_queue: queue.Queue):
         super().__init__()
@@ -29,60 +27,44 @@ class QueueHandler(logging.Handler):
 
 class LlamaSearchApp:
     """
-    Main application class for the LlamaSearch UI.
+    Main backend logic for the minimal UI. 
+    - Manage LLM
+    - Manage concurrency BFS crawler
+    - Manage LLMSearch instance
+    - Provide methods for local file indexing, removing items, etc.
     """
-    def __init__(self, use_cpu: bool = False, debug: bool = False, signals=None):
-        self.use_cpu = use_cpu
+    def __init__(self, requires_gpu=False, debug=False):
+        self.requires_gpu = requires_gpu
         self.debug = debug
-        self.signals = signals  # Store signals object
-        self.data_paths = get_data_paths()
-        self.llm_instance = None
-        self.current_crawl_thread = None
-        self.crawl_status = "Ready to crawl"
         self.log_queue = queue.Queue()
-        self.all_logs: List[str] = []  # Accumulate log messages
-        self.setup_logging()
+        self.all_logs: List[str] = []
+        self.signals = None
+        self.data_path = get_llamasearch_dir()
         self.start_log_queue_processor()
-        # Register signal handlers only in the main thread.
-        import threading
-        if threading.current_thread() is threading.main_thread():
-            signal.signal(signal.SIGINT, self.signal_handler)
-            signal.signal(signal.SIGTERM, self.signal_handler)
-        
-        # Store model configuration
-        self.model_name = "qwen2.5-1.5b-instruct-q4_k_m"  # Default model
-        self.model_engine = "llamacpp"  # Default engine (llamacpp or hf)
-        self.custom_model_path = ""
-    
-    def setup_logging(self) -> None:
-        # Configure root logger first to capture all logs
-        root_logger = logging.getLogger()
-        root_logger.setLevel(logging.INFO)
-        
-        # Clear any existing handlers to avoid duplicates
-        if root_logger.hasHandlers():
-            for handler in root_logger.handlers[:]:
-                root_logger.removeHandler(handler)
-        
-        # Add our queue handler to the root logger
-        queue_handler = QueueHandler(self.log_queue)
-        queue_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-        root_logger.addHandler(queue_handler)
-        
-        # Now set up the local logger as before
-        self.logger = logging.getLogger("llamasearch.ui")
-        self.logger.setLevel(logging.INFO)
-        if self.logger.hasHandlers():
-            self.logger.handlers.clear()
-        
-        # Also log to file
-        file_handler = logging.FileHandler(self.data_paths["logs"] / "ui.log")
-        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-        self.logger.addHandler(file_handler)
-    
-    def start_log_queue_processor(self) -> None:
-        """Start a background thread to drain the log queue into a list."""
-        def process_queue() -> None:
+        self.setup_logging()
+        self.model_info = NullModel()
+        self.llm = None
+        self.llm_search: Optional[LLMSearch] = None
+        self.logger.info("LlamaSearchApp init complete.")
+        self._init_model()
+
+    def _init_model(self):
+        if not self.model_info.model_path.exists():
+            self.logger.error(f"Model file not found => {self.model_info.model_path}")
+        else:
+            self.llm = self._construct_llm(self.model_info, self.requires_gpu)
+
+    def _construct_llm(self, info: ModelInfo, requires_gpu: bool) -> LLM:
+        if info.model_engine == "llamacpp":
+            return LlamaCppCLI(info, requires_gpu=requires_gpu)
+        elif info.model_engine == "hf":
+            return HuggingFaceLLM(info, requires_gpu=requires_gpu)
+        else:
+            self.logger.error(f"Unsupported engine => {info.model_engine}")
+            return NullModel()
+
+    def start_log_queue_processor(self):
+        def process_queue():
             while True:
                 try:
                     msg = self.log_queue.get(timeout=1)
@@ -91,298 +73,250 @@ class LlamaSearchApp:
                     pass
         t = threading.Thread(target=process_queue, daemon=True)
         t.start()
-    
-    def signal_handler(self, sig, frame) -> None:
-        self.logger.info(f"Received signal {sig}, cleaning up...")
-        self.cleanup()
+
+    def setup_logging(self):
+        self.logger = setup_logging(__name__)
+        root_logger = logging.getLogger()
+        root_logger.setLevel(logging.DEBUG if self.debug else logging.INFO)
+        qh = QueueHandler(self.log_queue)
+        root_logger.addHandler(qh)
+
+    def close(self):
+        if self.llm_search:
+            self.llm_search.close()
+            self.llm_search = None
+        if self.llm:
+            try:
+                self.llm.unload()
+            except:
+                pass
+            self.llm = None
+
+    def __del__(self):
+        self.close()
+
+    def signal_handler(self, sig, frame):
+        self.logger.info(f"Received signal => {sig}")
+        self.close()
         sys.exit(0)
-    
-    def cleanup(self) -> None:
-        if self.llm_instance is not None:
-            self.logger.info("Cleaning up LLM resources...")
-            self.llm_instance.unload_model()
-            self.llm_instance = None
-    
-    def get_llm(self) -> LLMSearch:
-        if self.llm_instance is not None:
-            return self.llm_instance
-        self.logger.info(f"Initializing LLMSearch with model_engine='{self.model_engine}' and model_name='{self.model_name}'")
-        self.llm_instance = LLMSearch(
-            storage_dir=self.data_paths["index"],
-            models_dir=self.data_paths["models"],
-            model_name=self.model_name,
-            model_engine=self.model_engine,
-            custom_model_path=self.custom_model_path,
-            force_cpu=self.use_cpu,
-            debug=self.debug
-        )
-        return self.llm_instance
-
-    def set_model_config(self, model_name: str, model_engine: str, custom_model_path: str = "") -> bool:
-        """
-        Update model configuration. Returns True if configuration changed.
-        """
-        changed = False
-        if model_name != self.model_name or model_engine != self.model_engine or custom_model_path != self.custom_model_path:
-            changed = True
-            
-        self.model_name = model_name
-        self.model_engine = model_engine
-        self.custom_model_path = custom_model_path
-        
-        if changed and self.llm_instance is not None:
-            # Unload existing model to apply new configuration
-            self.llm_instance.unload_model()
-            self.llm_instance = None
-            self.logger.info(f"Model configuration changed to {model_engine}:{model_name}")
-            
-        return changed
-
-    def get_model_config(self) -> Dict[str, str]:
-        """
-        Get current model configuration
-        """
-        return {
-            "model_name": self.model_name,
-            "model_engine": self.model_engine,
-            "custom_model_path": self.custom_model_path
-        }
-
-    def get_available_models(self) -> Dict[str, Any]:
-        """
-        Get list of available models
-        """
-        try:
-            llm = self.get_llm()
-            return llm.get_available_models()
-        except Exception as e:
-            self.logger.error(f"Error getting available models: {e}")
-            return {"local_models": [], "huggingface_suggestions": []}
 
     def get_live_logs(self) -> List[List[str]]:
-        """
-        Return the accumulated logs as a list suitable for display.
-        Format: [["system", "<all logs concatenated>"]]
-        """
         return [["system", "\n".join(self.all_logs)]]
 
-    def get_index_stats(self) -> Dict[str, Any]:
-        index_dir = self.data_paths["index"]
-        if not index_dir.exists():
-            return {"doc_count": 0, "chunk_count": 0, "size_mb": 0}
-        file_count = sum(1 for _ in index_dir.glob('**/*') if _.is_file())
-        total_size = sum(f.stat().st_size for f in index_dir.glob('**/*') if f.is_file())
-        size_mb = total_size / (1024 * 1024)
-        doc_count = 0
-        chunk_count = 0
-        llm = self.get_llm()
-        if hasattr(llm, 'vectordb') and hasattr(llm.vectordb, 'document_metadata'):
-            doc_count = len(set(m.get('source', '') for m in llm.vectordb.document_metadata))
-            chunk_count = len(llm.vectordb.document_metadata)
-        return {
-            "doc_count": doc_count,
-            "chunk_count": chunk_count,
-            "file_count": file_count,
-            "size_mb": round(size_mb, 2)
-        }
-    
-    def get_crawl_data_stats(self) -> Dict[str, Any]:
-        raw_dir = self.data_paths["crawl_data"] / "raw"
-        file_count = sum(1 for f in raw_dir.glob('**/*') if f.is_file())
-        total_size = sum(f.stat().st_size for f in raw_dir.glob('**/*') if f.is_file())
-        size_mb = total_size / (1024 * 1024)
-        return {"file_count": file_count, "size_mb": round(size_mb, 2)}
-    
-    def get_crawl_data_lookup(self) -> Dict[str, Any]:
-        lookup_path = self.data_paths["crawl_data"] / "reverse_lookup.json"
-        try:
-            with open(lookup_path, "r", encoding="utf-8") as f:
-                lookup = json.load(f)
-            return lookup
-        except Exception as e:
-            self.logger.error(f"Error reading reverse lookup table: {e}")
-            return {}
-    
-    def get_crawl_data_info(self) -> Tuple[str, str]:
-        stats = self.get_crawl_data_stats()
-        lookup = self.get_crawl_data_lookup()
-        stats_markdown = f"""
-### Crawl Data Statistics:
-- Files in raw data: {stats['file_count']}
-- Total size: {stats['size_mb']} MB
-"""
-        if lookup:
-            lookup_markdown = "### Reverse Lookup Table:\n" + "\n".join(
-                [f"- **{k}**: {v}" for k, v in lookup.items()]
+    def set_model_config(self, model_id: str, engine: str, custom_path: str) -> bool:
+        changed = (
+            model_id != self.model_info.model_id or 
+            engine != self.model_info.model_engine or 
+            custom_path != str(self.model_info.model_path)
+        )
+        if changed:
+            self.logger.info(f"Model config changed => {engine}:{model_id}")
+            self.close()
+            from pathlib import Path
+            self.model_info = ModelInfo(
+                model_id=model_id,
+                model_engine=engine,
+                model_path=Path(custom_path) if custom_path else Path("")
             )
-        else:
-            lookup_markdown = "### Reverse Lookup Table:\nNo crawl data available."
-        return stats_markdown, lookup_markdown
+            if self.model_info.model_path and self.model_info.model_path.exists():
+                self.llm = self._construct_llm(self.model_info, self.requires_gpu)
+                self.logger.info("New model loaded.")
+            else:
+                self.logger.error("New model path not found.")
+                self.llm = None
+        return changed
 
-    def clear_crawl_data(self) -> str:
+    def get_model_config(self) -> Dict[str,str]:
+        return {
+            "model_id": self.model_info.model_id,
+            "model_engine": self.model_info.model_engine,
+            "custom_model_path": str(self.model_info.model_path)
+        }
+
+    def get_available_models(self) -> Dict[str,Any]:
+        ret = {
+            "llamacpp": [
+                {"name": f.name, "path": str(f.resolve())}
+                for f in Path(self.data_path / "models").glob("*.gguf")
+            ],
+            "hf": ["google/gemma-3-1b-it"]
+        }
+        return ret
+
+    def get_llm_search(self) -> LLMSearch:
+        if self.llm_search is None:
+            if not self.llm:
+                raise RuntimeError("No valid LLM.")
+            self.llm_search = LLMSearch(
+                model=self.llm,
+                storage_dir=self.data_path / "index",
+                models_dir=self.data_path / "models",
+                debug=self.debug
+            )
+        return self.llm_search
+
+    def do_search(self, query: str) -> str:
+        """
+        Perform a RAG search with the existing index. 
+        """
+        if not self.llm:
+            return "No model loaded."
+        if not query.strip():
+            return "Enter a query."
+
+        index_dir = self.data_path / "index"
+        if not index_dir.exists() or not any(index_dir.iterdir()):
+            return "No index found. Please index data or crawl first."
+
         try:
-            self.logger.info("Clearing crawl data...")
-            clear_crawl_data_directory()
-            self.logger.info("Crawl data cleared successfully.")
-            return "Crawl data cleared successfully."
-        except Exception as e:
-            self.logger.error(f"Error clearing crawl data: {e}")
-            return f"Error clearing crawl data: {e}"
-    
-    def clear_index_data(self) -> str:
-        try:
-            self.logger.info("Clearing index data...")
-            index_dir = self.data_paths["index"]
-            shutil.rmtree(index_dir, ignore_errors=True)
-            index_dir.mkdir(parents=True, exist_ok=True)
-            self.logger.info("Index data cleared successfully.")
-            return "Index data cleared successfully."
-        except Exception as e:
-            self.logger.error(f"Error clearing index data: {e}")
-            return f"Error clearing index data: {e}"
-    
-    def crawl_website(
-        self,
-        url: str,
-        target_links: int = 10,
-        max_depth: int = 2,
-        api_type: str = "jina",
-        key_id: Optional[str] = None,
-        private_key_path: Optional[str] = None
-    ) -> str:
-        if not url:
-            return "Error: Please provide a valid URL."
-        self.crawl_status = f"Starting crawl of {url}..."
-        self.logger.info(f"Starting crawl of {url} (target_links={target_links}, depth={max_depth}, api={api_type})")
-        
-        # Emit crawl_started signal if signals are available
-        if self.signals:
-            self.signals.crawl_started.emit()
-        
-        def crawl_thread() -> None:
-            try:
-                self.crawl_status = (
-                    f"Crawling {url}... (Target: {target_links} links, Depth: {max_depth}, API: {api_type})"
+            llms = self.get_llm_search()
+            result = llms.llm_query(query, debug_mode=self.debug)
+            if "formatted_response" in result:
+                return result["formatted_response"]
+            else:
+                return (
+                    "## AI Summary\n" + result.get("response","") + 
+                    "\n\n## Retrieved Chunks\n" + result.get("retrieved_display","")
                 )
-                links = smart_crawl(
-                    start_url=url,
-                    target_links=target_links,
-                    max_depth=max_depth,
-                    api_type=api_type,
-                    private_key_path=private_key_path,
-                    key_id=key_id
-                )
-                if links:
-                    self.logger.info(f"Crawl complete. {len(links)} docs added to raw data.")
-                    llm = self.get_llm()
-                    raw_dir = self.data_paths["crawl_data"] / "raw"
-                    num_chunks = llm.add_documents_from_directory(str(raw_dir))
-                    stats = self.get_index_stats()
-                    self.crawl_status = (
-                        f"✅ Crawl complete for {url}\n\n"
-                        f"• Added {len(links)} new pages to the database\n"
-                        f"• Indexed {num_chunks} chunks from these pages\n\n"
-                        f"Current index:\n"
-                        f"  {stats['doc_count']} docs\n"
-                        f"  {stats['chunk_count']} chunks\n"
-                        f"  {stats['size_mb']} MB data\n\n"
-                        "You can now search or crawl more sites."
-                    )
-                else:
-                    self.crawl_status = "⚠️ Crawl failed: No links were collected."
-                    self.logger.warning("Crawl failed: No links were collected.")
-                
-                # Emit crawl_finished signal if signals are available
-                if self.signals:
-                    self.signals.crawl_finished.emit()
-                    
-            except Exception as e:
-                self.crawl_status = f"❌ Crawl error: {str(e)}"
-                self.logger.error(f"Crawl error: {str(e)}")
-                
-                # Emit crawl_finished signal if signals are available
-                if self.signals:
-                    self.signals.crawl_finished.emit()
+        except Exception as e:
+            self.logger.error(f"Search error => {e}")
+            return f"Error => {e}"
+
+    def index_local_path(self, path_str: str) -> str:
+        """
+        Index a local file or directory. 
+        We'll call llm_search.add_documents_from_directory for directories,
+        or else for a single file's parent. 
+        """
+        from pathlib import Path
+        p = Path(path_str)
+        if not p.exists():
+            return f"Path not found => {path_str}"
+        llms = self.get_llm_search()
+        if p.is_dir():
+            new_chunks = llms.add_documents_from_directory(p)
+            return f"Indexed directory => {path_str}, added {new_chunks} chunk(s)."
+        else:
+            # single file => just pass parent
+            new_chunks = llms.add_documents_from_directory(p.parent)
+            return f"Indexed file => {path_str}, added {new_chunks} chunk(s)."
+
+    def multi_crawl(self,
+                    root_urls: List[str],
+                    target_links: int=10,
+                    max_depth:int=2,
+                    api_type:str="jina",
+                    phrase: Optional[str]=None,
+                    key_id: Optional[str]=None,
+                    private_key: Optional[str]=None) -> str:
+        """
+        Perform concurrent BFS of multiple root URLs in a background thread. 
+        We'll index each fetched page as we go.
+        """
+        if not root_urls:
+            return "No root URLs provided."
+
+        # Spawn background thread so as not to block the UI
+        def crawl_thread():
+            self.logger.info(f"[multi_crawl] => root={root_urls}, links={target_links}, depth={max_depth}, phrase={phrase}")
+            # We'll define a callback that is invoked whenever we fetch a page
+            # We'll store it as .md in raw and call add_document on it
+            from .concurrent_crawler import ConcurrentAsyncCrawler
+            import asyncio
+            import os
+            from datetime import datetime
+            from pathlib import Path
+
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            # We'll store saved .md in self.data_path["crawl_data"]/raw
+            # We'll define a function that saves content, calls add_document
+            raw_dir = self.data_path / "crawl_data" / "raw"
+            raw_dir.mkdir(parents=True, exist_ok=True)
+
+            llms = self.get_llm_search()
+
+            async def on_fetch_page(url:str, content:str):
+                # create hashed filename
+                import hashlib, json
+                h = hashlib.sha256(url.encode()).hexdigest()
+                mdfile = raw_dir / f"{h}.md"
+                # Add metadata
+                meta = {
+                    "source": url,
+                    "extracted_at": datetime.now().isoformat()
+                }
+                content_to_write = f"<!--\nMETADATA: {json.dumps(meta, indent=2)}\n-->\n\n{content}"
+                mdfile.write_text(content_to_write, encoding="utf-8")
+
+                # Now index
+                llms.add_document(mdfile)
+
+            crawler = ConcurrentAsyncCrawler(
+                root_urls=root_urls,
+                target_links=target_links,
+                max_depth=max_depth,
+                api_type=api_type,
+                phrase=phrase,
+                key_id=key_id,
+                private_key=private_key,
+                concurrency=5,
+                on_fetch_page=on_fetch_page
+            )
+            found = loop.run_until_complete(crawler.run_crawl())
+            loop.close()
+            self.logger.info(f"[multi_crawl] => done. Found {len(found)} links.")
         
         t = threading.Thread(target=crawl_thread, daemon=True)
         t.start()
-        self.current_crawl_thread = t
-        return "Crawl started in the background. See logs for updates."
-    
-    def check_crawl_status(self) -> str:
-        return self.crawl_status
-    
-    def search_content(self, query: str) -> str:
-        if not query.strip():
-            return "Please enter a search query."
-        
-        # Emit search_started signal if signals are available
-        if self.signals:
-            self.signals.search_started.emit()
-        
+        return "Multi-crawl started in background."
+
+    def clear_crawl_data(self) -> str:
         try:
-            llm = self.get_llm()
-            index_dir = self.data_paths["index"]
-            if not index_dir.exists() or not any(index_dir.iterdir()):
-                # Emit search_finished signal if no content found
-                if self.signals:
-                    self.signals.search_finished.emit()
-                return "No indexed content found. Please crawl a website first."
-            
-            self.logger.info(f"Searching for: {query}")
-            
-            def search_thread():
-                try:
-                    result = llm.llm_query(query, debug_mode=self.debug)
-                    
-                    # Get the response - prefer formatted_response if available
-                    if "formatted_response" in result:
-                        response_text = result.get("formatted_response", "No response generated.")
-                    else:
-                        # Fall back to original format
-                        response_text = (
-                            "## AI Summary\n"
-                            f"{result.get('response', 'No response generated.')}\n\n"
-                            "## Retrieved Chunks\n"
-                            f"{result.get('retrieved_display', '')}"
-                        )
-                    
-                    # Update the results in the main thread
-                    self.search_result = response_text
-                    
-                    # Emit search_finished signal after search completes
-                    if self.signals:
-                        self.signals.search_finished.emit()
-                        
-                except Exception as e:
-                    self.logger.error(f"Error during search thread: {e}")
-                    self.search_result = f"Error during search: {str(e)}"
-                    
-                    # Emit search_finished signal if error occurs
-                    if self.signals:
-                        self.signals.search_finished.emit()
-            
-            # Store initial value
-            self.search_result = "Searching, please wait..."
-            
-            # Start search in background thread
-            t = threading.Thread(target=search_thread, daemon=True)
-            t.start()
-            
-            # Return immediately with initial message
-            return self.search_result
-            
+            clear_crawl_data_directory()
+            return "Crawl data cleared."
         except Exception as e:
-            self.logger.error(f"Error setting up search: {e}")
-            
-            # Emit search_finished signal if error occurs
-            if self.signals:
-                self.signals.search_finished.emit()
-                
-            return f"Error during search: {str(e)}"
-            
-    def get_search_result(self) -> str:
-        """Get the latest search result"""
-        if hasattr(self, 'search_result'):
-            return self.search_result
-        return "No search has been performed yet."
+            self.logger.error(f"Err clearing => {e}")
+            return f"Error => {e}"
+
+    def clear_index_data(self) -> str:
+        idx_dir = self.data_path / "index"
+        import shutil
+        try:
+            shutil.rmtree(idx_dir, ignore_errors=True)
+            idx_dir.mkdir(parents=True, exist_ok=True)
+            if self.llm_search:
+                self.llm_search.close()
+                self.llm_search = None
+            return "Index data cleared."
+        except Exception as e:
+            self.logger.error(f"Err => {e}")
+            return f"Error => {e}"
+
+    def remove_item_from_index(self, hash_val: str) -> str:
+        """
+        Suppose each doc is hashed. We remove that doc from vectordb if found.
+        We'll also remove from raw data if user wants. 
+        For a minimal approach, let's just remove from vectordb. 
+        """
+        # We'll do it by searching the reverse lookup table or 
+        # searching the metadata for a matching file. 
+        # We'll do a simpler approach => search doc with "source" containing the file path that ends with hash_val 
+        # In real code, you'd store the mapping from hash->source in a dictionary and do vectordb._remove_document 
+        return "Item removal not fully implemented in this minimal example"
+
+    def get_crawl_data_items(self) -> List[Dict[str, str]]:
+        """
+        Return a list of items in the crawl_data raw folder, so we can show them in the UI.
+        E.g. [ {hash: "...", url: "...", path: "..."} ]
+        We rely on the reverse_lookup.json to map hash->url
+        """
+        import json
+        rev_path = self.data_path / "crawl_data" / "reverse_lookup.json"
+        items = []
+        if rev_path.exists():
+            d = json.loads(rev_path.read_text(encoding="utf-8"))
+            for hval, url in d.items():
+                items.append({"hash": hval, "url": url, "path": str(self.data_path / "crawl_data" / "raw" / f"{hval}.md")})
+        return items

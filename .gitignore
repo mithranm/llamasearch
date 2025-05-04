@@ -21,7 +21,6 @@ gnu/
 crawl_data/
 index/
 debug/
-setup_config.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

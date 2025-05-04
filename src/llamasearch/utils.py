@@ -2,9 +2,26 @@ import os
 import json
 import logging
 import numpy as np
+from pathlib import Path
 from datetime import datetime
 import time
-from .setup_utils import get_llamasearch_dir
+
+def is_dev_mode() -> bool:
+    """Determine if running in development mode."""
+    return os.environ.get("LLAMASEARCH_DEV_MODE", "").lower() in ("1", "true", "yes")
+
+def get_llamasearch_dir() -> Path:
+    """Return the base directory for KillerAI Agent data."""
+    if is_dev_mode():
+        current = Path(__file__).resolve().parent
+        for parent in [current] + list(current.parents):
+            if (parent / "pyproject.toml").exists():
+                return parent
+        return Path.cwd()
+    else:
+        base = os.path.join(os.path.expanduser("~"), ".llamasearch")
+        return Path(os.environ.get("LLAMASEARCH_DATA_DIR", base))
+
 
 def setup_logging(name, level=logging.INFO):
     """

@@ -1,55 +1,36 @@
 # src/llamasearch/ui/views/terminal_view.py
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QTextEdit, QPushButton, QHBoxLayout
-from PySide6.QtCore import QTimer
-from PySide6.QtGui import QTextCursor
+
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QTextEdit, QPushButton, QLabel
+from PySide6.QtCore import QTimer, Slot
 
 class TerminalView(QWidget):
-    def __init__(self, app):
+    def __init__(self, backend):
         super().__init__()
-        self.app = app
+        self.backend = backend
         self.init_ui()
-        # Set up timer to refresh logs regularly
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.update_logs)
-        self.timer.start(1000)  # Update every second
-    
+
     def init_ui(self):
         layout = QVBoxLayout(self)
-        
-        # Create terminal display (read-only text edit with monospace font)
-        self.terminal = QTextEdit()
-        self.terminal.setReadOnly(True)
-        self.terminal.setStyleSheet("font-family: Consolas, monospace; background-color: #242424; color: #f0f0f0;")
-        self.terminal.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)  # Disable line wrapping for terminal-like display
-        layout.addWidget(self.terminal)
-        
-        # Button row
-        button_row = QHBoxLayout()
-        self.clear_btn = QPushButton("Clear Terminal")
-        self.clear_btn.clicked.connect(self.clear_terminal)
-        self.auto_scroll = QPushButton("Auto-scroll")
-        self.auto_scroll.setCheckable(True)
-        self.auto_scroll.setChecked(True)
-        button_row.addWidget(self.clear_btn)
-        button_row.addWidget(self.auto_scroll)
-        layout.addLayout(button_row)
-    
-    def update_logs(self):
-        """Update the terminal with latest logs"""
-        logs = self.app.get_live_logs()
-        if logs and logs[0] and len(logs[0]) > 1:
-            current_text = self.terminal.toPlainText()
-            new_text = logs[0][1]  # logs format is [["system", "<all logs concatenated>"]]
-            
-            # Only update if there are new logs
-            if new_text != current_text:
-                self.terminal.setPlainText(new_text)
-                
-                # Autoscroll if enabled
-                if self.auto_scroll.isChecked():
-                    self.terminal.moveCursor(QTextCursor.MoveOperation.End)
-    
-    def clear_terminal(self):
-        """Clear the terminal display"""
-        self.app.all_logs.clear()
-        self.terminal.clear()
+        title = QLabel("Terminal Logs")
+        layout.addWidget(title)
+
+        self.log_view = QTextEdit()
+        self.log_view.setReadOnly(True)
+        layout.addWidget(self.log_view)
+
+        refresh_btn = QPushButton("Refresh Logs")
+        refresh_btn.clicked.connect(self.refresh_logs)
+        layout.addWidget(refresh_btn)
+
+        self.setLayout(layout)
+
+        # Timer to automatically refresh logs every 3 seconds.
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.refresh_logs)
+        self.timer.start(3000)
+
+    @Slot()
+    def refresh_logs(self):
+        logs = self.backend.get_live_logs()
+        if logs:
+            self.log_view.setPlainText(logs[0][1])
