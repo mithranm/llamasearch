@@ -39,7 +39,6 @@ dependencies = [
     "filelock>=3.12.0",
     "langchain-text-splitters",
     "Whoosh",
-    "xformers",
 ]
 
 [project.optional-dependencies]
@@ -52,9 +51,6 @@ dev = [
 ]
 gui = [
     "PySide6"
-]
-mcp = [
-    "fastapi[all]>=0.110.0"
 ]
 
 [build-system]
