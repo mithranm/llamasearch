@@ -35,7 +35,9 @@ dependencies = [
     "protobuf",
     "PyJWT>=2.8.0",
     "sentencepiece>=0.2.0",
-    "killeraiagent @ git+https://github.com/mithranm/killeraiagent.git"
+    "crawl4ai",
+    "optimum[onnxruntime]",
+    "py-cpuinfo",
 ]
 
 [project.optional-dependencies]
@@ -62,6 +64,10 @@ requires = [
 ]
 build-backend = "setuptools.build_meta"
 
+[project.scripts]
+llamasearch = "llamasearch.__main__:main"
+llamasearch-setup = "llamasearch.setup:main"
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 packages = ["llamasearch"]
@@ -76,6 +82,6 @@ log_cli_level = "INFO"
 [tool.vibelint]
 include_globs = [
     "src/**/*.py",
-    "tests/**/*.p.y",
+    "tests/**/*.py",
     "pyroject.toml"
 ]

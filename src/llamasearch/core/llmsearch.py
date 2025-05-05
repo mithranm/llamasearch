@@ -2,204 +2,395 @@
 
 import os
 import time
-import gc
+import json
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from llamasearch.utils import setup_logging
 from llamasearch.core.vectordb import VectorDB
-from llamasearch.core.embedder import EnhancedEmbedder
-from llamasearch.core.chunker import process_directory
-
-from killeraiagent.models import LLM
+from llamasearch.core.embedder import EnhancedEmbedder, DEFAULT_MODEL_NAME
+from llamasearch.core.teapot import load_teapot_onnx_llm, TeapotONNXLLM
+from llamasearch.protocols import LLM, ModelInfo  # Added ModelInfo import
+from llamasearch.exceptions import ModelNotFoundError
 
 logger = setup_logging(__name__)
 
-def convert_to_markdown_if_needed(file_path: Path) -> Path:
-    """
-    If docx/pdf => convert with pandoc. Return final path (md or original).
-    """
-    import subprocess
-    ext = file_path.suffix.lower()
-    if ext in [".md", ".markdown"]:
-        return file_path
-    elif ext in [".docx", ".doc", ".pdf"]:
-        mdfile = file_path.with_suffix(".md")
-        cmd = ["pandoc", str(file_path), "-o", str(mdfile)]
-        logger.info(f"Converting {file_path.name} => {mdfile.name} with {cmd}")
-        try:
-            res = subprocess.run(cmd, capture_output=True)
-            if res.returncode != 0:
-                logger.error(f"Conversion error => {res.stderr.decode('utf-8','ignore')}")
-                return file_path
-            return mdfile
-        except Exception as e:
-            logger.error(f"Conversion except => {e}")
-            return file_path
-    else:
-        logger.warning(f"No known conversion rule for {file_path.suffix}")
-        return file_path
 
 class LLMSearch:
     """
-    A universal RAG-based search class with new add_document method for single-file indexing.
+    A RAG-based search class using the Teapot ONNX model.
+    Manages LLM, Embedder, and VectorDB instances. Checks for model availability.
     """
 
     def __init__(
         self,
-        model: LLM,
         storage_dir: Path,
-        models_dir: Path,
+        teapot_onnx_quant: str = "auto",
+        teapot_provider: Optional[str] = None,
+        teapot_provider_opts: Optional[Dict[str, Any]] = None,
         verbose: bool = True,
-        context_length: int = 4096,
         max_results: int = 3,
-        auto_optimize: bool = True,
-        embedder_batch_size: int = 8,
-        force_cpu: bool = False,
+        embedder_model: Optional[str] = None,
+        embedder_batch_size: int = 32,
+        embedder_device: Optional[str] = None,
+        vectordb_similarity_threshold: float = 0.25,
+        vectordb_max_chunk_size: int = 512,
+        vectordb_chunk_overlap: int = 64,
+        vectordb_min_chunk_size: int = 128,
+        vectordb_collection_name: str = "default",
         max_workers: int = 1,
-        debug: bool = False
+        debug: bool = False,
     ):
         self.verbose = verbose
-        self.context_length = context_length
         self.max_results = max_results
-        self.auto_optimize = auto_optimize
-        self.embedder_batch_size = embedder_batch_size
-        self.force_cpu = force_cpu
-        self.max_workers = max_workers
         self.debug = debug
-        self.model = model
-
-        self.models_dir = models_dir
-        self.storage_dir = storage_dir
-        os.makedirs(self.models_dir, exist_ok=True)
-
+        self.storage_dir = Path(storage_dir)
+        self.storage_dir.mkdir(parents=True, exist_ok=True)
         self.logger = logger
-        if self.force_cpu:
-            self.device = "cpu"
+        self.model: Optional[LLM] = None
+        self.embedder: Optional[EnhancedEmbedder] = None
+        self.vectordb: Optional[VectorDB] = None
+        self.context_length: int = 0  # Initialize context length
+        self.llm_device_type: str = "cpu"  # Initialize device type
 
-        self.embedder = EnhancedEmbedder(
-            device=self.device,
-            batch_size=self.embedder_batch_size,
-            auto_optimize=self.auto_optimize,
-            num_workers=self.max_workers,
-        )
-        self.vectordb = VectorDB(
-            embedder=self.embedder,
-            similarity_threshold=0.25,
-            storage_dir=self.storage_dir,
-            collection_name="default",
-            max_chunk_size=512,
-            chunk_overlap=64,
-            min_chunk_size=128,
-            max_results=self.max_results,
-            device=self.device,
-        )
-        if self.model:
-            self.logger.info(f"Using LLM => {self.model.model_info.model_id}")
-        else:
-            raise ValueError("No LLM provided.")
-        
-    def add_document(self, file_path: Path) -> int:
-        """
-        Single-file indexing. Convert if needed, chunk, pass to vectordb.add_document_chunks.
-        """
-        if not file_path.exists():
-            self.logger.error(f"File not found => {file_path}")
-            return 0
-        final_path = convert_to_markdown_if_needed(file_path)
-        if final_path.is_dir():
-            # if conversion created a directory? Unlikely. Just skip
-            return 0
-        
-        # chunk
-        results = process_directory(
-            directory_path=final_path.parent,
-            markdown_chunker=self.vectordb.markdown_chunker,
-            html_chunker=self.vectordb.html_chunker
-        )
-        if str(final_path) not in results:
-            self.logger.warning(f"No chunks for => {final_path}")
-            return 0
-        chunks = results[str(final_path)]
-        added = self.vectordb.add_document_chunks(str(final_path), chunks)
-        return added
-
-    def add_documents_from_directory(self, directory_path: Path) -> int:
-        """
-        For each file in dir, do the doc->md conversion if needed, then chunk + add.
-        We'll accumulate total chunks added.
-        """
-        if not directory_path.is_dir():
-            self.logger.warning(f"{directory_path} is not a directory.")
-            return 0
-        total_chunks = 0
-        for root, dirs, files in os.walk(directory_path):
-            rp = Path(root)
-            for fn in files:
-                p = rp / fn
-                total_chunks += self.add_document(p)
-        return total_chunks
-
-    def llm_query(self, query_text: str, debug_mode: bool=False) -> Dict[str, Any]:
-        """
-        RAG-based retrieval + LLM generation
-        """
-        debug_info: Dict[str, Any] = {}
-        final_context = ""
-        retrieved_display = ""
-
+        # --- Initialize components with error handling for missing models ---
         try:
-            results = self.vectordb.vectordb_query(query_text, max_out=self.max_results)
-            docs = results.get("documents",[])
-            metas= results.get("metadatas",[])
-            if not docs:
-                return {"response":"No relevant context found.","formatted_response":"No relevant context found."}
-            for i, doc_text in enumerate(docs):
-                sc = results["scores"][i] if i<len(results["scores"]) else 0
-                src = metas[i].get("source","N/A")
-                final_context += f"[Doc {i+1}, src={src}, sc={sc:.2f}]\n{doc_text}\n\n"
-                retrieved_display += f"Chunk {i+1} => Source={src}\nContent: {doc_text}\n\n"
-        except Exception as e:
-            return {"response":f"Error => {e}","formatted_response":f"Error => {e}"}
+            # --- Load Teapot ONNX LLM ---
+            self.logger.info("Initializing Teapot ONNX LLM for LLMSearch...")
+            loaded_model: Optional[LLM] = load_teapot_onnx_llm(
+                onnx_quantization=teapot_onnx_quant,
+                preferred_provider=teapot_provider,
+                preferred_options=teapot_provider_opts,
+            )
+            # Check if model loading was successful before assigning and accessing
+            if loaded_model is None:
+                # This case should ideally be caught by exceptions inside load_teapot...
+                # but handle defensively.
+                raise RuntimeError("load_teapot_onnx_llm returned None unexpectedly.")
 
-        system_instruction = "You are a helpful AI. Use context, no fabrications."
-        prompt = (
-            f"<|im_start|>system\n{system_instruction}<|im_end|>\n"
-            f"<|im_start|>user\nContext:\n{final_context}\n\nQ: {query_text}<|im_end|>\n"
-            "<|im_start|>assistant\n"
+            self.model = loaded_model  # Assign only after successful load
+
+            # --- Access model attributes safely *after* assignment ---
+            model_info: ModelInfo = self.model.model_info  # Get info object
+            self.context_length = model_info.context_length
+            if hasattr(self.model, "device"):
+                self.llm_device_type = self.model.device.type
+                self.logger.info(
+                    f"LLMSearch using {model_info.model_id} on device {self.model.device}. Context: {self.context_length}"
+                )
+            else:
+                self.llm_device_type = "cpu"
+                self.logger.warning("LLM assuming CPU.")
+                self.logger.info(
+                    f"LLMSearch using {model_info.model_id}. Context: {self.context_length}"
+                )
+
+            # --- Initialize Embedder ---
+            compute_device = embedder_device or (
+                "cpu" if self.llm_device_type == "cpu" else "cuda"
+            )
+            self.logger.info(f"Configuring Embedder on device: {compute_device}")
+            # EnhancedEmbedder.__init__ handles its own model checks
+            self.embedder = EnhancedEmbedder(
+                model_name=embedder_model or DEFAULT_MODEL_NAME,
+                batch_size=embedder_batch_size,
+                num_workers=max_workers,
+            )
+
+            # --- Initialize VectorDB ---
+            self.logger.info(f"Initializing VectorDB (storage: {self.storage_dir})")
+            # VectorDB.__init__ -> BM25Retriever.__init__ -> load_nlp_model checks spaCy
+            self.vectordb = VectorDB(
+                embedder=self.embedder,  # Pass the successfully initialized embedder
+                storage_dir=self.storage_dir,
+                collection_name=vectordb_collection_name,
+                max_chunk_size=vectordb_max_chunk_size,
+                chunk_overlap=vectordb_chunk_overlap,
+                min_chunk_size=vectordb_min_chunk_size,
+                embedder_batch_size=embedder_batch_size,
+                similarity_threshold=vectordb_similarity_threshold,
+                max_results=self.max_results,
+                device=compute_device,
+            )
+            self.logger.info("LLMSearch components initialized successfully.")
+
+        except ModelNotFoundError as e:
+            self.logger.error(f"LLMSearch initialization failed: {e}")
+            self.close()  # Attempt cleanup
+            raise  # Re-raise the specific error
+        except Exception as e:
+            self.logger.error(
+                f"Unexpected error during LLMSearch initialization: {e}", exc_info=True
+            )
+            self.close()  # Attempt cleanup
+            raise RuntimeError(
+                "LLMSearch failed to initialize due to an unexpected error."
+            ) from e
+
+    def add_document(self, file_path: Path) -> int:
+        """Adds a source (file/dir) to VectorDB, delegating processing."""
+        if not self.vectordb:
+            self.logger.error("VectorDB is not initialized.")
+            return 0
+        file_path = Path(file_path)
+        if not file_path.exists():
+            self.logger.error(f"Source path not found: {file_path}")
+            return 0
+
+        self.logger.info(f"Requesting VectorDB to add source: {file_path}")
+        try:
+            added_count = self.vectordb.add_source(file_path)
+            if added_count > 0:
+                logger.info(
+                    f"VectorDB added {added_count} chunks from: {file_path.name}"
+                )
+            else:
+                logger.info(
+                    f"VectorDB added 0 new chunks for source: {file_path.name}."
+                )
+            return added_count
+        except Exception as e:
+            logger.error(
+                f"Failed add source {file_path} via VectorDB: {e}", exc_info=self.debug
+            )
+            return 0
+
+    def add_documents_from_directory(
+        self, directory_path: Path, recursive: bool = True
+    ) -> int:
+        """Adds all processable files from a directory using VectorDB."""
+        if not self.vectordb:
+            self.logger.error("VectorDB is not initialized.")
+            return 0
+        directory_path = Path(directory_path)
+        if not directory_path.is_dir():
+            self.logger.error(f"{directory_path} is not a valid directory.")
+            return 0
+
+        total_chunks_added, files_processed, process_count = 0, 0, 0
+        files_failed = []
+        glob_pattern = "**/*" if recursive else "*"
+        logger.info(
+            f"Scanning directory {'recursively' if recursive else ''}: {directory_path}"
         )
-        gen_start= time.time()
-        text_response, raw = self.model.generate(
-            prompt=prompt,
-            max_tokens=512,
-            temperature=0.7,
-            top_p=0.9,
-            repeat_penalty=1.1
+
+        for p in directory_path.glob(glob_pattern):
+            if p.is_file():
+                process_count += 1
+                logger.debug(f"Requesting VectorDB to add source: {p}")
+                try:
+                    added = self.add_document(p)  # Use the single doc method
+                    if added > 0:
+                        total_chunks_added += added
+                        files_processed += 1
+                except Exception as e:
+                    logger.error(
+                        f"Error requesting add for {p.name}: {e}", exc_info=self.debug
+                    )
+                    files_failed.append(p.name)
+
+        logger.info(
+            f"Directory scan complete. Processed {process_count} files. VectorDB added {total_chunks_added} new chunks from {files_processed} files."
         )
-        gen_time= time.time()-gen_start
-        if debug_mode:
-            debug_info["gen_time"]= gen_time
-            debug_info["retrieved_display"]= retrieved_display
-        formatted = f"## AI Summary\n{text_response}\n\n## Retrieved Chunks\n{retrieved_display}"
+        if files_failed:
+            logger.warning(
+                f"Errors requesting processing for {len(files_failed)} files: {', '.join(files_failed)}"
+            )
+        return total_chunks_added
+
+    def _get_token_count(self, text: str) -> int:
+        """Calculates token count using Teapot's tokenizer or estimation."""
+        # Check if model and tokenizer exist before using them
+        if (
+            self.model
+            and isinstance(self.model, TeapotONNXLLM)
+            and hasattr(self.model, "_tokenizer")
+            and self.model._tokenizer
+        ):
+            try:
+                return len(self.model._tokenizer.encode(text, add_special_tokens=False))
+            except Exception as e:
+                logger.warning(
+                    f"Could not use Teapot tokenizer for count: {e}. Estimating."
+                )
+        return max(1, len(text) // 4)  # Fallback estimate
+
+    def llm_query(self, query_text: str, debug_mode: bool = False) -> Dict[str, Any]:
+        """RAG-based retrieval + LLM generation using Teapot ONNX"""
+        # Check initialization before proceeding
+        if self.model is None or not hasattr(self.model, "generate"):
+            return {
+                "response": "Error: LLM not initialized.",
+                "formatted_response": "Error: LLM not initialized.",
+            }
+        if self.vectordb is None:
+            return {
+                "response": "Error: VectorDB not initialized.",
+                "formatted_response": "Error: VectorDB not initialized.",
+            }
+
+        debug_info: Dict[str, Any] = {}
+        final_context, retrieved_display, query_time, gen_time = "", "", -1.0, -1.0
+
+        try:  # Retrieve Context
+            logger.debug("Performing vector search for query: '%s...'", query_text[:50])
+            query_start_time = time.time()
+            results = self.vectordb.vectordb_query(query_text, max_out=self.max_results)
+            query_time = time.time() - query_start_time
+            debug_info["vector_query_time"] = f"{query_time:.3f}s"
+            debug_info["vector_results_count"] = len(results.get("documents", []))
+
+            docs, metas, scores = (
+                results.get("documents", []),
+                results.get("metadatas", []),
+                results.get("scores", []),
+            )
+            if not docs:
+                final_context = "[No relevant context found in documents]"
+                retrieved_display = "No relevant chunks retrieved."
+                logger.warning("No relevant context found for query.")
+            else:
+                logger.info(f"Retrieved {len(docs)} chunks.")
+                temp_context, temp_display = "", ""
+                # Use self.context_length which was set safely in __init__
+                prompt_base_len = self._get_token_count(
+                    f"Context:\n\n\nQuery: {query_text}\n\nAnswer:"
+                )
+                available_context_tokens = (
+                    self.context_length - prompt_base_len - 200
+                )  # Safety margin
+                logger.debug(
+                    f"Context limit: {self.context_length}, Base prompt: {prompt_base_len}, Available: {available_context_tokens}"
+                )
+
+                for i, doc_text in enumerate(docs):
+                    score = scores[i] if i < len(scores) else 0.0
+                    source = metas[i].get("source", "N/A") if i < len(metas) else "N/A"
+                    chunk_id_meta = (
+                        metas[i].get("chunk_id", "N/A") if i < len(metas) else "N/A"
+                    )
+                    chunk_identifier = (
+                        chunk_id_meta
+                        if chunk_id_meta != "N/A"
+                        else metas[i].get("original_chunk_index", f"docidx_{i}")
+                    )
+
+                    header = f"[Doc {i + 1} | Source: {os.path.basename(source)} | Score: {score:.2f}]\n"
+                    doc_chunk = f"{header}{doc_text}\n\n"
+                    display_chunk = f"--- Chunk {i + 1} (Score: {score:.2f}) ---\nSource: {source}\nChunk ID: {chunk_identifier}\n{doc_text}\n\n"
+
+                    current_context_len = self._get_token_count(temp_context)
+                    doc_chunk_len = self._get_token_count(doc_chunk)
+
+                    if current_context_len + doc_chunk_len <= available_context_tokens:
+                        temp_context += doc_chunk
+                        temp_display += display_chunk
+                    else:
+                        logger.warning(
+                            f"Stopping context inclusion at chunk {i + 1}/{len(docs)} due to limit."
+                        )
+                        debug_info["context_truncated_at_chunk"] = i + 1
+                        break
+                final_context, retrieved_display = (
+                    temp_context.strip(),
+                    temp_display.strip(),
+                )
+        except Exception as e:
+            logger.error(f"Error during vector DB query: {e}", exc_info=self.debug)
+            return {
+                "response": f"Error during context retrieval: {e}",
+                "formatted_response": f"Error: {e}",
+            }
+
+        # Construct Prompt
+        system_instruction = "Answer the query using *only* the provided Context. If the answer isn't in the Context, say so."
+        prompt = f"{system_instruction}\n\nContext:\n{final_context}\n\nQuery: {query_text}\n\nAnswer:"
+        debug_info["final_prompt_len_chars"] = len(prompt)
+        debug_info["final_prompt_len_tokens"] = self._get_token_count(prompt)
+        if self.debug:
+            logger.debug(f"--- LLM Prompt Start ---\n{prompt}\n--- LLM Prompt End ---")
+
+        # Generate Response
+        logger.info("Generating response with LLM...")
+        gen_start = time.time()
+        text_response, raw_llm_output = "Error: LLM generation failed.", None
+        try:
+            # self.model is guaranteed non-None here due to check at start of method
+            text_response, raw_llm_output = self.model.generate(
+                prompt=prompt,
+                max_tokens=max(150, self.context_length // 3),
+                temperature=0.1,
+                top_p=0.9,
+                repeat_penalty=1.15,
+                do_sample=True,
+            )
+        except Exception as e:
+            logger.error(f"Error during LLM generation: {e}", exc_info=self.debug)
+            raw_llm_output = {"error": str(e)}
+        gen_time = time.time() - gen_start
+        logger.info(
+            f"LLM generation took {gen_time:.2f}s. Len: {len(text_response)} chars."
+        )
+        debug_info["llm_generation_time"] = f"{gen_time:.3f}s"
+        try:
+            debug_info["raw_llm_output"] = (
+                json.dumps(raw_llm_output) if self.debug else "Disabled"
+            )
+        except TypeError:
+            debug_info["raw_llm_output"] = (
+                str(raw_llm_output) if self.debug else "Disabled"
+            )
+
+        # Format and Return
+        formatted_response = f"## AI Answer\n{text_response}\n\n## Retrieved Context\n{retrieved_display}"
         return {
             "response": text_response,
-            "debug_info": debug_info,
-            "retrieved_display": retrieved_display,
-            "formatted_response": formatted
+            "debug_info": debug_info if debug_mode else {},
+            "retrieved_context": retrieved_display,
+            "formatted_response": formatted_response,
+            "query_time_seconds": query_time,
+            "generation_time_seconds": gen_time,
         }
 
-    def close(self)->None:
-        if hasattr(self,'model'):
-            del self.model
-        if hasattr(self,'embedder'):
-            self.embedder.close()
-            del self.embedder
-        if hasattr(self,'vectordb'):
-            self.vectordb.close()
-            del self.vectordb
-        gc.collect()
+    def close(self) -> None:
+        """Unload models and release resources."""
+        # Use temporary variables to avoid accessing potentially non-existent attributes
+        model_to_close = getattr(self, "model", None)
+        embedder_to_close = getattr(self, "embedder", None)
+        vectordb_to_close = getattr(self, "vectordb", None)
+
+        self.logger.info("Closing LLMSearch and its components...")
+        if model_to_close:
+            try:
+                if hasattr(model_to_close, "unload"):
+                    model_to_close.unload()
+                del self.model
+                self.model = None
+                logger.debug("LLM closed.")
+            except Exception as e:
+                logger.error(f"Error closing LLM: {e}", exc_info=self.debug)
+        if embedder_to_close:
+            try:
+                if hasattr(embedder_to_close, "close"):
+                    embedder_to_close.close()
+                del self.embedder
+                self.embedder = None
+                logger.debug("Embedder closed.")
+            except Exception as e:
+                logger.error(f"Error closing Embedder: {e}", exc_info=self.debug)
+        if vectordb_to_close:
+            try:
+                if hasattr(vectordb_to_close, "close"):
+                    vectordb_to_close.close()
+                del self.vectordb
+                self.vectordb = None
+                logger.debug("VectorDB closed.")
+            except Exception as e:
+                logger.error(f"Error closing VectorDB: {e}", exc_info=self.debug)
+        self.logger.info("LLMSearch closed.")
 
     def __enter__(self):
         return self
-    def __exit__(self,exc_type,exc_val,exc_tb):
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()

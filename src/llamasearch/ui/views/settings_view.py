@@ -1,270 +1,193 @@
 # src/llamasearch/ui/views/settings_view.py
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QHBoxLayout, 
-                              QLineEdit, QComboBox, QGroupBox, QPushButton, QFileDialog,
-                              QSpinBox, QFormLayout, QCheckBox, QTabWidget, QScrollArea,
-                              )
-from PySide6.QtCore import Qt, QTimer
-import os
+from PySide6.QtWidgets import (
+    QWidget,
+    QVBoxLayout,
+    QLabel,
+    QHBoxLayout,
+    QGroupBox,
+    QPushButton,
+    QFormLayout,
+    QCheckBox,
+    QSpinBox,
+    QTabWidget,
+    QScrollArea,
+    QMessageBox,
+)
+from PySide6.QtCore import (
+    Qt,
+    QTimer, # <-- Import QTimer
+    Slot,
+    # QMetaObject, # No longer needed for these calls
+    QUrl,
+)
+from PySide6.QtGui import QDesktopServices
+
+# from typing import cast, Any # No longer needed for these calls
+from typing import Dict
+from pathlib import Path
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 class SettingsView(QWidget):
     def __init__(self, app):
         super().__init__()
         self.app = app
-        
-        # Main layout for the widget
         self.main_layout = QVBoxLayout(self)
         self.setLayout(self.main_layout)
-        
-        # Create a status label that will be used for notifications
         self.status_label = QLabel("")
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.status_label.setStyleSheet("color: green; font-weight: bold;")
-        self.status_label.setVisible(False)  # Initially hidden
-        
+        self.status_label.setVisible(False)
         self.init_ui()
-    
+        self.load_settings()
+        # Connect signal directly to the slot
+        self.app.signals.settings_applied.connect(self.show_status_message)
+
     def init_ui(self):
-        # Create tabs for organizing settings
+        # --- No changes needed in init_ui itself ---
         tabs = QTabWidget()
-        
-        # Create tab widgets
-        models_tab = self._create_models_tab()
+        general_tab = self._create_general_tab()
         system_tab = self._create_system_tab()
-        
-        # Add tabs
-        tabs.addTab(models_tab, "Models")
+        tabs.addTab(general_tab, "General")
         tabs.addTab(system_tab, "System")
-        
-        # Add tabs to main layout
         self.main_layout.addWidget(tabs)
-        
-        # Add status label at the bottom of the main layout
         self.main_layout.addWidget(self.status_label)
-    
-    def show_status_message(self, message, duration=3000):
-        """Display a status message for the specified duration (in milliseconds)"""
+
+    @Slot(str, str)
+    def show_status_message(self, message, level="success", duration=3500):
+        """Display a status message. Assumes called in GUI thread via signal."""
+        # Direct update since called via signal
         self.status_label.setText(message)
+
+        color = {"error": "red", "warning": "orange"}.get(level, "green")
+        style = f"color: {color}; font-weight: bold;"
+        self.status_label.setStyleSheet(style)
+
         self.status_label.setVisible(True)
-        
-        # Hide the message after the specified duration
+
+        # Hide after delay using QTimer
         QTimer.singleShot(duration, lambda: self.status_label.setVisible(False))
-    
-    def _create_models_tab(self):
+
+
+    def _create_general_tab(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        
-        # Model selection group
-        group_model = QGroupBox("LLM Model Selection")
-        form_layout = QFormLayout(group_model)
-        
-        # Engine selection
-        self.engine_combo = QComboBox()
-        self.engine_combo.addItems(["llamacpp", "hf"])
-        current_engine = self.app.get_model_config()["model_engine"]
-        self.engine_combo.setCurrentText(current_engine)
-        form_layout.addRow("Model Engine:", self.engine_combo)
-        
-        # Create a group for GGUF local models
-        group_gguf = QGroupBox("GGUF Local Models")
-        gguf_layout = QVBoxLayout(group_gguf)
-        
-        # Scan for local GGUF models
-        self.gguf_combo = QComboBox()
-        self.gguf_combo.setMinimumWidth(300)
-        
-        # Add option for custom path
-        self.gguf_combo.addItem("-- Custom Path --")
-        
-        # Add available local models
-        available_models = self.app.get_available_models()
-        for model in available_models.get("llamacpp"):
-            self.gguf_combo.addItem(model["name"], userData=model["path"])
-        
-        # Select current model if it's in the list
-        current_model = self.app.get_model_config()["model_id"]
-        model_path = self.app.get_model_config()["custom_model_path"]
-        
-        # Initialize field for custom path
-        self.custom_model_path = QLineEdit(model_path)
-        
-        # Connect signals
-        self.gguf_combo.currentIndexChanged.connect(self._on_gguf_model_changed)
-        
-        # Add browse button for custom path
-        browse_layout = QHBoxLayout()
-        browse_layout.addWidget(self.custom_model_path)
-        browse_button = QPushButton("Browse...")
-        browse_button.clicked.connect(self._browse_model_file)
-        browse_layout.addWidget(browse_button)
-        
-        gguf_layout.addWidget(QLabel("Select GGUF Model:"))
-        gguf_layout.addWidget(self.gguf_combo)
-        gguf_layout.addWidget(QLabel("Custom Path:"))
-        gguf_layout.addLayout(browse_layout)
-        
-        # Create a group for Hugging Face models
-        group_hf = QGroupBox("Hugging Face Models")
-        hf_layout = QVBoxLayout(group_hf)
-        
-        # Add HF model selector
-        self.hf_combo = QComboBox()
-        self.hf_combo.setMinimumWidth(300)
-        self.hf_combo.setEditable(True)
-        
-        # Add suggested models
-        for model in available_models.get("hf", []):
-            self.hf_combo.addItem(model)
-        
-        # Add current model if not in list
-        if current_engine == "hf" and current_model not in available_models.get("huggingface_suggestions", []):
-            self.hf_combo.addItem(current_model)
-            self.hf_combo.setCurrentText(current_model)
-        
-        hf_layout.addWidget(QLabel("Select Hugging Face Model:"))
-        hf_layout.addWidget(self.hf_combo)
-        
-        # Add download instructions
-        help_text = (
-            "Add custom GGUF models to: " + str(self.app.data_paths["models"]) + "\n" +
-            "Hugging Face models will be downloaded automatically.\n" +
-            "For large models, ensure you have enough RAM and disk space."
-        )
-        help_label = QLabel(help_text)
-        help_label.setWordWrap(True)
-        
-        # Generate model parameters
-        group_params = QGroupBox("Generation Parameters")
+        group_model = QGroupBox("Active Model Information")
+        model_layout = QFormLayout(group_model)
+        self.model_id_label = QLabel("N/A")
+        self.model_engine_label = QLabel("N/A")
+        self.model_provider_label = QLabel("N/A")
+        self.model_quant_label = QLabel("N/A")
+        self.model_context_label = QLabel("N/A")
+        model_layout.addRow("Model ID:", self.model_id_label)
+        model_layout.addRow("Engine:", self.model_engine_label)
+        model_layout.addRow("ONNX Provider:", self.model_provider_label)
+        model_layout.addRow("Quantization:", self.model_quant_label)
+        model_layout.addRow("Context Length:", self.model_context_label)
+        setup_button = QPushButton("Run Model Setup...")
+        setup_button.setToolTip("Show setup instructions")
+        setup_button.clicked.connect(self._run_model_setup)
+        model_layout.addRow(setup_button)
+        group_params = QGroupBox("Search & Generation Parameters")
         params_layout = QFormLayout(group_params)
-        
-        # Temperature
-        self.temp_spinner = QSpinBox()
-        self.temp_spinner.setRange(0, 100)
-        self.temp_spinner.setValue(70)  # Default 0.7
-        self.temp_spinner.setSuffix(" %")
-        params_layout.addRow("Temperature:", self.temp_spinner)
-        
-        # Context length
-        self.context_spinner = QSpinBox()
-        self.context_spinner.setRange(1024, 16384)
-        self.context_spinner.setSingleStep(1024)
-        self.context_spinner.setValue(4096)
-        params_layout.addRow("Context Length:", self.context_spinner)
-        
-        # Max results
         self.results_spinner = QSpinBox()
-        self.results_spinner.setRange(1, 10)
-        self.results_spinner.setValue(3)
-        params_layout.addRow("Max Search Results:", self.results_spinner)
-        
-        # Debug mode
-        self.debug_checkbox = QCheckBox("Enable Debug Mode")
-        self.debug_checkbox.setChecked(self.app.debug)
+        self.results_spinner.setRange(1, 20)
+        self.results_spinner.setToolTip("Max chunks for context.")
+        params_layout.addRow("Max Retrieved Chunks:", self.results_spinner)
+        self.debug_checkbox = QCheckBox("Enable Debug Logging")
+        self.debug_checkbox.setToolTip("Show detailed logs.")
         params_layout.addRow("", self.debug_checkbox)
-        
-        # Apply button
-        self.apply_button = QPushButton("Apply Model Settings")
-        self.apply_button.clicked.connect(self._apply_model_settings)
-        
-        # Add all components to the layout
+        self.apply_button = QPushButton("Apply General Settings")
+        self.apply_button.clicked.connect(self._apply_general_settings)
         layout.addWidget(group_model)
-        layout.addWidget(group_gguf)
-        layout.addWidget(group_hf)
         layout.addWidget(group_params)
-        layout.addWidget(help_label)
+        layout.addStretch()
         layout.addWidget(self.apply_button)
-        
-        # Initial UI state based on engine
-        self._update_ui_for_engine(current_engine)
-        
-        # Connect engine change
-        self.engine_combo.currentTextChanged.connect(self._update_ui_for_engine)
-        
         return tab
-    
-    def _on_gguf_model_changed(self, index):
-        if index == 0:  # Custom path option
-            self.custom_model_path.setEnabled(True)
-        else:
-            model_path = self.gguf_combo.currentData()
-            if model_path:
-                self.custom_model_path.setText(model_path)
-                self.custom_model_path.setEnabled(False)
-    
-    def _browse_model_file(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select GGUF Model", 
-            str(self.app.data_paths["models"]), 
-            "GGUF Models (*.gguf *.bin);;All Files (*)"
-        )
-        if file_path:
-            self.custom_model_path.setText(file_path)
-            # Set combo box to custom option
-            self.gguf_combo.setCurrentIndex(0)
-    
-    def _update_ui_for_engine(self, engine):
-        if engine == "llamacpp":
-            self.gguf_combo.setEnabled(True)
-            self.custom_model_path.setEnabled(self.gguf_combo.currentIndex() == 0)
-            self.hf_combo.setEnabled(False)
-        else:  # hf
-            self.gguf_combo.setEnabled(False)
-            self.custom_model_path.setEnabled(False)
-            self.hf_combo.setEnabled(True)
-    
-    def _apply_model_settings(self):
-        engine = self.engine_combo.currentText()
-        model_id = ""
-        custom_path = ""
-        
-        if engine == "llamacpp":
-            if self.gguf_combo.currentIndex() == 0:  # Custom path
-                # Use the filename as model_id
-                custom_path = self.custom_model_path.text()
-                model_id = os.path.basename(custom_path)
-            else:
-                model_id = self.gguf_combo.currentText()
-                # Store the full path in custom_path
-                custom_path = self.gguf_combo.currentData() or ""
-        else:  # hf
-            model_id = self.hf_combo.currentText()
-            custom_path = ""
-        
-        # Apply model settings
-        self.app.set_model_config(model_id, engine, custom_path)
-        
-        # Apply other settings
-        self.app.debug = self.debug_checkbox.isChecked()
-        
-        # Show success message using our dedicated method
-        self.show_status_message("Settings applied successfully!")
-    
+
     def _create_system_tab(self):
         tab = QScrollArea()
         tab.setWidgetResizable(True)
         content = QWidget()
         layout = QVBoxLayout(content)
-        
-        # Data paths
-        paths_group = QGroupBox("Data Paths")
-        paths_layout = QVBoxLayout(paths_group)
-        
+        paths_group = QGroupBox("Data Storage Paths")
+        paths_layout = QFormLayout(paths_group)
+        self.path_labels: Dict[str, QLabel] = {}
         paths = self.app.data_paths
-        paths_text = ""
-        for k, v in paths.items():
-            paths_text += f"<b>{k}</b>: {v}<br>"
-        
-        paths_label = QLabel(paths_text)
-        paths_label.setTextFormat(Qt.TextFormat.RichText)
-        paths_label.setWordWrap(True)
-        paths_layout.addWidget(paths_label)
-        
-        # Add to layout
+        for key, default_path in paths.items():
+            path_label = QLabel(str(default_path))
+            path_label.setWordWrap(True)
+            path_label.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+            row_layout = QHBoxLayout()
+            row_layout.addWidget(path_label)
+            button = QPushButton("Open")
+            button.clicked.connect(
+                lambda checked=False, p=str(default_path): self._open_directory(p)
+            )
+            button.setToolTip(f"Open {key} directory")
+            row_layout.addWidget(button)
+            paths_layout.addRow(f"<b>{key.replace('_', ' ').title()}:</b>", row_layout)
+            self.path_labels[key] = path_label
         layout.addWidget(paths_group)
         layout.addStretch()
-        
+        content.setLayout(layout)
         tab.setWidget(content)
         return tab
 
-def settings_view(app):
-    """Create and return a SettingsView instance"""
-    return SettingsView(app)
+    @Slot()
+    def _open_directory(self, path_str: str):
+        path = Path(path_str)
+        if path.exists() and path.is_dir():
+            url = QUrl.fromLocalFile(str(path))
+            if not QDesktopServices.openUrl(url):
+                # Use show_status_message since this is a direct UI action result
+                self.show_status_message(
+                    f"Error: Could not open {path_str}", level="error"
+                )
+                logger.error(f"Failed openUrl: {path_str}")
+        else:
+            self.show_status_message(f"Error: Not found: {path_str}", level="error")
+            logger.warning(f"Dir not found: {path_str}")
+
+    @Slot()
+    def _run_model_setup(self):
+        QMessageBox.information(
+            self,
+            "Model Setup",
+            "Run:\n\n<code>llamasearch-setup</code>\n\nin your terminal. Restart required.",
+            QMessageBox.StandardButton.Ok,
+        )
+
+    @Slot()
+    def _apply_general_settings(self):
+        """Applies settings synchronously and lets backend emit status."""
+        settings_to_apply = {
+            "max_results": self.results_spinner.value(),
+            "debug_mode": self.debug_checkbox.isChecked(),
+        }
+        try:
+            # Call backend directly, which will emit settings_applied signal
+            self.app.apply_settings(settings_to_apply)
+        except Exception as e:
+            # Show error directly if the call itself fails
+            self.show_status_message(f"Error applying settings: {e}", level="error")
+            logger.error(f"Apply settings error: {e}", exc_info=True)
+
+    def load_settings(self):
+        """Loads current config into UI elements."""
+        # This runs in the GUI thread during init, direct access is fine
+        config = self.app.get_current_config()
+        self.model_id_label.setText(config.get("model_id", "N/A"))
+        self.model_engine_label.setText(config.get("model_engine", "N/A"))
+        self.model_provider_label.setText(config.get("provider", "N/A"))
+        self.model_quant_label.setText(config.get("quantization", "N/A"))
+        self.model_context_label.setText(str(config.get("context_length", "N/A")))
+        self.results_spinner.setValue(config.get("max_results", 3))
+        self.debug_checkbox.setChecked(config.get("debug_mode", False))
+        paths = self.app.data_paths
+        for key, label in self.path_labels.items():
+            label.setText(str(paths.get(key, "N/A")))
