@@ -100,7 +100,8 @@ def setup_logging(
                 sys.stdout
             )  # Use stdout for console
             console_handler.setFormatter(simple_formatter)
-            console_handler.setLevel(logging.DEBUG)  # Console fixed at DEBUG by default
+            # Set console level based on the requested level for this logger instance
+            console_handler.setLevel(level)
             root_logger.addHandler(console_handler)
 
             # Qt Handler
@@ -117,14 +118,13 @@ def setup_logging(
                     )  # Pass emitter
                     _qt_log_handler_instance.setFormatter(simple_formatter)
                     _qt_log_handler_instance.setLevel(
-                        logging.INFO
-                    )  # Qt handler also starts at INFO
+                        level # Qt handler follows requested level
+                    )
                     root_logger.addHandler(_qt_log_handler_instance)
                     logging.info("Attached QtLogHandler to root logger.")
                 else:
-                    # Ensure existing handler's level is appropriate (usually INFO)
-                    # The level might be changed later by __main__ or app_logic based on debug flags
-                    _qt_log_handler_instance.setLevel(logging.INFO)
+                    # Ensure existing handler's level is appropriate
+                    _qt_log_handler_instance.setLevel(level)
 
             elif use_qt_handler and not _qt_logging_available:
                 logging.warning(
@@ -167,6 +167,9 @@ def setup_logging(
             logging.error(
                 f"Failed custom logging setup: {e}. Using basic config.", exc_info=True
             )
+
+    # Set the level for the specific logger instance being requested/returned
+    logger.setLevel(level)
 
     return logger
 
@@ -215,52 +218,66 @@ def log_query(
         )
         return ""
 
-    chunks_to_log = (
-        chunks  # Keep original chunks for now, consider simplification later if needed
-    )
-    # Basic simplification example (can be customized)
+    chunks_to_log = chunks # Start with the full list provided
+
+    # Simplify chunks if not full logging
     if not full_logging and isinstance(chunks, list):
         simplified_chunks = []
         for chunk in chunks:
             if isinstance(chunk, dict):
+                # <<< FIX: Include original_chunk_index >>>
                 sc = {
                     k: chunk.get(k)
-                    for k in ["chunk_id", "score", "source_path", "filename"]
-                    if k in chunk
+                    for k in ["id", "score", "source_path", "filename", "original_chunk_index"] # Added index
+                    if k in chunk and chunk.get(k) is not None # Ensure value exists
                 }
+                # Add preview only if chunk wasn't simplified earlier
                 if "document" in chunk and isinstance(chunk["document"], str):
-                    sc["text_preview"] = (
-                        (chunk["document"][:150] + "...")
-                        if len(chunk["document"]) > 150
-                        else chunk["document"]
-                    )
+                     sc["text_preview"] = (
+                         (chunk["document"][:150] + "...")
+                         if len(chunk["document"]) > 150
+                         else chunk["document"]
+                     )
+                elif "text_preview" in chunk: # Keep existing preview if present
+                    sc["text_preview"] = chunk["text_preview"]
+
                 simplified_chunks.append(sc)
-            else:  # Handle non-dict chunks if they occur
+            else: # Handle non-dict chunks if they occur
                 simplified_chunks.append(str(chunk)[:200])
         chunks_to_log = simplified_chunks
+    # <<< END FIX >>>
 
     # Log essential debug info, add more if full_logging
     optimized_debug_info = {}
     if isinstance(debug_info, dict):
-        for key in [
+        # Define keys we always want if available
+        essential_keys = [
             "retrieval_time",
             "llm_generation_time",
-            "total_query_time",
-            "vector_results_count",
-            "bm25_results_count",
-            "final_prompt_len_tokens",
-        ]:
+            "total_query_processing_time", # Added missing key
+            "vector_initial_results", # Renamed from count
+            "bm25_initial_results", # Renamed from count
+            "final_selected_chunk_count", # Renamed from tokens
+            "query_embedding_time",
+            "final_context_token_count",
+            "final_prompt_tokens_estimated"
+        ]
+        for key in essential_keys:
             if key in debug_info:
                 optimized_debug_info[key] = debug_info[key]
+
         if full_logging:
             # Add more details in full logging mode, avoid very large raw data if possible
             optimized_debug_info.update(
                 {
                     k: v
                     for k, v in debug_info.items()
-                    if k not in optimized_debug_info and k != "raw_llm_output"
+                    if k not in optimized_debug_info and k not in ["raw_llm_output", "final_selected_chunk_details"] # Exclude raw output and full details
                 }
-            )  # Exclude raw LLM output by default
+            )
+            # Optionally add summary of selected chunks if needed
+            # if "final_selected_chunk_details" in debug_info:
+            #      optimized_debug_info["selected_chunks_summary"] = [...] # Summarize details if needed
 
     log_data = {
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),

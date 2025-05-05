@@ -177,7 +177,7 @@ class TeapotONNXLLM(LLM):
         self._model = model
         self._tokenizer = tokenizer
         self._info = TeapotONNXModelInfo(
-            TEAPOT_REPO_ID, quant_suffix, tokenizer.model_max_length or 512
+            TEAPOT_REPO_ID, quant_suffix, 1024 # Hardcoded, but this is the actual teapot max length
         )
         self._is_loaded = True
         self._provider = provider

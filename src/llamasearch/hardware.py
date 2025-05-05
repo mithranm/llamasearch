@@ -10,6 +10,7 @@ import subprocess
 from typing import Optional
 
 import psutil
+
 # Use pydantic for clear data structures
 from pydantic import BaseModel, Field, validator
 
@@ -35,14 +36,12 @@ class CPUInfo(BaseModel):
     frequency_mhz: Optional[float] = Field(
         None, description="Maximum or current CPU frequency in MHz."
     )
-    # Basic instruction set detection (optional, can be expanded)
     supports_avx2: bool = Field(
         False, description="Indicates if AVX2 instructions are supported."
     )
 
     @validator("model_name", pre=True, always=True)
     def ensure_model_name_string(cls, v):
-        # Ensure model name is always a string, even if platform returns None
         return str(v) if v is not None else "Unknown"
 
 
@@ -59,11 +58,15 @@ class MemoryInfo(BaseModel):
     )
 
 
+# --- Removed GPUInfo ---
+
+
 class HardwareInfo(BaseModel):
-    """Container for detected hardware information."""
+    """Container for detected CPU and Memory information."""
 
     cpu: CPUInfo
     memory: MemoryInfo
+    # --- Removed GPU field ---
 
 
 # --- Detection Functions ---
@@ -94,21 +97,20 @@ def _detect_cpu_avx2() -> bool:
         except Exception:
             logger.debug("Could not check /proc/cpuinfo for AVX2.")
 
-    # Fallback for macOS: Check sysctl (less common to show specific flags)
+    # Fallback for macOS: Check sysctl
     if platform.system() == "Darwin":
         try:
             result = subprocess.run(
-                ["sysctl", "machdep.cpu.features"],  # Check this specific key
+                ["sysctl", "machdep.cpu.features"],
                 capture_output=True,
                 text=True,
                 check=False,
             )
             if result.returncode == 0:
-                return "AVX2" in result.stdout  # Case-sensitive check? Adjust if needed
+                return "AVX2" in result.stdout
         except Exception:
             logger.debug("Could not check sysctl machdep.cpu.features for AVX2.")
 
-    # No reliable method found for Windows without py-cpuinfo or external tools
     logger.warning(
         "Could not reliably determine AVX2 support on this platform without py_cpuinfo."
     )
@@ -116,42 +118,38 @@ def _detect_cpu_avx2() -> bool:
 
 
 def detect_cpu_capabilities() -> CPUInfo:
-    """
-    Detects CPU capabilities.
-    """
+    """Detects CPU capabilities."""
     logical_cores = os.cpu_count() or 1
-    physical_cores = logical_cores  # Default assumption
+    physical_cores = logical_cores
     try:
         phys_count = psutil.cpu_count(logical=False)
         if phys_count:
             physical_cores = phys_count
-            # Ensure logical isn't less than physical
             logical_cores = max(
                 logical_cores, psutil.cpu_count(logical=True) or logical_cores
             )
-        else:  # psutil returned None or 0 for physical
+        else:
             physical_cores = logical_cores // 2 if logical_cores > 1 else 1
             logger.debug("psutil returned no physical core count, estimating.")
     except NotImplementedError:
         logger.warning(
             "psutil could not determine physical core count on this platform."
         )
-        physical_cores = logical_cores // 2 if logical_cores > 1 else 1  # Estimate
+        physical_cores = logical_cores // 2 if logical_cores > 1 else 1
     except Exception as e:
         logger.warning(f"Error getting physical cores: {e}. Estimating.")
-        physical_cores = logical_cores // 2 if logical_cores > 1 else 1  # Estimate
+        physical_cores = logical_cores // 2 if logical_cores > 1 else 1
 
     architecture = platform.machine().lower()
     model_name = "Unknown"
     system = platform.system()
 
-    # Get CPU model name (using previous robust logic)
+    # Get CPU model name
     try:
         if system == "Windows":
             model_name = platform.processor()
             if not model_name:
                 try:
-                    # Use shell=True cautiously, ensure command is safe
                     result = subprocess.run(
                         "wmic cpu get name",
                         shell=True,
@@ -168,7 +166,7 @@ def detect_cpu_capabilities() -> CPUInfo:
                     ):
                         model_name = result.stdout.splitlines()[1].strip()
                 except Exception:
-                    pass  # Ignore wmic errors
+                    pass
         elif system == "Darwin":
             try:
                 result = subprocess.run(
@@ -206,9 +204,8 @@ def detect_cpu_capabilities() -> CPUInfo:
                 freq.max if hasattr(freq, "max") and freq.max else freq.current
             )
     except Exception:
-        pass  # Ignore frequency errors
+        pass
 
-    # Detect AVX2 support
     supports_avx2 = _detect_cpu_avx2()
 
     return CPUInfo(
@@ -222,9 +219,7 @@ def detect_cpu_capabilities() -> CPUInfo:
 
 
 def detect_memory_info() -> MemoryInfo:
-    """
-    Detects system memory (RAM) information.
-    """
+    """Detects system memory (RAM) information."""
     try:
         mem = psutil.virtual_memory()
         return MemoryInfo(
@@ -238,9 +233,10 @@ def detect_memory_info() -> MemoryInfo:
         return MemoryInfo(total_gb=0.0, available_gb=0.0, used_gb=0.0, percent_used=0.0)
 
 
+# --- Removed detect_gpu_info ---
+
+
 # --- Main Public Function ---
-
-
 def detect_hardware_info() -> HardwareInfo:
     """
     Detects and returns CPU and Memory information.
@@ -251,20 +247,23 @@ def detect_hardware_info() -> HardwareInfo:
     logger.info("Detecting CPU and Memory hardware information...")
     cpu_info = detect_cpu_capabilities()
     memory_info = detect_memory_info()
+    # --- Removed GPU detection call ---
+
     logger.info(
         f"CPU: {cpu_info.model_name} ({cpu_info.physical_cores}c/{cpu_info.logical_cores}t), AVX2: {cpu_info.supports_avx2}"
     )
     logger.info(
         f"Memory: {memory_info.total_gb:.1f} GB Total, {memory_info.available_gb:.1f} GB Available"
     )
+    # --- Removed GPU info logging ---
 
-    return HardwareInfo(cpu=cpu_info, memory=memory_info)
+    return HardwareInfo(cpu=cpu_info, memory=memory_info)  # Return only CPU and Memory
 
 
 # Example usage (optional)
 if __name__ == "__main__":
     hw_info = detect_hardware_info()
-    print("\n--- Hardware Information ---")
+    print("\n--- Hardware Information (CPU/Memory Only) ---")
     print(f"CPU Model:       {hw_info.cpu.model_name}")
     print(f"Architecture:    {hw_info.cpu.architecture}")
     print(f"Physical Cores:  {hw_info.cpu.physical_cores}")
