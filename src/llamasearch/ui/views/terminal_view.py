@@ -1,9 +1,9 @@
 # src/llamasearch/ui/views/terminal_view.py
 
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QTextEdit, QPushButton, QLabel
-
-from PySide6.QtCore import Slot, Qt
-from PySide6.QtGui import QColor, QTextCharFormat, QFont
+from PySide6.QtCore import Qt, Slot
+from PySide6.QtGui import QColor, QFont, QTextCharFormat
+from PySide6.QtWidgets import (QLabel, QPushButton, QTextEdit, QVBoxLayout,
+                               QWidget)
 
 from ..qt_logging import qt_log_emitter
 

@@ -3,14 +3,13 @@ Hardware detection focused solely on CPU and Memory.
 Relies only on standard libraries and the 'psutil' package.
 """
 
+import logging
 import os
 import platform
 import subprocess
-import logging
 from typing import Optional
 
 import psutil
-
 # Use pydantic for clear data structures
 from pydantic import BaseModel, Field, validator
 

@@ -1,5 +1,6 @@
 # src/llamasearch/protocols.py
-from typing import Protocol, runtime_checkable, Any, Tuple
+from typing import Any, Protocol, Tuple, runtime_checkable
+
 
 @runtime_checkable
 class ModelInfo(Protocol):

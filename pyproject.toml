@@ -38,6 +38,7 @@ dependencies = [
     "crawl4ai",
     "optimum[onnxruntime]",
     "py-cpuinfo",
+    "filelock>=3.12.0",
 ]
 
 [project.optional-dependencies]
@@ -46,6 +47,7 @@ dev = [
     "pytest-cov>=3.0.0",
     "black>=22.0.0",
     "flake8>=5.0.0",
+    "isort>=5.12.0",
 ]
 gui = [
     "PySide6"

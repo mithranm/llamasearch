@@ -1,57 +1,76 @@
 # src/llamasearch/ui/app_logic.py
 
-import logging
-from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
-import json
-import time
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
+import logging
+import logging.handlers
+import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, CancelledError
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
-# --- Qt Imports for Signals ---
-from PySide6.QtCore import QObject, Signal  # Keep Signal for type hint clarity
+from PySide6.QtCore import QObject, Signal as pyqtSignal, QTimer
 
-from llamasearch.core.llmsearch import LLMSearch
 from llamasearch.core.crawler import Crawl4AICrawler
+from llamasearch.core.llmsearch import LLMSearch
 from llamasearch.core.teapot import TeapotONNXLLM
 from llamasearch.data_manager import data_manager
+from llamasearch.exceptions import ModelNotFoundError, SetupError
+from llamasearch.utils import setup_logging
 
-# --- Corrected: Import utils components ---
-from llamasearch.utils import setup_logging, _qt_logging_available, QtLogHandler
-from llamasearch.exceptions import ModelNotFoundError
-
-logger = setup_logging(__name__, level=logging.INFO, use_qt_handler=True)
+# --- Use correct logger ---
+logger = setup_logging("llamasearch.ui.app_logic")
 
 
-# --- Backend Signal Emitter ---
 class AppLogicSignals(QObject):
     """Holds signals emitted by the backend logic."""
 
-    status_updated = Signal(str, str)
-    search_completed = Signal(str, bool)
-    crawl_index_completed = Signal(str, bool)
-    manual_index_completed = Signal(str, bool)
-    removal_completed = Signal(str, bool)
-    refresh_needed = Signal()
-    settings_applied = Signal(str, str)
+    status_updated = pyqtSignal(str, str)
+    search_completed = pyqtSignal(str, bool)
+    crawl_index_completed = pyqtSignal(str, bool)
+    manual_index_completed = pyqtSignal(str, bool)
+    removal_completed = pyqtSignal(str, bool)
+    refresh_needed = pyqtSignal()
+    settings_applied = pyqtSignal(str, str)
+    actions_should_reenable = pyqtSignal()
+
+    # Internal signal to marshal final callback to main thread
+    _internal_task_completed = pyqtSignal(object, object, bool, pyqtSignal)
 
 
 class LlamaSearchApp:
     """Backend logic handler for LlamaSearch GUI. Runs tasks in threads."""
 
-    def __init__(self, requires_gpu: bool = False, debug: bool = False):
+    def __init__(self, debug: bool = False):
         self.debug = debug
-        self.requires_gpu = requires_gpu
         self.data_paths = data_manager.get_data_paths()
         self.llm_search: Optional[LLMSearch] = None
         self.signals = AppLogicSignals()
-        self.executor = ThreadPoolExecutor(
-            max_workers=2, thread_name_prefix="LlamaSearchWorker"
-        )
+        self._shutdown_event = threading.Event()
+        # --- Store ThreadPoolExecutor as instance variable ---
+        self._thread_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="LlamaSearchWorker")
+        # --- End Store ---
+        self._active_crawler: Optional[Crawl4AICrawler] = None
+        self._current_config = self._get_default_config()
+        logger.info(f"LlamaSearchApp initializing. Data paths: {self.data_paths}")
+        if not self._initialize_llm_search():
+            logger.error("LlamaSearchApp init failed. Backend non-functional.")
+            QTimer.singleShot(
+                100,
+                lambda: self.signals.status_updated.emit(
+                    "Backend initialization failed. Run setup.", "error"
+                ),
+            )
+        else:
+            logger.info("LlamaSearchApp backend ready.")
+            QTimer.singleShot(150, self.signals.refresh_needed.emit)
 
-        self._log("INFO", f"LlamaSearchApp initializing. Data paths: {self.data_paths}")
+        # Connect the NEW internal signal to the final callback method
+        self.signals._internal_task_completed.connect(self._final_gui_callback)
 
-        self._current_config = {
+    def _get_default_config(self) -> Dict[str, Any]:
+        """Returns the default configuration state."""
+        return {
             "model_id": "N/A",
             "model_engine": "N/A",
             "context_length": 0,
@@ -60,123 +79,234 @@ class LlamaSearchApp:
             "provider": "N/A",
             "quantization": "N/A",
         }
-        self._initialize_llm_search()  # Sync init
-        if self.llm_search:
-            self._log("INFO", "LlamaSearchApp ready.")
-        else:
-            self._log("ERROR", "LlamaSearchApp init failed. Run 'llamasearch-setup'.")
 
-    def _log(self, level: str, message: str):
-        """Wrapper for standard logging."""
-        log_func = getattr(logger, level.lower(), logger.info)
-        log_func(message)
-
-    def _initialize_llm_search(self):
-        """Initializes LLMSearch synchronously."""
+    def _initialize_llm_search(self) -> bool:
+        """Initializes LLMSearch synchronously. Returns True on success."""
         if self.llm_search:
-            self._log("INFO", "Closing existing LLMSearch instance...")
+            logger.info("Closing existing LLMSearch instance...")
             try:
                 self.llm_search.close()
             except Exception as e:
-                self._log("ERROR", f"Error closing previous LLMSearch: {e}")
+                logger.error(f"Error closing LLMSearch: {e}", exc_info=self.debug)
             self.llm_search = None
-
         index_dir = Path(self.data_paths["index"])
-        self._log("INFO", f"Attempting to initialize LLMSearch in: {index_dir}")
+        logger.info(f"Attempting to initialize LLMSearch in: {index_dir}")
         try:
             self.llm_search = LLMSearch(
                 storage_dir=index_dir,
+                shutdown_event=self._shutdown_event,
                 debug=self.debug,
                 verbose=self.debug,
                 max_results=self._current_config.get("max_results", 3),
             )
             if self.llm_search and self.llm_search.model:
-                info = self.llm_search.model.model_info
-                self._current_config["model_id"] = info.model_id
-                self._current_config["model_engine"] = info.model_engine
-                self._current_config["context_length"] = info.context_length
-                if isinstance(self.llm_search.model, TeapotONNXLLM):
-                    self._current_config["provider"] = getattr(
-                        self.llm_search.model, "_provider", "N/A"
-                    )
-                    model_id_parts = info.model_id.split("-")
-                    if len(model_id_parts) >= 3:
-                        quant_part = model_id_parts[-1]
-                        if quant_part in [
-                            "fp32",
-                            "fp16",
-                            "int8",
-                            "q4",
-                            "q4f16",
-                            "bnb4",
-                            "uint8",
-                        ]:
-                            self._current_config["quantization"] = quant_part
-                        else:
-                            self._current_config["quantization"] = "unknown"
-                    else:
-                        self._current_config["quantization"] = "unknown"
-                else:
-                    self._current_config["provider"] = "N/A"
-                    self._current_config["quantization"] = "N/A"
-                self._log(
-                    "INFO",
-                    f"LLMSearch initialized: {info.model_id} (Provider: {self._current_config['provider']}, Quant: {self._current_config['quantization']}, Ctx: {info.context_length})",
+                self._update_config_from_llm()
+                logger.info(
+                    f"LLMSearch initialized: {self._current_config.get('model_id')}"
                 )
+                return True
             else:
-                self._log("ERROR", "LLMSearch initialized, but LLM component failed.")
+                logger.error("LLMSearch initialized, but LLM component failed.")
+                if self.llm_search:
+                    self.llm_search.close()
                 self.llm_search = None
-                raise ModelNotFoundError("LLM component failed.")
-        except ModelNotFoundError as e:
-            error_msg = f"Model setup required: {e}. Run 'llamasearch-setup'."
-            self._log("ERROR", error_msg)
-            logger.error(error_msg)
+                return False
+        except (ModelNotFoundError, SetupError) as e:
+            logger.error(f"Model setup required: {e}. Run 'llamasearch-setup'.")
             self.llm_search = None
+            return False
         except Exception as e:
-            self._log("ERROR", f"Unexpected error initializing LLMSearch: {e}")
-            logger.error("LLMSearch unexpected init error", exc_info=True)
+            logger.error(f"Unexpected error initializing LLMSearch: {e}", exc_info=True)
             self.llm_search = None
+            return False
 
-    # --- ASYNC TASK EXECUTION ---
-    # --- Corrected: Changed type hint to Any to satisfy pyright with SignalInstance ---
-    def _run_in_background(self, task_func, *args, completion_signal: Any):
-        """Submits function to thread pool."""
+    def _update_config_from_llm(self):
+        """Safely updates the internal config state from the LLMSearch instance."""
+        if not self.llm_search or not self.llm_search.model:
+            self._current_config = self._get_default_config()
+            self._current_config["model_id"] = "N/A (Setup Required or Load Failed)"
+            return
         try:
-            future = self.executor.submit(task_func, *args)
-            # Pass the *instance* of the signal to the callback
-            future.add_done_callback(
-                lambda f: self._task_done_callback(f, completion_signal)
+            info = self.llm_search.model.model_info
+            self._current_config["model_id"] = info.model_id
+            self._current_config["model_engine"] = info.model_engine
+            self._current_config["context_length"] = info.context_length
+            self._current_config["provider"] = "N/A"
+            self._current_config["quantization"] = "N/A"
+            if isinstance(self.llm_search.model, TeapotONNXLLM):
+                self._current_config["provider"] = getattr(
+                    self.llm_search.model, "_provider", "N/A"
+                )
+                parts = info.model_id.split("-")
+                quant_options = {"fp32", "fp16", "int8", "q4", "q4f16", "bnb4", "uint8"}
+                self._current_config["quantization"] = (
+                    parts[-1]
+                    if len(parts) >= 3 and parts[-1] in quant_options
+                    else "unknown"
+                )
+            elif hasattr(self.llm_search, "llm_device_type"):
+                self._current_config["provider"] = (
+                    getattr(self.llm_search, "llm_device_type", "cpu").upper()
+                    + " (Inferred)"
+                )
+            self._current_config["max_results"] = getattr(
+                self.llm_search, "max_results", self._current_config.get("max_results", 3)
             )
         except Exception as e:
-            logger.error(f"Failed to submit task: {e}", exc_info=True)
-            completion_signal.emit(f"Task Submission Error: {e}", False)
+            logger.warning(f"Could not update config from LLMSearch model info: {e}")
+            self._current_config["model_id"] = (
+                self._current_config.get("model_id", "N/A") + " (Info Error)"
+            )
 
-    # --- Corrected: Changed type hint to Any ---
-    def _task_done_callback(self, future, completion_signal: Any):
-        """Handles task completion."""
+    # --- ASYNC TASK EXECUTION ---
+    def _run_in_background(self, task_func, *args, completion_signal):
+        """Submits function to thread pool, handles completion/errors."""
+        if self._shutdown_event.is_set():
+            logger.warning("Shutdown in progress, ignoring new task submission.")
+            if hasattr(completion_signal, "emit") and callable(completion_signal.emit): # type: ignore
+                QTimer.singleShot(0, lambda: completion_signal.emit("Shutdown in progress, task cancelled.", False))
+            QTimer.singleShot(0, self.signals.actions_should_reenable.emit)
+            return
         try:
-            result_message, success = future.result()
-            completion_signal.emit(result_message, success)
+            logger.debug("!!! ENTERED _run_in_background try block !!!")
+            logger.debug(f"Submitting task {task_func.__name__} to thread pool.")
+            future = self._thread_pool.submit(task_func, *args)
+            logger.debug(f"Task submitted. Future: {future}. Attaching done callback.")
+
+            def _intermediate_callback(f):
+                logger.debug(f"Intermediate callback running for task completion (Future: {f}).")
+                result = None
+                exception = None
+                cancelled = False
+                try:
+                    if f.cancelled():
+                        cancelled = True
+                        logger.debug("Future was cancelled.")
+                    else:
+                        exception = f.exception()
+                        if exception:
+                             logger.debug(f"Future completed with exception: {exception}")
+                        else:
+                             result = f.result()
+                             logger.debug(f"Future completed with result: {type(result)}")
+                except CancelledError:
+                    cancelled = True
+                    logger.debug("Future was cancelled (caught CancelledError).")
+                except Exception as e:
+                    logger.error(f"Error retrieving future result/exception: {e}", exc_info=True)
+                    exception = e
+
+                logger.debug("Scheduling actions re-enable from intermediate callback.")
+                QTimer.singleShot(0, self.signals.actions_should_reenable.emit)
+                logger.debug(f"Scheduling final GUI callback. Result type: {type(result)}, Exception type: {type(exception)}, Cancelled: {cancelled}")
+
+                # Directly emit the internal signal. Qt will ensure the connected slot
+                # (_final_gui_callback) runs on the main GUI thread.
+                logger.debug(
+                    f"Emitting _internal_task_completed signal. Result type: {type(result)}, Exception type: {type(exception)}, Cancelled: {cancelled}"
+                )
+                self.signals._internal_task_completed.emit(
+                    result, exception, cancelled, completion_signal
+                )
+
+            future.add_done_callback(_intermediate_callback)
+            logger.debug(f"Done callback attached to future {future}.")
+
         except Exception as e:
-            logger.error(f"Exception in background task: {e}", exc_info=True)
-            completion_signal.emit(f"Task Error: {e}", False)
+            logger.error(f"Failed to submit task: {e}", exc_info=True)
+            if hasattr(completion_signal, "emit") and callable(completion_signal.emit): # type: ignore
+                QTimer.singleShot(0, lambda err=e: completion_signal.emit(f"Task Submission Error: {err}", False))
+            QTimer.singleShot(0, self.signals.actions_should_reenable.emit)
+
+
+    def _final_gui_callback(
+        self,
+        result: Optional[Any],
+        exception: Optional[Exception],
+        cancelled: bool,
+        completion_signal: pyqtSignal,
+    ):
+        """Handles the final result/exception in the GUI thread after background task."""
+        logger.debug(
+            ">>> _final_gui_callback EXECUTING <<<",
+            "Result type: {type(result)}, Exception type: {type(exception)}, Cancelled: {cancelled}"
+        )
+        can_emit = hasattr(completion_signal, "emit") and callable(completion_signal.emit) # type: ignore
+
+        if not can_emit:
+            logger.error("Cannot emit completion signal: Invalid signal object provided.")
+            return
+
+        try:
+            if cancelled:
+                logger.info("Task was cancelled branch taken.")
+                completion_signal.emit("Task cancelled during execution.", False) # type: ignore
+                return
+
+            if exception:
+                logger.info("Task had exception branch taken.")
+                if not self._shutdown_event.is_set():
+                    logger.error(f"Exception in background task: {exception}", exc_info=False)
+                    completion_signal.emit(f"Task Error: {exception}", False) # type: ignore
+                else:
+                    logger.warning(f"Task ended with exception during shutdown: {exception}")
+                    completion_signal.emit("Task interrupted by shutdown.", False) # type: ignore
+                return
+
+            logger.debug(f"Result before check: {result!r}")
+
+            if result is not None:
+                is_expected_tuple = isinstance(result, tuple) and len(result) == 2 and isinstance(result[1], bool)
+                logger.debug(f"Is result the expected tuple structure? {is_expected_tuple}")
+
+                if is_expected_tuple:
+                    result_message, success = result
+                    result_message_str = str(result_message)
+                    logger.debug(f"Emitting completion signal: {completion_signal.signal if hasattr(completion_signal, 'signal') else 'N/A'} with success={success}, message='{result_message_str[:100]}...' ") # type: ignore
+                    completion_signal.emit(result_message_str, success) # type: ignore
+                else:
+                    err_msg = f"Background task returned unexpected result type/structure: {type(result)}. Value: {result!r}"
+                    logger.error(err_msg)
+                    completion_signal.emit(f"Task completed with unexpected result: {str(result)[:100]}", False) # type: ignore
+            else:
+                err_msg = "Background task returned None without exception."
+                logger.error(err_msg)
+                completion_signal.emit(err_msg, False) # type: ignore
+
+        except Exception as callback_exc:
+            logger.error(f"Error processing task result or emitting signal in GUI callback: {callback_exc}", exc_info=True)
+            try:
+                 if can_emit:
+                     completion_signal.emit(f"GUI Callback Error: {callback_exc}", False) # type: ignore
+            except Exception as emit_err:
+                 logger.error(f"Failed even to emit error signal: {emit_err}")
+        finally:
+             pass # Re-enabling handled by intermediate callback
+
 
     # --- GUI ACTIONS ---
     def submit_search(self, query: str):
+        if self._shutdown_event.is_set():
+            self.signals.search_completed.emit(
+                "Search cancelled: Shutdown in progress.", False
+            )
+            return
         if not self.llm_search:
             self.signals.search_completed.emit(
-                "Search failed: LLMSearch not initialized.", False
+                "Search failed: Backend not initialized.", False
             )
             return
         if not query:
             self.signals.search_completed.emit("Please enter a query.", False)
             return
-        self._log("INFO", f"Submitting search: '{query[:50]}...'")
-        self._run_in_background(
+        logger.info(f"Submitting search: '{query[:50]}...'")
+        self.signals.status_updated.emit(f"Searching '{query[:30]}...'", "info")
+        self.signals.actions_should_reenable.emit()
+        QTimer.singleShot(0, lambda: self._run_in_background(
             self._execute_search_task,
             query,
             completion_signal=self.signals.search_completed,
-        )
+        ))
 
     def submit_crawl_and_index(
         self,
@@ -185,20 +315,39 @@ class LlamaSearchApp:
         max_depth: int,
         keywords: Optional[List[str]],
     ):
-        self._log("INFO", f"Submitting crawl & index task for {len(root_urls)} URLs...")
-        self._run_in_background(
+        if self._shutdown_event.is_set():
+            self.signals.crawl_index_completed.emit(
+                "Task cancelled: Shutdown in progress.", False
+            )
+            return
+        if not self.llm_search:
+            self.signals.crawl_index_completed.emit(
+                "Task failed: Backend not initialized.", False
+            )
+            return
+        logger.info(f"Submitting crawl & index task for {len(root_urls)} URLs...")
+        self.signals.status_updated.emit(
+            f"Starting crawl & index for {len(root_urls)} URL(s)...", "info"
+        )
+        self.signals.actions_should_reenable.emit()
+        QTimer.singleShot(0, lambda: self._run_in_background(
             self._execute_crawl_and_index_task,
             root_urls,
             target_links,
             max_depth,
             keywords,
             completion_signal=self.signals.crawl_index_completed,
-        )
+        ))
 
     def submit_manual_index(self, path_str: str):
+        if self._shutdown_event.is_set():
+            self.signals.manual_index_completed.emit(
+                "Indexing cancelled: Shutdown in progress.", False
+            )
+            return
         if not self.llm_search:
             self.signals.manual_index_completed.emit(
-                "Indexing failed: LLMSearch not initialized.", False
+                "Indexing failed: Backend not initialized.", False
             )
             return
         source_path = Path(path_str)
@@ -207,48 +356,77 @@ class LlamaSearchApp:
                 f"Error: Path does not exist: {path_str}", False
             )
             return
-        self._log("INFO", f"Submitting manual index task for: {source_path}")
-        self._run_in_background(
+        logger.info(f"Submitting manual index task for: {source_path}")
+        self.signals.status_updated.emit(f"Indexing '{source_path.name}'...", "info")
+        self.signals.actions_should_reenable.emit()
+        QTimer.singleShot(0, lambda: self._run_in_background(
             self._execute_manual_index_task,
             path_str,
             completion_signal=self.signals.manual_index_completed,
-        )
+        ))
 
-    def submit_removal(self, source_id_to_remove: str):
-        if not self.llm_search or not self.llm_search.vectordb:
+    def submit_removal(self, source_path_to_remove: str):
+        if self._shutdown_event.is_set():
             self.signals.removal_completed.emit(
-                "Error: Cannot remove, LLMSearch/VectorDB not ready.", False
+                "Removal cancelled: Shutdown in progress.", False
             )
             return
-        if not isinstance(source_id_to_remove, str) or not source_id_to_remove:
+        if not self.llm_search:
             self.signals.removal_completed.emit(
-                "Error: Invalid source ID for removal.", False
+                "Error: Cannot remove, Backend not ready.", False
             )
             return
-        self._log(
-            "INFO", f"Submitting removal task for source ID: {source_id_to_remove}"
-        )
-        self._run_in_background(
-            self._execute_removal_task,
-            source_id_to_remove,
-            completion_signal=self.signals.removal_completed,
-        )
-
-    # --- WORKER METHODS ---
-    def _execute_search_task(self, query: str) -> Tuple[str, bool]:
-        self._log("DEBUG", f"Executing search task for: '{query[:50]}...'")
+        if not isinstance(source_path_to_remove, str) or not source_path_to_remove:
+            self.signals.removal_completed.emit("Error: Invalid source path.", False)
+            return
+        logger.info(f"Submitting removal task for source path: {source_path_to_remove}")
         try:
+            display_name = Path(source_path_to_remove).name
+        except Exception:
+            display_name = source_path_to_remove[:40] + "..."
+
+        self.signals.status_updated.emit(f"Removing '{display_name}'...", "info")
+        self.signals.actions_should_reenable.emit()
+        QTimer.singleShot(0, lambda: self._run_in_background(
+            self._execute_removal_task,
+            source_path_to_remove,
+            completion_signal=self.signals.removal_completed,
+        ))
+
+    # --- WORKER METHODS (Executed in Thread Pool) ---
+
+    def _execute_search_task(self, query: str) -> Tuple[str, bool]:
+        """ Executes the search query in the background. Ensures tuple return. """
+        result_message = "Search failed unexpectedly."
+        success = False
+        try:
+            logger.debug(f"Executing search task for: '{query[:50]}...'")
+            if self._shutdown_event.is_set():
+                result_message, success = "Search cancelled (shutdown)", False
+                return result_message, success
             if not self.llm_search:
-                return "Search Error: LLMSearch instance lost.", False
+                result_message, success = "Search Error: LLMSearch instance not available.", False
+                return result_message, success
+
             start_time = time.time()
             results = self.llm_search.llm_query(query, debug_mode=self.debug)
             duration = time.time() - start_time
-            self._log("INFO", f"Search task completed in {duration:.2f} seconds.")
-            response = results.get("formatted_response", "No response generated.")
-            return response, True
+
+            if self._shutdown_event.is_set():
+                result_message, success = "Search interrupted after generation (shutdown)", False
+                return result_message, success
+
+            logger.info(f"Search task completed in {duration:.2f} seconds.")
+            result_message = results.get("formatted_response", "No response generated.")
+            success = True
         except Exception as e:
-            self._log("ERROR", f"Search query task failed: {e}")
-            return f"Error performing search: {e}", False
+            if not self._shutdown_event.is_set():
+                logger.error(f"Search task failed unexpectedly: {e}", exc_info=self.debug)
+                result_message, success = f"Search Error: {e}", False
+            else:
+                logger.warning(f"Search failed during shutdown process: {e}")
+                result_message, success = f"Search stopped due to shutdown: {e}", False
+        return result_message, success
 
     def _execute_crawl_and_index_task(
         self,
@@ -257,354 +435,435 @@ class LlamaSearchApp:
         max_depth: int,
         keywords: Optional[List[str]],
     ) -> Tuple[str, bool]:
-        self._log("DEBUG", "Executing crawl & index task...")
-        crawl_successful = False
-        index_successful = False
-        crawl_duration = 0.0
-        index_duration = 0.0
-        added_chunks = 0
-        all_collected_urls = []
-        success_count, fail_count = 0, 0
+        """ Executes crawling and subsequent indexing. Ensures tuple return. """
+        logger.debug("Executing crawl & index task...")
+        crawl_successful, index_successful = False, False
+        crawl_duration, index_duration = 0.0, 0.0
+        total_added_chunks = 0
         total_start_time = time.time()
         crawl_dir_base = Path(self.data_paths["crawl_data"])
         raw_output_dir = crawl_dir_base / "raw"
-        crawl_dir_base.mkdir(parents=True, exist_ok=True)
-        raw_output_dir.mkdir(parents=True, exist_ok=True)
-        try:  # Crawl Phase
-            for url in root_urls:
-                single_crawl_start = time.time()
-                self._log(
-                    "INFO", f"Crawling URL: {url} (Tgt:{target_links}, D:{max_depth})"
-                )
-                try:
-                    crawler = Crawl4AICrawler(
-                        root_urls=[url],
-                        base_crawl_dir=crawl_dir_base,
-                        target_links=target_links,
-                        max_depth=max_depth,
-                        relevance_keywords=keywords,
-                    )
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    collected_urls = loop.run_until_complete(crawler.run_crawl())
-                    loop.close()
-                    all_collected_urls.extend(collected_urls)
-                    duration = time.time() - single_crawl_start
-                    crawl_duration += duration
-                    self._log(
-                        "INFO",
-                        f"Crawl {url} OK ({duration:.2f}s). Got {len(collected_urls)} pages.",
-                    )
-                    success_count += 1
-                    crawl_successful = True
-                except Exception as e:
-                    duration = time.time() - single_crawl_start
-                    crawl_duration += duration
-                    self._log("ERROR", f"Crawl FAILED for {url} ({duration:.2f}s): {e}")
-                    fail_count += 1
-            if not crawl_successful and fail_count > 0:
-                raise Exception("All crawl tasks failed.")
-        except Exception as crawl_exc:
-            total_duration = time.time() - total_start_time
-            result_msg = f"Crawl phase FAILED after {total_duration:.2f}s: {crawl_exc}"
-            self._log("ERROR", result_msg)
-            return result_msg, False
-        if crawl_successful:  # Indexing Phase
+        crawl_start_time = 0
+        bm25_needs_rebuild = False
+        loop: Optional[asyncio.AbstractEventLoop] = None
+        policy = asyncio.get_event_loop_policy()
+        final_message = "Task initialization failed."
+        overall_success = False
+
+        try:
+            # --- CRAWL PHASE ---
             try:
-                self._log(
-                    "INFO",
-                    f"Crawl finished ({crawl_duration:.2f}s). Indexing '{raw_output_dir.name}'...",
+                crawl_start_time = time.time()
+                if self._shutdown_event.is_set():
+                    raise InterruptedError("Shutdown before crawl.")
+                logger.info(f"Starting crawl phase. Output: {crawl_dir_base}")
+                self._active_crawler = Crawl4AICrawler(
+                    root_urls=root_urls,
+                    base_crawl_dir=crawl_dir_base,
+                    target_links=target_links,
+                    max_depth=max_depth,
+                    relevance_keywords=keywords,
+                    shutdown_event=self._shutdown_event,
+                    verbose_logging=self.debug,
                 )
-                if not self.llm_search:
-                    raise Exception("LLMSearch not initialized.")
-                indexing_start_time = time.time()
-                added_chunks = self.llm_search.add_documents_from_directory(
-                    raw_output_dir, recursive=True
-                )
-                index_duration = time.time() - indexing_start_time
-                index_successful = True
-                self._log(
-                    "INFO",
-                    f"Auto indexing OK ({index_duration:.2f}s). Added {added_chunks} chunks.",
-                )
-                self.signals.refresh_needed.emit()
-            except Exception as index_exc:
-                self._log("ERROR", f"Automatic indexing FAILED: {index_exc}")
-                index_successful = False
-        # Final Status
-        total_duration = time.time() - total_start_time
-        unique_collected = len(set(all_collected_urls))
-        crawl_status = f"Crawled {success_count}/{len(root_urls)} URLs ({unique_collected} unique pages) in {crawl_duration:.2f}s."
-        index_status = ""
-        overall_success = crawl_successful
-        if crawl_successful:
-            if index_successful:
-                index_status = (
-                    f"Indexed {added_chunks} new chunks in {index_duration:.2f}s."
-                )
-            else:
-                index_status = "Automatic indexing failed."
+
+                loop = policy.new_event_loop()
+                asyncio.set_event_loop(loop)
+
+                collected_urls = loop.run_until_complete(self._active_crawler.run_crawl())
+                crawl_duration = time.time() - crawl_start_time
+
+                if self._shutdown_event.is_set():
+                    raise InterruptedError("Shutdown during crawl.")
+                logger.info(f"Crawl phase OK ({crawl_duration:.2f}s). Collected {len(collected_urls)} URLs.")
+                crawl_successful = True
+
+            except InterruptedError as e:
+                if crawl_start_time > 0:
+                     crawl_duration = time.time() - crawl_start_time
+                logger.warning(f"Crawl interrupted ({crawl_duration:.2f}s): {e}")
+                crawl_successful = False
+            except Exception as crawl_exc:
+                if crawl_start_time > 0:
+                     crawl_duration = time.time() - crawl_start_time
+                logger.error(f"Crawl FAILED ({crawl_duration:.2f}s): {crawl_exc}", exc_info=self.debug)
+                final_message = f"Crawl failed: {crawl_exc}"
                 overall_success = False
-        final_message = (
-            f"Finished ({total_duration:.2f}s). {crawl_status} {index_status}".strip()
-        )
-        self._log("INFO", final_message)
+                crawl_successful = False
+            finally:
+                self._active_crawler = None
+                if loop is not None:
+                     try:
+                         if loop.is_running():
+                              tasks = asyncio.all_tasks(loop=loop)
+                              if tasks:
+                                  logger.debug(f"Cancelling {len(tasks)} remaining asyncio tasks...")
+                                  for task in tasks:
+                                      task.cancel()
+                                  gather_future = asyncio.ensure_future(
+                                      asyncio.gather(*tasks, return_exceptions=True),
+                                      loop=loop
+                                  )
+                                  try:
+                                      loop.run_until_complete(asyncio.wait_for(gather_future, timeout=5.0))
+                                  except asyncio.TimeoutError:
+                                      logger.warning("Timeout waiting for cancelled asyncio tasks to complete.")
+                                  except Exception as gather_err:
+                                      logger.error(f"Error during gather of cancelled tasks: {gather_err}")
+                                  logger.debug("Finished cancelling tasks.")
+                         loop.close()
+                         logger.debug(f"Closed asyncio event loop {id(loop)}.")
+                         try:
+                              current_policy_loop = policy.get_event_loop()
+                              if current_policy_loop is loop:
+                                    policy.set_event_loop(None)
+                         except RuntimeError:
+                              pass
+                     except Exception as loop_close_err:
+                          logger.error(f"Error closing asyncio loop: {loop_close_err}", exc_info=True)
+
+            # --- INDEXING PHASE ---
+            if crawl_successful:
+                indexing_start_time = time.time()
+                processed_files_count = 0
+                try:
+                    if self._shutdown_event.is_set():
+                        raise InterruptedError("Shutdown before indexing.")
+                    if not self.llm_search:
+                        raise Exception("LLMSearch instance not available for indexing.")
+
+                    logger.info(f"Starting indexing phase for crawled content in: {raw_output_dir}...")
+                    if raw_output_dir.is_dir():
+                        files_to_index = list(raw_output_dir.glob("*.md"))
+                        logger.info(f"Found {len(files_to_index)} markdown files to index.")
+
+                        for md_file in files_to_index:
+                            if self._shutdown_event.is_set():
+                                raise InterruptedError("Shutdown during indexing loop.")
+                            logger.debug(f"Indexing file: {md_file.name}")
+                            added, file_needs_rebuild = self.llm_search.add_source(str(md_file))
+                            if added > 0:
+                                total_added_chunks += added
+                                processed_files_count += 1
+                            if file_needs_rebuild:
+                                bm25_needs_rebuild = True
+                    else:
+                        logger.warning(f"Crawl 'raw' directory not found: {raw_output_dir}. No indexing performed.")
+
+                    index_duration = time.time() - indexing_start_time
+                    logger.info(f"File processing phase completed ({index_duration:.2f}s). Indexed {processed_files_count} files. Total chunks added: {total_added_chunks}.")
+
+                    if bm25_needs_rebuild:
+                        if self._shutdown_event.is_set():
+                            raise InterruptedError("Shutdown before final BM25 build.")
+                        logger.info("Building final BM25 index for crawled content...")
+                        if self.llm_search:
+                            build_success = self.llm_search.build_bm25_index_if_needed()
+                            if not build_success:
+                                 logger.error("Final BM25 index build failed after crawl.")
+                        else:
+                            logger.error("Cannot build BM25 index: LLMSearch instance not available.")
+
+                    if self._shutdown_event.is_set():
+                        raise InterruptedError("Shutdown after indexing phase.")
+                    index_successful = True
+
+                except InterruptedError as e:
+                    if indexing_start_time > 0:
+                         index_duration = time.time() - indexing_start_time
+                    logger.warning(f"Indexing interrupted ({index_duration:.2f}s): {e}")
+                    index_successful = False
+                except Exception as index_exc:
+                    if indexing_start_time > 0:
+                         index_duration = time.time() - indexing_start_time
+                    logger.error(f"Indexing FAILED ({index_duration:.2f}s): {index_exc}", exc_info=self.debug)
+                    index_successful = False
+                finally:
+                    if bm25_needs_rebuild and not self._shutdown_event.is_set() and self.llm_search:
+                         if not index_successful:
+                             logger.warning("Attempting final BM25 build despite earlier indexing interruption/error...")
+                         else:
+                              logger.debug("Running final BM25 build check as part of cleanup.")
+                         self.llm_search.build_bm25_index_if_needed()
+
+        except Exception as outer_exc:
+             logger.error(f"Unexpected error during crawl/index task execution: {outer_exc}", exc_info=True)
+             final_message = f"Task failed with unexpected error: {outer_exc}"
+             overall_success = False
+
+        # --- FINAL REPORTING (Consolidated) ---
+        total_duration = time.time() - total_start_time
+        shutdown_occurred = self._shutdown_event.is_set()
+        # Recalculate overall success based on final state
+        overall_success = crawl_successful and index_successful and not shutdown_occurred
+
+        crawl_status_msg = "Crawl skipped."
+        if crawl_start_time > 0:
+            if crawl_successful:
+                crawl_status_msg = f"Crawl OK ({crawl_duration:.1f}s)."
+            elif shutdown_occurred and crawl_duration > 0:
+                crawl_status_msg = f"Crawl INTERRUPTED ({crawl_duration:.1f}s)."
+            else:
+                crawl_status_msg = f"Crawl FAILED ({crawl_duration:.1f}s)."
+
+        index_status_msg = "Index skipped."
+        if crawl_successful:
+            if index_duration > 0 or not index_successful:
+                 if index_successful:
+                     index_status_msg = f"Index OK ({index_duration:.1f}s, {total_added_chunks} chunks)."
+                 elif shutdown_occurred and index_duration > 0:
+                     index_status_msg = f"Index INTERRUPTED ({index_duration:.1f}s)."
+                 else:
+                     index_status_msg = f"Index FAILED ({index_duration:.1f}s)."
+
+        # Update final_message only if it wasn't set by a specific failure earlier
+        if overall_success or ('failed' not in final_message.lower() and 'error' not in final_message.lower()):
+             final_message = f"Finished ({total_duration:.1f}s). {crawl_status_msg} {index_status_msg}".strip()
+
+        logger.info(final_message)
+        if overall_success:
+            QTimer.singleShot(0, self.signals.refresh_needed.emit)
+
         return final_message, overall_success
 
-    def _execute_manual_index_task(self, path_str: str) -> Tuple[str, bool]:
-        self._log("DEBUG", f"Executing manual index task for: {path_str}")
-        source_path = Path(path_str)
-        try:
-            start_time = time.time()
-            added_count = 0
-            if not self.llm_search:
-                return "Indexing Error: LLMSearch instance lost.", False
-            if source_path.is_file():
-                if hasattr(self.llm_search, "add_document"):
-                    added_count = self.llm_search.add_document(source_path)
-                else:
-                    self._log("ERROR", "add_document method not found.")
-                    return "Error: Indexing logic unavailable.", False
-            elif source_path.is_dir():
-                self._log("INFO", f"Indexing directory recursively: {source_path}")
-                added_count = self.llm_search.add_documents_from_directory(
-                    source_path, recursive=True
-                )
-            else:
-                return f"Error: Path is not file/dir: {source_path}", False
-            duration = time.time() - start_time
-            msg = f"Indexing '{source_path.name}' OK ({duration:.2f}s). Added {added_count} new chunks."
-            self._log("INFO", msg)
-            if added_count > 0:
-                self.signals.refresh_needed.emit()
-            return msg, True
-        except Exception as e:
-            msg = f"Error indexing {source_path.name}: {e}"
-            self._log("ERROR", msg)
-            return msg, False
 
-    def _execute_removal_task(self, source_id_to_remove: str) -> Tuple[str, bool]:
-        self._log("DEBUG", f"Executing removal task for: {source_id_to_remove}")
+    def _execute_manual_index_task(self, path_str: str) -> Tuple[str, bool]:
+        """ Executes manual indexing of a file or directory. Ensures tuple return. """
+        task_successful = False
+        final_message = "Task did not complete."
+        start_time = time.time()
+        source_path = Path(path_str)
+        total_added_chunks = 0
+        bm25_needs_rebuild = False
+        overall_success = False
+
         try:
-            if not self.llm_search or not self.llm_search.vectordb:
-                return "Removal Error: LLMSearch/VectorDB lost.", False
-            display_name = source_id_to_remove
-            try:
-                path_obj = None
-                if source_id_to_remove:
-                    path_obj = Path(source_id_to_remove)
-                if path_obj and path_obj.exists():
-                    display_name = path_obj.name
-            except (TypeError, ValueError, OSError):
-                pass
-            self.llm_search.vectordb._remove_document(source_id_to_remove)
-            msg = f"Successfully requested removal for source: {display_name}"
-            self._log("INFO", msg)
-            self.signals.refresh_needed.emit()
-            return msg, True
+            logger.debug(f"Executing manual index task for: {path_str}")
+            if self._shutdown_event.is_set():
+                raise InterruptedError("Shutdown before manual index.")
+            if not self.llm_search:
+                raise Exception("LLMSearch instance not available.")
+
+            logger.info(f"Manually indexing source: {source_path.name}...")
+            total_added_chunks, bm25_needs_rebuild = self.llm_search.add_source(path_str)
+
+            if bm25_needs_rebuild:
+                if self._shutdown_event.is_set():
+                    raise InterruptedError("Shutdown before final BM25 build.")
+                logger.info(f"Building final BM25 index for manual add: {source_path.name}...")
+                if self.llm_search:
+                    build_success = self.llm_search.build_bm25_index_if_needed()
+                    if not build_success:
+                        logger.error(f"Final BM25 index build failed for manual add: {source_path.name}")
+                else:
+                    logger.error("Cannot build BM25 index: LLMSearch instance not available.")
+
+            if self._shutdown_event.is_set():
+                raise InterruptedError("Shutdown after manual index processing.")
+            logger.info(f"Manual index processing complete for '{source_path.name}'. Added {total_added_chunks} chunks.")
+            task_successful = True
+
+        except InterruptedError as e:
+            logger.warning(f"Manual index interrupted: {e}")
+            task_successful = False
         except Exception as e:
-            display_name = source_id_to_remove
-            try:
-                path_obj = None
-                if source_id_to_remove:
-                    path_obj = Path(source_id_to_remove)
-                if path_obj and path_obj.exists():
-                    display_name = path_obj.name
-            except (TypeError, ValueError, OSError):
-                pass
-            msg = f"Error removing item {display_name}: {e}"
-            self._log("ERROR", msg)
-            return msg, False
+            logger.error(f"Manual index FAILED for '{source_path.name}': {e}", exc_info=self.debug)
+            task_successful = False
+        finally:
+            if bm25_needs_rebuild and not self._shutdown_event.is_set() and self.llm_search:
+                if not task_successful:
+                    logger.warning(f"Attempting final BM25 build for '{source_path.name}' despite earlier error/interruption...")
+                else:
+                    logger.debug(f"Running final BM25 build check for '{source_path.name}' as part of cleanup.")
+                self.llm_search.build_bm25_index_if_needed()
+
+            duration = time.time() - start_time
+            shutdown_occurred = self._shutdown_event.is_set()
+            overall_success = task_successful and not shutdown_occurred
+
+            if shutdown_occurred:
+                final_message = f"Indexing '{source_path.name}' interrupted ({duration:.1f}s). Added {total_added_chunks} chunks before stop."
+            elif task_successful:
+                final_message = f"Indexing '{source_path.name}' OK ({duration:.1f}s). Added {total_added_chunks} new chunks."
+                if total_added_chunks > 0:
+                    QTimer.singleShot(0, self.signals.refresh_needed.emit)
+            else:
+                interrupted_msg = " (Interrupted)" if shutdown_occurred else ""
+                final_message = f"Indexing '{source_path.name}' FAILED ({duration:.1f}s){interrupted_msg}. See logs for details."
+
+            logger.info(final_message)
+
+        return final_message, overall_success
+
+
+    def _execute_removal_task(self, source_path_to_remove: str) -> Tuple[str, bool]:
+        """ Executes removal of a source. Ensures tuple return. """
+        task_successful = False
+        final_message = "Task did not complete."
+        bm25_needs_rebuild = False
+        removal_occurred = False
+        overall_success = False
+        display_name = Path(source_path_to_remove).name # Get name for logging before potential removal
+
+        try:
+            logger.debug(f"Executing removal task for: {source_path_to_remove}")
+            if self._shutdown_event.is_set():
+                raise InterruptedError("Shutdown before removal.")
+            if not self.llm_search:
+                raise Exception("LLMSearch instance not available.")
+
+            removal_occurred, bm25_needs_rebuild = self.llm_search.remove_source(source_path_to_remove)
+
+            if bm25_needs_rebuild:
+                 if self._shutdown_event.is_set():
+                     raise InterruptedError("Shutdown before final BM25 build.")
+                 logger.info(f"Building final BM25 index after removal: {display_name}...")
+                 if self.llm_search:
+                    build_success = self.llm_search.build_bm25_index_if_needed()
+                    if not build_success:
+                        logger.error(f"Final BM25 index build failed after removal: {display_name}")
+                 else:
+                      logger.error("Cannot build BM25 index: LLMSearch instance not available.")
+
+            if self._shutdown_event.is_set():
+                raise InterruptedError("Shutdown after removal processing.")
+            task_successful = True
+
+        except InterruptedError as e:
+            logger.warning(f"Removal interrupted: {e}")
+            task_successful = False
+        except Exception as e:
+            logger.error(f"Removal FAILED for '{display_name}': {e}", exc_info=self.debug)
+            task_successful = False
+        finally:
+            if bm25_needs_rebuild and not self._shutdown_event.is_set() and self.llm_search:
+                if not task_successful:
+                    logger.warning(f"Attempting final BM25 build for removal of '{display_name}' despite earlier error/interruption...")
+                else:
+                    logger.debug(f"Running final BM25 build check for removal of '{display_name}' as part of cleanup.")
+                self.llm_search.build_bm25_index_if_needed()
+
+            shutdown_occurred = self._shutdown_event.is_set()
+            overall_success = task_successful and not shutdown_occurred
+
+            if shutdown_occurred:
+                 final_message = f"Removal of '{display_name}' interrupted."
+            elif task_successful:
+                 if removal_occurred:
+                      final_message = f"Successfully removed source: {display_name}"
+                      QTimer.singleShot(0, self.signals.refresh_needed.emit)
+                 else:
+                      final_message = f"Source not found or already removed: {display_name}"
+            else:
+                 interrupted_msg = " (Interrupted)" if shutdown_occurred else ""
+                 final_message = f"Error removing '{display_name}'{interrupted_msg}. See logs."
+
+            logger.info(final_message)
+
+        return final_message, overall_success
+
 
     # --- Other Methods ---
-    def get_crawl_data_items(self) -> List[Dict[str, str]]:
-        """Retrieves indexed source information (sync)."""
-        items = []
-        if not self.llm_search or not self.llm_search.vectordb:
-            self._log("WARN", "Cannot get index items: Not ready.")
-            return items
-        vdb = self.llm_search.vectordb
-        unique_sources: Dict[str, str] = {}
+    def get_indexed_sources(self) -> List[Dict[str, Any]]:
+        """Retrieves indexed source information from LLMSearch (sync)."""
+        if not self.llm_search:
+            logger.warning("Cannot get indexed sources: LLMSearch not ready.")
+            return []
         try:
-            global_lookup_path = (
-                Path(self.data_paths["crawl_data"]) / "reverse_lookup.json"
-            )
-            global_lookup: Dict[str, str] = {}
-            if global_lookup_path.exists():
-                try:
-                    with open(global_lookup_path, "r", encoding="utf-8") as f:
-                        global_lookup = json.load(f)
-                except Exception as e:
-                    self._log("WARN", f"Could not load reverse lookup: {e}")
-            if hasattr(vdb, "document_metadata") and isinstance(
-                vdb.document_metadata, list
-            ):
-                all_source_ids = set()
-                for meta in vdb.document_metadata:
-                    source_id = meta.get("source")  # Can return None
-                    # --- Corrected Check ---
-                    if isinstance(source_id, str) and source_id:
-                        all_source_ids.add(source_id)
-                    elif (
-                        source_id is not None
-                    ):  # Log if not None and not a valid string
-                        self._log(
-                            "WARN", f"Found non-string/empty source ID: {source_id}"
-                        )
-
-                for source_id in all_source_ids:
-                    display_name = source_id  # Default display name
-                    # --- Add check: source_id must be a string here ---
-                    if not isinstance(source_id, str):
-                        self._log("WARN", f"Skipping non-string source ID: {source_id}")
-                        continue
-                    try:
-                        # --- Corrected: source_id is now guaranteed to be a str ---
-                        path_obj = Path(source_id)
-                        potential_hash = path_obj.stem
-                        is_local = False
-                        try:
-                            is_local = path_obj.exists()
-                        except OSError:
-                            pass  # Handle filesystem errors during check
-                        if (
-                            not is_local
-                            and len(potential_hash) == 16
-                            and potential_hash in global_lookup
-                        ):
-                            display_name = global_lookup[potential_hash]
-                        elif is_local:
-                            display_name = path_obj.name
-                    except (TypeError, ValueError) as path_err:
-                        self._log(
-                            "WARN",
-                            f"Could not interpret source_id '{source_id}': {path_err}",
-                        )
-                    # --- Corrected: source_id is guaranteed str ---
-                    unique_sources[source_id] = display_name
-                items = [
-                    {"hash": src_id, "url": name}
-                    for src_id, name in unique_sources.items()
-                ]
-                items.sort(key=lambda x: x["url"].lower())
-                self._log("DEBUG", f"Found {len(items)} unique sources in index.")
-            else:
-                self._log("WARN", "VectorDB metadata missing/invalid.")
+            sources = self.llm_search.get_indexed_sources()
+            return sources
         except Exception as e:
-            self._log("ERROR", f"Failed get indexed items: {e}")
-        return items
+            logger.error(f"Failed to get indexed sources: {e}", exc_info=self.debug)
+            return []
 
     def get_current_config(self) -> Dict[str, Any]:
         """Returns current configuration state (sync)."""
+        self._update_config_from_llm()
         self._current_config["debug_mode"] = self.debug
-        if self.llm_search and self.llm_search.model:
-            try:
-                info = self.llm_search.model.model_info
-                self._current_config["model_id"] = info.model_id
-                self._current_config["model_engine"] = info.model_engine
-                self._current_config["context_length"] = info.context_length
-                self._current_config["provider"] = "N/A"
-                self._current_config["quantization"] = "N/A"
-                if isinstance(self.llm_search.model, TeapotONNXLLM):
-                    self._current_config["provider"] = getattr(
-                        self.llm_search.model, "_provider", "N/A"
-                    )
-                    parts = info.model_id.split("-")
-                    if len(parts) >= 3:
-                        q = parts[-1]
-                        self._current_config["quantization"] = (
-                            q
-                            if q
-                            in ["fp32", "fp16", "int8", "q4", "q4f16", "bnb4", "uint8"]
-                            else "unknown"
-                        )
-                    else:
-                        self._current_config["quantization"] = "unknown"
-            except Exception as e:
-                self._log("WARN", f"Could not update config from LLMSearch: {e}")
-        elif not self.llm_search:
-            self._current_config.update(
-                {
-                    "model_id": "N/A (Setup Required)",
-                    "model_engine": "N/A",
-                    "provider": "N/A",
-                    "quantization": "N/A",
-                    "context_length": 0,
-                }
-            )
-        if self.llm_search:
-            self._current_config["max_results"] = getattr(
-                self.llm_search, "max_results", self._current_config["max_results"]
-            )
         return self._current_config.copy()
 
     def apply_settings(self, settings: Dict[str, Any]):
-        """Applies settings (sync)."""
+        """Applies settings (sync). Emits signal on completion."""
         restart_needed = False
         config_changed = False
+
         new_debug = settings.get("debug_mode", self.debug)
         if new_debug != self.debug:
             self.debug = new_debug
             log_level = logging.DEBUG if self.debug else logging.INFO
-            base_logger = logging.getLogger("llamasearch")
-            base_logger.setLevel(log_level)
-            for handler in base_logger.handlers:
-                # --- Corrected check using imported variable ---
-                if isinstance(
-                    handler,
-                    (
-                        logging.FileHandler,
-                        QtLogHandler if _qt_logging_available else type(None),
-                    ),
-                ):
-                    handler.setLevel(log_level)
+            root_logger = logging.getLogger("llamasearch")
+            root_logger.setLevel(log_level)
+
+            for handler in root_logger.handlers:
+                if isinstance(handler, (logging.FileHandler, logging.handlers.RotatingFileHandler)):
+                    handler.setLevel(logging.DEBUG)
                 elif isinstance(handler, logging.StreamHandler):
-                    handler.setLevel(logging.INFO)
-            logger.setLevel(log_level)  # Update our specific instance
-            self._log("INFO", f"Debug mode set to: {self.debug}")
+                    handler.setLevel(log_level)
+                try:
+                     from llamasearch.ui.qt_logging import QtLogHandler
+                     if QtLogHandler and isinstance(handler, QtLogHandler):
+                         handler.setLevel(log_level)
+                except ImportError:
+                    pass
+
+            logger.info(f"Logging level set to: {'DEBUG' if self.debug else 'INFO'}")
             if self.llm_search:
                 self.llm_search.debug = self.debug
                 self.llm_search.verbose = self.debug
             config_changed = True
 
-        new_max_results = settings.get(
-            "max_results", self._current_config["max_results"]
-        )
-        if (
-            isinstance(new_max_results, int)
-            and new_max_results > 0
-            and new_max_results != self._current_config["max_results"]
-        ):
-            self._current_config["max_results"] = new_max_results
-            # --- Corrected: Add nested check for vectordb ---
-            if self.llm_search:
-                self.llm_search.max_results = new_max_results
-                if self.llm_search.vectordb:
-                    self.llm_search.vectordb.max_results = new_max_results
-            self._log("INFO", f"Max search results set to: {new_max_results}")
-            config_changed = True
-        elif not isinstance(new_max_results, int) or new_max_results <= 0:
-            self._log("WARN", f"Invalid Max Results: {new_max_results}.")
+        new_max_results = settings.get("max_results", self._current_config.get("max_results", 3))
+        try:
+            n_res = int(new_max_results)
+            current_max = self._current_config.get("max_results", 3)
+            if n_res > 0 and n_res != current_max:
+                self._current_config["max_results"] = n_res
+                if self.llm_search:
+                    self.llm_search.max_results = n_res
+                logger.info(f"Max search results set to: {n_res}")
+                config_changed = True
+            elif n_res <= 0:
+                 logger.warning(f"Invalid Max Results value ignored: {n_res}. Must be > 0.")
+        except (ValueError, TypeError):
+            logger.warning(f"Invalid Max Results type ignored: {new_max_results}.")
 
-        msg, lvl = "", ""
+        msg, lvl = ("No changes applied.", "info")
         if restart_needed:
-            msg, lvl = "Settings applied. Restart required for some changes.", "warning"
+            msg, lvl = "Settings applied. Backend restart might be needed for full effect.", "warning"
         elif config_changed:
             msg, lvl = "Settings applied successfully.", "success"
-        else:
-            msg, lvl = "No setting changes detected.", "info"
-        self.signals.settings_applied.emit(msg, lvl)
-        return restart_needed
+
+        self.signals.settings_applied.emit(msg, lvl) # type: ignore
+
 
     def close(self):
-        """Cleans up resources."""
-        self._log("INFO", "LlamaSearchApp closing...")
-        self.executor.shutdown(wait=True)
+        """Cleans up resources, signals shutdown, waits briefly for tasks."""
+        if self._shutdown_event.is_set():
+            return
+        logger.info("LlamaSearchApp closing initiated...")
+        self._shutdown_event.set()
+
+        if self._active_crawler:
+            logger.debug("Requesting crawler abort...")
+            try:
+                self._active_crawler.abort()
+            except Exception as e:
+                logger.warning(f"Error during crawler abort: {e}")
+
+        logger.debug("Shutting down background task executor...")
+        self._thread_pool.shutdown(wait=True) # Explicitly shut down the pool
+        logger.info("Background task executor shut down.")
+
         if self.llm_search:
+            logger.debug("Closing LLMSearch instance...")
             try:
                 self.llm_search.close()
-                self._log("INFO", "LLMSearch closed.")
             except Exception as e:
-                self._log("ERROR", f"Error closing LLMSearch: {e}")
-            self.llm_search = None
-        self._log("INFO", "LlamaSearchApp closed.")
+                logger.error(f"Error closing LLMSearch instance: {e}", exc_info=self.debug)
+            finally:
+                self.llm_search = None
+            logger.debug("LLMSearch closed.")
+        else:
+            logger.debug("LLMSearch instance was not active.")
+
+        logger.info("LlamaSearchApp close sequence finished.")

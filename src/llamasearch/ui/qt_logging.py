@@ -1,7 +1,9 @@
 # src/llamasearch/ui/qt_logging.py
 
 import logging
+
 from PySide6.QtCore import QObject, Signal
+
 
 class QtLogSignalEmitter(QObject):
     """Contains a signal to emit log messages."""

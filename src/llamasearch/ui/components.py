@@ -1,9 +1,10 @@
 # src/llamasearch/ui/components.py
-from PySide6.QtWidgets import QWidget, QLabel, QHBoxLayout
-from PySide6.QtGui import QPixmap
-from PySide6.QtCore import Qt
-import logging
 import importlib.resources  # Use importlib.resources for package data
+import logging
+
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QPixmap
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
 
 logger = logging.getLogger(__name__)
 

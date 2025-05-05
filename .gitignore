@@ -3,7 +3,7 @@
 
 # Project
 .dirfilter
-o.md
+llamasearch.md
 logs/
 *.db
 models/

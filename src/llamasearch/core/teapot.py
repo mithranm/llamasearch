@@ -1,30 +1,27 @@
 # src/llamasearch/core/teapot.py
 
-from pathlib import Path
-from typing import Optional, Dict, Any, Tuple
 import gc
-import torch
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
+
 import onnxruntime
+import torch
 from optimum.onnxruntime import ORTModelForSeq2SeqLM
+from transformers import AutoTokenizer, PreTrainedTokenizer
 
-# --- Remove unused BatchEncoding ---
-from transformers import AutoTokenizer, PreTrainedTokenizer  # , BatchEncoding
-
-# --- Import Project Protocols & Utilities ---
-from llamasearch.protocols import LLM, ModelInfo
-from llamasearch.hardware import detect_hardware_info, HardwareInfo
 from llamasearch.data_manager import data_manager
-from llamasearch.utils import setup_logging
 from llamasearch.exceptions import ModelNotFoundError, SetupError
+from llamasearch.hardware import HardwareInfo, detect_hardware_info
+from llamasearch.protocols import LLM, ModelInfo
+from llamasearch.utils import setup_logging
 
-logger = setup_logging(__name__)
+logger = setup_logging(__name__, use_qt_handler=True)
 
 # --- Constants ---
 TEAPOT_REPO_ID = "teapotai/teapotllm"
 ONNX_SUBFOLDER = "onnx"
 REQUIRED_ONNX_BASENAMES = ["encoder_model", "decoder_model", "decoder_with_past_model"]
 
-# --- ADDED Constant Definition ---
 TEAPOT_BASE_FILES = [
     "config.json",
     "tokenizer.json",
@@ -279,10 +276,13 @@ class TeapotONNXLLM(LLM):
                 outputs = self._model.generate(**inputs, **gen_kwargs)
 
             out_ids = outputs[0]
-            result = self._tokenizer.decode(out_ids, skip_special_tokens=True)
+            raw_result = self._tokenizer.decode(out_ids, skip_special_tokens=True)
+            logger.debug(f"Raw decoded result (before strip): '{raw_result}'")
+            result = raw_result.replace(prompt, "").strip()
+            logger.debug(f"Final result (after strip): '{result}'")
             out_tokens = out_ids.shape[0] if isinstance(out_ids, torch.Tensor) else 0
 
-            return result.strip(), {
+            return result, {
                 "output_token_count": out_tokens,
                 "input_token_count": in_tokens,
             }

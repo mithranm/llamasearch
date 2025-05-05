@@ -9,8 +9,8 @@ Additionally, the module provides an export method that packages specified
 directories into a tar.gz archive.
 """
 
-import os
 import json
+import os
 import tarfile
 import time
 from pathlib import Path

@@ -1,31 +1,16 @@
 # src/llamasearch/ui/views/settings_view.py
-from PySide6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QLabel,
-    QHBoxLayout,
-    QGroupBox,
-    QPushButton,
-    QFormLayout,
-    QCheckBox,
-    QSpinBox,
-    QTabWidget,
-    QScrollArea,
-    QMessageBox,
-)
-from PySide6.QtCore import (
-    Qt,
-    QTimer, # <-- Import QTimer
-    Slot,
-    # QMetaObject, # No longer needed for these calls
-    QUrl,
-)
-from PySide6.QtGui import QDesktopServices
-
+import logging
+from pathlib import Path
 # from typing import cast, Any # No longer needed for these calls
 from typing import Dict
-from pathlib import Path
-import logging
+
+from PySide6.QtCore import QTimer  # <-- Import QTimer
+from PySide6.QtCore import (  # QMetaObject, # No longer needed for these calls
+    Qt, QUrl, Slot)
+from PySide6.QtGui import QDesktopServices
+from PySide6.QtWidgets import (QCheckBox, QFormLayout, QGroupBox, QHBoxLayout,
+                               QLabel, QMessageBox, QPushButton, QScrollArea,
+                               QSpinBox, QTabWidget, QVBoxLayout, QWidget)
 
 logger = logging.getLogger(__name__)
 
