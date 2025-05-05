@@ -26,7 +26,7 @@ from llamasearch.utils import setup_logging
 logger = setup_logging(__name__, use_qt_handler=True)
 
 # --- Updated Default Model ---
-DEFAULT_MODEL_NAME = "mixedbread-ai/mxbai-embed-large-v1"
+DEFAULT_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 # --- End Update ---
 
 DEVICE_TYPE = "cpu"  # Hardcode to CPU
