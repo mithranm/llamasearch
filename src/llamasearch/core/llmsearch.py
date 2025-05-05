@@ -839,6 +839,51 @@ class LLMSearch:
             "generation_time_seconds": gen_time if gen_time > 0 else 0,
         }
 
+    def _safe_unload_llm(self, timeout: float = 3.0) -> None:
+        """
+        Try to unload the LLM in a background daemon thread so that GUI/CLI
+        shutdown is never blocked. The call returns as soon as    (1) unload
+        finished, (2) the timeout elapsed, or (3) no unload method exists.
+        """
+        # --- Fast‑path: CPU provider hangs when calling unload.
+        if self.model is None or not hasattr(self.model, "unload"):
+            return
+        try:
+            provider = getattr(self.model, "_provider", "CPUExecutionProvider")
+            if provider == "CPUExecutionProvider":
+                logger.info("Skip explicit Teapot unload on CPU provider – "
+                            "let GC reclaim objects during interpreter shutdown.")
+                self.model = None
+                import gc # Redundant import for linters
+                gc.collect()
+                return
+        except Exception:
+            # Best‑effort – continue with normal path if provider detection failed
+            pass
+        # --- End Fast-path ---
+
+        finished = threading.Event()
+
+        def _worker():
+            try:
+                assert self.model is not None # Explicit assertion for Pyright
+                self.model.unload()
+            except Exception as e:         # noqa: BLE001
+                logger.error(f"Safe‑unload error: {e}", exc_info=self.debug)
+            finally:
+                finished.set()
+
+        t = threading.Thread(target=_worker, name="TeapotUnload", daemon=True)
+        t.start()
+        if not finished.wait(timeout):
+            logger.warning(
+                f"LLM unload exceeded {timeout}s – continuing app shutdown."
+            )
+        # regardless of outcome, drop the reference so GC can run
+        self.model = None
+        import gc
+        gc.collect()
+
     def close(self) -> None:
         """ Unload models and release resources. """
         logger.info("Closing LLMSearch and its components...")
@@ -847,18 +892,8 @@ class LLMSearch:
             self._shutdown_event.set()
 
         if self.model:
-            logger.debug("Attempting to unload LLM...")
-            try:
-                if hasattr(self.model, 'unload') and callable(self.model.unload):
-                    self.model.unload()
-                    logger.info("LLM unloaded successfully.")
-                else:
-                    logger.debug("LLM does not have an unload method.")
-            except Exception as e:
-                logger.error(f"Error unloading LLM: {e}", exc_info=self.debug)
-            finally:
-                self.model = None
-                logger.debug("LLM reference cleared.")
+            logger.debug("Attempting to unload LLM asynchronously…")
+            self._safe_unload_llm()           # <- new non‑blocking call
 
         if self.embedder:
             logger.debug("Attempting to unload Embedder...")

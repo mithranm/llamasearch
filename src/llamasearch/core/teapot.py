@@ -296,8 +296,15 @@ class TeapotONNXLLM(LLM):
 
     def unload(self) -> None:
         """Unloads the model and attempts garbage collection."""
-        if not self._is_loaded:
+        # Fast exit when running on CPU – avoids known hang in ORT finaliser
+        if getattr(self, "_provider", "CPUExecutionProvider") == "CPUExecutionProvider":
+            logger.info("TeapotONNXLLM unload skipped directly (CPU provider).")
+            self._model = None
+            self._tokenizer = None
+            self._is_loaded = False
+            gc.collect()
             return
+
         logger.info(f"Unloading TeapotONNXLLM ({self.model_info.model_id})...")
         # Get device type *before* deleting the model
         dev_type = "cpu"  # Default

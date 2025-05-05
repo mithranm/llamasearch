@@ -41,15 +41,15 @@ class AppLogicSignals(QObject):
 class LlamaSearchApp:
     """Backend logic handler for LlamaSearch GUI. Runs tasks in threads."""
 
-    def __init__(self, debug: bool = False):
+    def __init__(self, executor: ThreadPoolExecutor, debug: bool = False):
+        """Initialize the application logic."""
+        logger.info("Initializing LlamaSearchApp backend...")
         self.debug = debug
         self.data_paths = data_manager.get_data_paths()
         self.llm_search: Optional[LLMSearch] = None
         self.signals = AppLogicSignals()
         self._shutdown_event = threading.Event()
-        # --- Store ThreadPoolExecutor as instance variable ---
-        self._thread_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="LlamaSearchWorker")
-        # --- End Store ---
+        self._thread_pool = executor  # Use the externally provided executor
         self._active_crawler: Optional[Crawl4AICrawler] = None
         self._current_config = self._get_default_config()
         logger.info(f"LlamaSearchApp initializing. Data paths: {self.data_paths}")
@@ -168,7 +168,6 @@ class LlamaSearchApp:
             QTimer.singleShot(0, self.signals.actions_should_reenable.emit)
             return
         try:
-            logger.debug("!!! ENTERED _run_in_background try block !!!")
             logger.debug(f"Submitting task {task_func.__name__} to thread pool.")
             future = self._thread_pool.submit(task_func, *args)
             logger.debug(f"Task submitted. Future: {future}. Attaching done callback.")
@@ -203,7 +202,9 @@ class LlamaSearchApp:
                 # Directly emit the internal signal. Qt will ensure the connected slot
                 # (_final_gui_callback) runs on the main GUI thread.
                 logger.debug(
-                    f"Emitting _internal_task_completed signal. Result type: {type(result)}, Exception type: {type(exception)}, Cancelled: {cancelled}"
+                    f">>> _intermediate_callback EXECUTING <<< "
+                    f"Result type: {type(result)}, Exception type: {type(exception)}, "
+                    f"Cancelled: {cancelled}"
                 )
                 self.signals._internal_task_completed.emit(
                     result, exception, cancelled, completion_signal
@@ -228,8 +229,8 @@ class LlamaSearchApp:
     ):
         """Handles the final result/exception in the GUI thread after background task."""
         logger.debug(
-            ">>> _final_gui_callback EXECUTING <<<",
-            "Result type: {type(result)}, Exception type: {type(exception)}, Cancelled: {cancelled}"
+            f">>> _final_gui_callback EXECUTING <<< "
+            f"Result type: {type(result)}, Exception type: {type(exception)}, Cancelled: {cancelled}"
         )
         can_emit = hasattr(completion_signal, "emit") and callable(completion_signal.emit) # type: ignore
 
@@ -838,32 +839,17 @@ class LlamaSearchApp:
 
     def close(self):
         """Cleans up resources, signals shutdown, waits briefly for tasks."""
-        if self._shutdown_event.is_set():
-            return
-        logger.info("LlamaSearchApp closing initiated...")
-        self._shutdown_event.set()
+        logger.info("Closing LlamaSearchApp backend resources (executor shutdown handled externally)...")
+        self._shutdown_event.set() # Signal any listeners
 
+        # Clean up crawler if active
         if self._active_crawler:
             logger.debug("Requesting crawler abort...")
-            try:
-                self._active_crawler.abort()
-            except Exception as e:
-                logger.warning(f"Error during crawler abort: {e}")
+            self._active_crawler.abort()
 
-        logger.debug("Shutting down background task executor...")
-        self._thread_pool.shutdown(wait=True) # Explicitly shut down the pool
-        logger.info("Background task executor shut down.")
-
+        # Clean up LLMSearch if initialized
         if self.llm_search:
             logger.debug("Closing LLMSearch instance...")
-            try:
-                self.llm_search.close()
-            except Exception as e:
-                logger.error(f"Error closing LLMSearch instance: {e}", exc_info=self.debug)
-            finally:
-                self.llm_search = None
-            logger.debug("LLMSearch closed.")
-        else:
-            logger.debug("LLMSearch instance was not active.")
+            self.llm_search.close()
 
-        logger.info("LlamaSearchApp close sequence finished.")
+        logger.info("LlamaSearchApp backend resources closed.")

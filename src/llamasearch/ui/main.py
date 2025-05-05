@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import sys
 import signal
+from concurrent.futures import ThreadPoolExecutor
 
 from PySide6.QtCore import Qt,QTimer
 from PySide6.QtWidgets import (QApplication, QMainWindow, QTabWidget,
@@ -23,8 +24,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("LlamaSearch")
 
         # Initialize backend first
-        # <<< Removed requires_gpu argument >>>
-        self.backend = LlamaSearchApp(debug=False) # Set debug via args/env if needed
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="LlamaSearchWorker")
+        self.backend = LlamaSearchApp(executor=self._executor, debug=False) # Set debug via args/env if needed
 
         central = QWidget()
         self.main_layout = QVBoxLayout(central)
@@ -56,11 +57,13 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         """Ensure backend resources are released on close."""
         logger.info("Close event received, shutting down backend...")
+        logger.info("Shutting down thread pool executor...")
+        # Always shutdown without timeout, ensuring compatibility
+        self._executor.shutdown(wait=True, cancel_futures=True)
+        logger.info("Executor shutdown complete.")
         self.backend.close() # Call backend close method
         logger.info("Backend shutdown sequence initiated.")
         super().closeEvent(event)
-        # Explicitly exit after cleanup if needed, though Qt usually handles this
-        # sys.exit(0)
 
 
 # --- SIGINT Handler Function ---
