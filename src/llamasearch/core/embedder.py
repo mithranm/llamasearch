@@ -15,7 +15,8 @@ import numpy as np
 import torch
 from huggingface_hub import snapshot_download
 from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
-from pydantic import BaseModel, Field, validator
+# <<< Updated import for V2 validator >>>
+from pydantic import BaseModel, Field, field_validator
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 
@@ -56,8 +57,10 @@ class EmbedderConfig(BaseModel):
         description="Optional dimension to truncate embeddings to (e.g., 512).",
     )
 
-    @validator("truncate_dim")
-    def check_truncate_dim(cls, v):
+    # <<< Updated Pydantic V2 Validator >>>
+    @field_validator("truncate_dim")
+    @classmethod
+    def check_truncate_dim(cls, v: Optional[int]) -> Optional[int]:
         if v is not None and v <= 0:
             raise ValueError("truncate_dim must be a positive integer if set")
         return v

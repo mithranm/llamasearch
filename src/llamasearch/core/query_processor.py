@@ -473,12 +473,7 @@ class _QueryProcessingMixin:
             llm_full_output, raw_llm_output = self.model.generate(
                 prompt=prompt_for_llm,  # Pass instruction + context
                 max_tokens=max_gen_tokens,  # Use calculated max tokens
-                # Sampling parameters are now handled inside GenericONNXLLM.generate
-                # temperature=0.1, # Removed - use Qwen3 defaults
-                # top_p=0.9,       # Removed - use Qwen3 defaults
-                # repeat_penalty=1.15, # Removed - use Qwen3 defaults (presence_penalty)
             )
-            # llm_full_output now contains <think>...</think>...answer...
 
         except InterruptedError:
             llm_full_output = "LLM generation cancelled during shutdown."

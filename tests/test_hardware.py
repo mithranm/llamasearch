@@ -15,6 +15,7 @@ from llamasearch.hardware import (
     detect_memory_info,
     detect_hardware_info,
 )
+import llamasearch.hardware as hw_module # Import module for patching
 
 # --- Test Pydantic Models ---
 
@@ -37,15 +38,12 @@ class TestPydanticModels(unittest.TestCase):
         self.assertTrue(cpu.supports_avx2)
 
     def test_cpu_info_model_name_validator(self):
-        cpu1 = CPUInfo(logical_cores=1, physical_cores=1, architecture="test", model_name=None, supports_avx2=False)
+        cpu1 = CPUInfo(logical_cores=1, physical_cores=1, architecture="test", model_name=None, frequency_mhz=None, supports_avx2=False)
         self.assertEqual(cpu1.model_name, "Unknown")
 
-        cpu2 = CPUInfo(logical_cores=1, physical_cores=1, architecture="test", model_name=12345, supports_avx2=False)
-        self.assertEqual(cpu2.model_name, "12345")
-
-        cpu3 = CPUInfo(logical_cores=1, physical_cores=1, architecture="test", model_name=" Real CPU ", supports_avx2=False)
+        cpu2 = CPUInfo(logical_cores=1, physical_cores=1, architecture="test", model_name=" Real CPU ", frequency_mhz=None, supports_avx2=False)
         # Note: The validator doesn't strip, the main function does later
-        self.assertEqual(cpu3.model_name, " Real CPU ")
+        self.assertEqual(cpu2.model_name, " Real CPU ")
 
 
     def test_memory_info_creation(self):
@@ -58,7 +56,7 @@ class TestPydanticModels(unittest.TestCase):
         self.assertEqual(mem.percent_used, 48.1)
 
     def test_hardware_info_creation(self):
-        cpu = CPUInfo(logical_cores=2, physical_cores=1, architecture="arm64", model_name="M1", supports_avx2=False)
+        cpu = CPUInfo(logical_cores=2, physical_cores=1, architecture="arm64", model_name="M1", frequency_mhz=None, supports_avx2=False)
         mem = MemoryInfo(total_gb=8.0, available_gb=4.0, used_gb=4.0, percent_used=50.0)
         hw = HardwareInfo(cpu=cpu, memory=mem)
         self.assertIs(hw.cpu, cpu)
@@ -96,13 +94,32 @@ class TestDetectAVX2(unittest.TestCase):
         mock_open_func.assert_not_called()
         mock_run.assert_not_called()
 
+    # <<< New Test: py_cpuinfo raises exception >>>
+    @patch('llamasearch.hardware.platform.system', return_value="Linux") # Fallback OS
+    @patch('builtins.open', new_callable=mock_open, read_data="flags: avx2") # Fallback reads true
+    @patch('llamasearch.hardware.subprocess.run')
+    def test_avx2_pycpuinfo_raises_exception(self, mock_run, mock_open_func, mock_system):
+        """Test AVX2 detection fallback when py_cpuinfo raises an error."""
+        mock_pycpuinfo = MagicMock()
+        mock_pycpuinfo.get_cpu_info.side_effect = Exception("pycpuinfo failed")
+        with patch.dict('sys.modules', {'py_cpuinfo': mock_pycpuinfo}):
+            with self.assertLogs(logger='llamasearch.hardware', level='DEBUG') as cm:
+                result = _detect_cpu_avx2()
+                self.assertTrue(result) # Should succeed using Linux fallback
+                self.assertTrue(any("Error using py_cpuinfo: pycpuinfo failed" in log for log in cm.output))
+        mock_pycpuinfo.get_cpu_info.assert_called_once()
+        mock_open_func.assert_called_once_with('/proc/cpuinfo', 'r', encoding='utf-8')
+        mock_run.assert_not_called()
+
     @patch('llamasearch.hardware.platform.system', return_value="Linux")
     @patch('builtins.open', new_callable=mock_open, read_data="flags\t\t: fpu vme de pse tsc ... avx fma ... avx2 bmi1 ...\nmore stuff")
     @patch('llamasearch.hardware.subprocess.run') # Mock run for mac fallback
     def test_avx2_pycpuinfo_missing_linux_true(self, mock_run, mock_open_func, mock_system):
         """Test AVX2 detection fallback to /proc/cpuinfo on Linux (AVX2 present)."""
         with patch.dict('sys.modules', {'py_cpuinfo': None}): # Simulate import failure
-            self.assertTrue(_detect_cpu_avx2())
+             with self.assertLogs(logger='llamasearch.hardware', level='DEBUG') as cm:
+                self.assertTrue(_detect_cpu_avx2())
+                self.assertTrue(any("py_cpuinfo not installed" in log for log in cm.output))
         mock_open_func.assert_called_once_with('/proc/cpuinfo', 'r', encoding='utf-8')
         mock_run.assert_not_called()
 
@@ -113,6 +130,20 @@ class TestDetectAVX2(unittest.TestCase):
         """Test AVX2 detection fallback to /proc/cpuinfo on Linux (AVX2 missing)."""
         with patch.dict('sys.modules', {'py_cpuinfo': None}):
             self.assertFalse(_detect_cpu_avx2())
+        mock_open_func.assert_called_once_with('/proc/cpuinfo', 'r', encoding='utf-8')
+        mock_run.assert_not_called()
+
+    # <<< New Test: Linux /proc/cpuinfo fails >>>
+    @patch('llamasearch.hardware.platform.system', return_value="Linux")
+    @patch('builtins.open', side_effect=OSError("Cannot open"))
+    @patch('llamasearch.hardware.subprocess.run')
+    def test_avx2_linux_proc_fails(self, mock_run, mock_open_func, mock_system):
+        """Test AVX2 detection when /proc/cpuinfo fails on Linux."""
+        with patch.dict('sys.modules', {'py_cpuinfo': None}): # Simulate pycpuinfo missing
+            with self.assertLogs(logger='llamasearch.hardware', level='WARNING') as cm:
+                self.assertFalse(_detect_cpu_avx2()) # Should default to False
+                self.assertTrue(any("Could not check /proc/cpuinfo" in log for log in cm.output))
+                self.assertTrue(any("Could not reliably determine AVX2" in log for log in cm.output))
         mock_open_func.assert_called_once_with('/proc/cpuinfo', 'r', encoding='utf-8')
         mock_run.assert_not_called()
 
@@ -148,6 +179,22 @@ class TestDetectAVX2(unittest.TestCase):
         )
         mock_open_func.assert_not_called()
 
+    # <<< New Test: macOS sysctl fails >>>
+    @patch('llamasearch.hardware.platform.system', return_value="Darwin")
+    @patch('builtins.open', new_callable=mock_open)
+    @patch('llamasearch.hardware.subprocess.run', side_effect=FileNotFoundError("sysctl not found"))
+    def test_avx2_mac_sysctl_fails(self, mock_run, mock_open_func, mock_system):
+        """Test AVX2 detection when sysctl fails on macOS."""
+        with patch.dict('sys.modules', {'py_cpuinfo': None}): # Simulate pycpuinfo missing
+            with self.assertLogs(logger='llamasearch.hardware', level='WARNING') as cm:
+                self.assertFalse(_detect_cpu_avx2()) # Should default to False
+                self.assertTrue(any("Could not check sysctl" in log for log in cm.output))
+                self.assertTrue(any("Could not reliably determine AVX2" in log for log in cm.output))
+        mock_run.assert_called_once_with(
+            ["sysctl", "machdep.cpu.features"], capture_output=True, text=True, check=False
+        )
+        mock_open_func.assert_not_called()
+
     @patch('llamasearch.hardware.platform.system', return_value="Windows")
     @patch('builtins.open', new_callable=mock_open)
     @patch('llamasearch.hardware.subprocess.run')
@@ -161,6 +208,7 @@ class TestDetectAVX2(unittest.TestCase):
 
 # --- Test Detection Functions ---
 
+# Patch psutil directly within the hardware module
 @patch('llamasearch.hardware.psutil')
 @patch('llamasearch.hardware.platform')
 @patch('llamasearch.hardware.os')
@@ -169,7 +217,6 @@ class TestDetectAVX2(unittest.TestCase):
 @patch('builtins.open', new_callable=mock_open) # Mock open for linux cpu model
 class TestDetectCPU(unittest.TestCase):
 
-    
     def test_detect_cpu_macos(self, mock_open_func, mock_detect_avx2, mock_run, mock_os, mock_platform, mock_psutil):
         """Test CPU detection on a simulated macOS system."""
          # Setup Mocks
@@ -178,7 +225,8 @@ class TestDetectCPU(unittest.TestCase):
         mock_platform.system.return_value = "Darwin"
         mock_platform.machine.return_value = "arm64"
         mock_platform.processor.return_value = "Fallback Proc Name" # Should not be used if sysctl works
-        mock_run.return_value = MagicMock(stdout="Apple M1 Max ", returncode=0) # Note trailing space for strip test
+        # Simulate sysctl call for model name
+        mock_run.side_effect = lambda *args, **kwargs: MagicMock(stdout="Apple M1 Max ", returncode=0) if args[0] == ["sysctl", "-n", "machdep.cpu.brand_string"] else MagicMock()
         mock_psutil.cpu_freq.return_value = None # Simulate freq not available
         mock_detect_avx2.return_value = False
 
@@ -192,14 +240,100 @@ class TestDetectCPU(unittest.TestCase):
         self.assertEqual(cpu_info.model_name, "Apple M1 Max") # Stripped name from mock_run
         self.assertIsNone(cpu_info.frequency_mhz)
         self.assertFalse(cpu_info.supports_avx2)
+        # Check that sysctl for brand string was called
+        mock_run.assert_any_call(
+             ["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True, check=True
+        )
+        mock_open_func.assert_not_called() # Linux specific
+        mock_detect_avx2.assert_called_once()
+
+    # <<< New Test: macOS sysctl model name fails >>>
+    def test_detect_cpu_macos_sysctl_fail(self, mock_open_func, mock_detect_avx2, mock_run, mock_os, mock_platform, mock_psutil):
+        """Test CPU model name fallback on macOS when sysctl fails."""
+        mock_os.cpu_count.return_value = 4
+        mock_psutil.cpu_count.side_effect = [4, 4]
+        mock_platform.system.return_value = "Darwin"
+        mock_platform.machine.return_value = "x86_64"
+        mock_platform.processor.return_value = "Intel Fallback" # Should be used now
+        # Simulate sysctl call failing
+        mock_run.side_effect = subprocess.CalledProcessError(1, "sysctl")
+        mock_psutil.cpu_freq.return_value = MagicMock(max=2500.0, current=2400.0)
+        mock_detect_avx2.return_value = True
+
+        cpu_info = detect_cpu_capabilities()
+
+        self.assertEqual(cpu_info.model_name, "Intel Fallback") # Fallback name used
         mock_run.assert_called_once_with(
              ["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True, check=True
         )
-        mock_open_func.assert_not_called()
-        mock_detect_avx2.assert_called_once()
+        self.assertEqual(cpu_info.frequency_mhz, 2500.0) # Freq should still be detected
 
+    # <<< New Test: Linux /proc/cpuinfo model name works >>>
+    def test_detect_cpu_linux(self, mock_open_func, mock_detect_avx2, mock_run, mock_os, mock_platform, mock_psutil):
+        """Test CPU detection on Linux using /proc/cpuinfo."""
+        mock_os.cpu_count.return_value = 16
+        mock_psutil.cpu_count.side_effect = [8, 16] # 8 physical, 16 logical
+        mock_platform.system.return_value = "Linux"
+        mock_platform.machine.return_value = "x86_64"
+        mock_platform.processor.return_value = "Fallback Proc" # Shouldn't be used
+        # Mock the file read for cpuinfo
+        mock_open_func.return_value.read.side_effect = lambda *args, **kwargs: "processor\t: 0\nmodel name\t: AMD Ryzen 7 5800X 8-Core Processor\ncpu MHz\t\t: 3800.000\n..."
+        mock_psutil.cpu_freq.return_value = MagicMock(max=4700.0, current=3800.0)
+        mock_detect_avx2.return_value = True
 
-    
+        cpu_info = detect_cpu_capabilities()
+
+        self.assertEqual(cpu_info.logical_cores, 16)
+        self.assertEqual(cpu_info.physical_cores, 8)
+        self.assertEqual(cpu_info.model_name, "AMD Ryzen 7 5800X 8-Core Processor") # From mock file
+        self.assertEqual(cpu_info.frequency_mhz, 4700.0)
+        self.assertTrue(cpu_info.supports_avx2)
+        mock_open_func.assert_called_once_with('/proc/cpuinfo', 'r', encoding='utf-8')
+        mock_run.assert_not_called() # No subprocess calls on Linux for model name
+
+    # <<< New Test: Linux /proc/cpuinfo fails, uses fallback >>>
+    def test_detect_cpu_linux_proc_fail(self, mock_open_func, mock_detect_avx2, mock_run, mock_os, mock_platform, mock_psutil):
+        """Test CPU model name fallback on Linux when /proc/cpuinfo fails."""
+        mock_os.cpu_count.return_value = 2
+        mock_psutil.cpu_count.side_effect = [1, 2]
+        mock_platform.system.return_value = "Linux"
+        mock_platform.machine.return_value = "riscv64"
+        mock_platform.processor.return_value = "Generic RISC-V CPU" # Fallback
+        # Mock the file open failing
+        mock_open_func.side_effect = OSError("Read error")
+        mock_psutil.cpu_freq.return_value = None
+        mock_detect_avx2.return_value = False
+
+        cpu_info = detect_cpu_capabilities()
+
+        self.assertEqual(cpu_info.model_name, "Generic RISC-V CPU") # Fallback used
+        mock_open_func.assert_called_once_with('/proc/cpuinfo', 'r', encoding='utf-8')
+
+    # <<< New Test: Windows wmic fails, uses fallback >>>
+    @patch('subprocess.DETACHED_PROCESS', 0x00000008) # Define constants if not on Windows
+    @patch('subprocess.CREATE_NO_WINDOW', 0x08000000)
+    def test_detect_cpu_windows_wmic_fail(self, mock_create_no_window, mock_detached_process, mock_open_func, mock_detect_avx2, mock_run, mock_os, mock_platform, mock_psutil):
+        """Test CPU model name fallback on Windows when wmic fails."""
+        mock_os.cpu_count.return_value = 8
+        mock_psutil.cpu_count.side_effect = [4, 8]
+        mock_platform.system.return_value = "Windows"
+        mock_platform.machine.return_value = "AMD64"
+        mock_platform.processor.return_value = "Windows CPU Fallback" # Should use this
+        # Simulate wmic call failing
+        mock_run.side_effect = subprocess.CalledProcessError(1, "wmic")
+        mock_psutil.cpu_freq.return_value = MagicMock(max=None, current=3200.0) # Only current available
+        mock_detect_avx2.return_value = True
+
+        cpu_info = detect_cpu_capabilities()
+
+        self.assertEqual(cpu_info.model_name, "Windows CPU Fallback")
+        # Check wmic call was attempted
+        mock_run.assert_called_once_with(
+            "wmic cpu get name", shell=True, capture_output=True, text=True, check=False,
+            creationflags=mock_detached_process | mock_create_no_window
+        )
+        self.assertEqual(cpu_info.frequency_mhz, 3200.0) # Current freq used
+
     def test_detect_cpu_physical_cores_fallback(self, mock_open_func, mock_detect_avx2, mock_run, mock_os, mock_platform, mock_psutil):
         """Test physical core estimation when psutil fails."""
         mock_os.cpu_count.return_value = 4
@@ -215,6 +349,40 @@ class TestDetectCPU(unittest.TestCase):
 
         self.assertEqual(cpu_info.logical_cores, 4)
         self.assertEqual(cpu_info.physical_cores, 2) # Estimated as logical / 2
+
+    # <<< New Test: psutil physical cores raises NotImplementedError >>>
+    def test_detect_cpu_physical_cores_not_implemented(self, mock_open_func, mock_detect_avx2, mock_run, mock_os, mock_platform, mock_psutil):
+        """Test physical core estimation when psutil raises NotImplementedError."""
+        mock_os.cpu_count.return_value = 6
+        # Simulate psutil.cpu_count(logical=False) raising NotImplementedError
+        mock_psutil.cpu_count.side_effect = [NotImplementedError, 6] # logical=False fails, logical=True works
+        mock_platform.system.return_value = "FreeBSD" # Example OS where it might fail
+        mock_platform.machine.return_value = "amd64"
+        mock_platform.processor.return_value = "FreeBSD CPU"
+        mock_psutil.cpu_freq.return_value = None
+        mock_detect_avx2.return_value = False
+
+        with self.assertLogs(logger='llamasearch.hardware', level='WARNING') as cm:
+             cpu_info = detect_cpu_capabilities()
+             self.assertTrue(any("psutil could not determine physical core count" in log for log in cm.output))
+
+        self.assertEqual(cpu_info.logical_cores, 6)
+        self.assertEqual(cpu_info.physical_cores, 3) # Estimated as logical / 2
+
+    # <<< New Test: psutil cpu_freq fails >>>
+    def test_detect_cpu_freq_fails(self, mock_open_func, mock_detect_avx2, mock_run, mock_os, mock_platform, mock_psutil):
+        """Test when psutil.cpu_freq fails."""
+        mock_os.cpu_count.return_value = 4
+        mock_psutil.cpu_count.side_effect = [2, 4]
+        mock_platform.system.return_value = "Linux"
+        mock_platform.machine.return_value = "x86_64"
+        mock_platform.processor.return_value = "CPU Name"
+        mock_psutil.cpu_freq.side_effect = Exception("psutil freq error") # Simulate failure
+        mock_detect_avx2.return_value = True
+
+        cpu_info = detect_cpu_capabilities()
+
+        self.assertIsNone(cpu_info.frequency_mhz) # Should be None
 
 
 @patch('llamasearch.hardware.psutil')
@@ -238,7 +406,23 @@ class TestDetectMemory(unittest.TestCase):
         self.assertEqual(mem_info.percent_used, 46.875)
         mock_psutil.virtual_memory.assert_called_once()
 
-    
+    # <<< New Test: psutil virtual_memory fails >>>
+    def test_detect_memory_fails(self, mock_psutil):
+        """Test memory detection failure."""
+        mock_psutil.virtual_memory.side_effect = Exception("psutil memory error")
+
+        with self.assertLogs(logger='llamasearch.hardware', level='ERROR') as cm:
+             mem_info = detect_memory_info()
+             self.assertTrue(any("Failed to get memory info" in log for log in cm.output))
+
+        self.assertIsInstance(mem_info, MemoryInfo)
+        self.assertEqual(mem_info.total_gb, 0.0) # Check default values on failure
+        self.assertEqual(mem_info.available_gb, 0.0)
+        self.assertEqual(mem_info.used_gb, 0.0)
+        self.assertEqual(mem_info.percent_used, 0.0)
+        mock_psutil.virtual_memory.assert_called_once()
+
+
 # --- Test Main Public Function ---
 
 @patch('llamasearch.hardware.detect_cpu_capabilities')
@@ -248,7 +432,7 @@ class TestDetectHardware(unittest.TestCase):
     def test_detect_hardware_info_assembly(self, mock_detect_memory, mock_detect_cpu):
         """Test that detect_hardware_info calls sub-detectors and assembles the result."""
         # Create mock return values for the sub-detectors
-        mock_cpu = CPUInfo(logical_cores=4, physical_cores=2, architecture="test_arch", model_name="Mock CPU", supports_avx2=True)
+        mock_cpu = CPUInfo(logical_cores=4, physical_cores=2, architecture="test_arch", model_name="Mock CPU", frequency_mhz=None, supports_avx2=True)
         mock_mem = MemoryInfo(total_gb=8.0, available_gb=4.0, used_gb=4.0, percent_used=50.0)
         mock_detect_cpu.return_value = mock_cpu
         mock_detect_memory.return_value = mock_mem
