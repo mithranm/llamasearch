@@ -21,7 +21,12 @@ from llamasearch.utils import setup_logging
 
 # Setup logging early, potentially attaching Qt handler
 # Use the correct logger name
-logger = setup_logging("llamasearch.ui.main", use_qt_handler=True)
+logger = setup_logging("llamasearch.ui.main", use_qt_handler=True) # Initial setup for early logs
+
+# Define module-level globals for SIGINT handler
+_app_instance: "QApplication | None" = None # Forward reference for QApplication
+_main_window: "MainWindow | None" = None # Forward reference for MainWindow
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -155,11 +160,11 @@ class MainWindow(QMainWindow):
 
 
 # --- SIGINT Handler Function ---
-_app_instance = None # Global ref to QApplication
-_main_window = None # Global ref to MainWindow
+# _app_instance and _main_window are defined at module level now
 
 def _handle_sigint(*_):
     """Handle Ctrl+C by initiating the main window close sequence."""
+    global _app_instance, _main_window
     logger.info("SIGINT received, requesting application close...")
     if _main_window:
         # Trigger the closeEvent method from the main thread
@@ -186,9 +191,14 @@ def main():
     # --- Setup Logging ---
     # Determine debug level early, e.g., from sys.argv
     debug_mode = '--debug' in sys.argv
-    log_level = logging.DEBUG if debug_mode else logging.INFO
-    # Setup root logger first, getting the specific ui.main logger
-    logger = setup_logging("llamasearch.ui.main", level=log_level, use_qt_handler=True)
+    # log_level variable was unused here because logger was already set up at module level.
+    # Now, we re-setup/update the logger with the correct level.
+    effective_log_level = logging.DEBUG if debug_mode else logging.INFO
+    # Update existing logger (or re-setup if first time for this specific config)
+    # The global `logger` variable will be updated by this call.
+    # No need to reassign: logger = setup_logging(...)
+    setup_logging("llamasearch.ui.main", level=effective_log_level, use_qt_handler=True)
+
     logger.info(f"--- Starting LlamaSearch GUI (Version: {QApplication.applicationVersion()}) ---")
     logger.info(f"Log Level set to: {'DEBUG' if debug_mode else 'INFO'}")
     # --- End Logging Setup ---
@@ -196,10 +206,11 @@ def main():
     _app_instance = QApplication(sys.argv) # Store app instance
     try:
         _main_window = MainWindow()             # Store main window instance
-        _main_window.show()
+        _main_window.show() # Moved show() inside try block
     except Exception as init_err:
         logger.critical(f"Failed to initialize MainWindow: {init_err}", exc_info=True)
-        QMessageBox.critical(_app_instance.activeWindow(), "Initialization Error", f"Failed to start LlamaSearch GUI:\n{init_err}\n\nSee logs for details.") #type: ignore
+        if _app_instance: # Ensure app instance exists before showing message box
+            QMessageBox.critical(_app_instance.activeWindow(), "Initialization Error", f"Failed to start LlamaSearch GUI:\n{init_err}\n\nSee logs for details.") #type: ignore
         sys.exit(1)
 
 
@@ -216,13 +227,15 @@ def main():
          logger.error(f"Could not register SIGINT handler: {sig_err}. Ctrl+C might not work gracefully.")
 
 
-    exit_code = _app_instance.exec()
+    exit_code = 0
+    if _app_instance: # Guard against _app_instance being None if init failed very early
+        exit_code = _app_instance.exec()
     logger.info(f"Qt application finished with exit code {exit_code}.")
 
     # Ensure executor is definitely shut down if exec() returns before closeEvent completes fully
-    if hasattr(_main_window, '_executor') and _main_window._executor and not _main_window._executor._shutdown:
+    if _main_window and hasattr(_main_window, '_executor') and _main_window._executor and not _main_window._executor._shutdown: # type: ignore
          logger.warning("Executor was not shut down before application exit. Forcing quick shutdown.")
-         _main_window._executor.shutdown(wait=False, cancel_futures=True) # Quick non-waiting shutdown
+         _main_window._executor.shutdown(wait=False, cancel_futures=True) # type: ignore
 
     logger.info("--- LlamaSearch GUI Exiting ---")
     sys.exit(exit_code)

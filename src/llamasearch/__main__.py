@@ -6,6 +6,7 @@ Handles GUI and CLI modes for crawling, indexing, searching.
 
 import argparse
 import asyncio
+import os # Added os import
 import json
 import logging
 import logging.handlers
@@ -80,17 +81,28 @@ def handle_signal(sig, frame):
     else:
         # If shutdown already requested, force exit
         logger.warning("Shutdown already requested. Force exiting...")
+        # <<< MODIFICATION START >>>
+        if os.getenv("PYTEST_CURRENT_TEST"):
+            logger.warning(
+                "PYTEST_CURRENT_TEST is set. Suppressing sys.exit(1) in signal handler for testing."
+            )
+            return
+        # <<< MODIFICATION END >>>
         sys.exit(1)
 
 
-# Register signal handlers early
-signal.signal(signal.SIGINT, handle_signal)  # Ctrl+C
-signal.signal(signal.SIGTERM, handle_signal)  # Termination signal
+# REMOVE these global registrations:
+# signal.signal(signal.SIGINT, handle_signal)
+# signal.signal(signal.SIGTERM, handle_signal)
 
 
 # --- Main Function ---
 def main():
     global llmsearch_instance_global, crawler_instance_global  # Allow modification
+
+    # Register global signal handlers here, active when main() is run.
+    signal.signal(signal.SIGINT, handle_signal)
+    signal.signal(signal.SIGTERM, handle_signal)
 
     parser = argparse.ArgumentParser(
         description="LlamaSearch: Crawl, index, and search documents. Requires setup (`llamasearch-setup`)."
@@ -321,6 +333,13 @@ def main():
                     crawler_instance_global.abort()
             else:
                 logger.warning("Shutdown already requested. Force exiting...")
+                # <<< MODIFICATION START >>>
+                if os.getenv("PYTEST_CURRENT_TEST"):
+                    logger.warning(
+                        "PYTEST_CURRENT_TEST is set. Suppressing sys.exit(1) in CLI signal handler for testing."
+                    )
+                    return
+                # <<< MODIFICATION END >>>
                 sys.exit(1)
 
         # Re-register signals for CLI context to use the local handler

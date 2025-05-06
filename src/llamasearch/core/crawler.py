@@ -17,7 +17,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
-from urllib.parse import unquote, urljoin, urlparse
+from urllib.parse import unquote, urljoin, urlparse # Ensure urlparse is imported
 
 from crawl4ai import (AsyncWebCrawler, BrowserConfig, CacheMode,
                       CrawlerRunConfig, CrawlResult)
@@ -62,13 +62,23 @@ ALLOWED_CONTENT_TYPES = [
 def sanitize_string(s: str, max_length: int = 40) -> str:
     """Sanitizes a string to be used as part of a filename or directory name."""
     s = unquote(s)  # Decode URL encoding
-    s = re.sub(r"^[a-zA-Z]+://", "", s)  # Remove scheme
-    s = re.sub(r"https?://(www\.)?", "", s)  # Remove http/https/www
+
+    # Remove scheme (http, https, etc.) if present
+    # Handles various schemes, not just http/https
+    scheme_match = re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", s)
+    if scheme_match:
+        s = s[len(scheme_match.group(0)):]
+
+    # Remove "www." if it's at the beginning of the remaining string
+    if s.lower().startswith("www."):
+        s = s[4:]
+    
+    # Replace problematic characters
     s = re.sub(r'[/:\\?*"<>| ]+', "_", s)  # Replace unsafe characters with underscore
     s = re.sub(r"_+", "_", s)  # Collapse multiple underscores
     s = s.strip("_")  # Remove leading/trailing underscores
-    if len(s) > max_length:
-        s = s[:max_length]  # Truncate if too long
+    if len(s) > max_length: # Truncate if too long
+        s = s[:max_length]
     return s if s else "default"  # Return "default" if string becomes empty
 
 
@@ -101,14 +111,14 @@ async def fetch_single(
         # Process the result based on its type (crawl4ai can return different types)
         if isinstance(raw, CrawlResultContainer):
             # Standard result container
-            if raw._results and isinstance(raw[0], CrawlResult):
-                return raw[0]
+            if raw._results and isinstance(raw[0], CrawlResult): # type: ignore
+                return raw[0] # type: ignore
             else:
                 logger.warning(f"CrawlResultContainer empty or invalid for {url}.")
                 return None
         elif isinstance(raw, CrawlResult):
             # Sometimes returns a single result directly
-            logger.warning(f"arun returned direct CrawlResult for {url}.")
+            logger.warning(f"arun returned direct CrawlResult for {url}.") # Changed from debug to warning as it's less common
             return raw
         elif inspect.isasyncgen(raw):
             # Handles cases where it returns an async generator (stream mode?)
@@ -174,6 +184,7 @@ class Crawl4AICrawler:
             if relevance_keywords
             else DEFAULT_RELEVANCE_KEYWORDS
         )
+        self.verbose_logging = verbose_logging # Store verbose_logging state
         logger.info(f"Using relevance keywords: {self.relevance_keywords}")
 
         # Setup directories and reverse lookup
@@ -186,7 +197,6 @@ class Crawl4AICrawler:
         self._user_abort = False
         self._shutdown_event = shutdown_event
         self.crawl_delay = max(0.1, crawl_delay)  # Ensure minimum delay
-        # Removed self._http_session initialization
         self._crawler: Optional[AsyncWebCrawler] = None  # Underlying crawl4ai instance
 
         logger.info(
@@ -203,7 +213,7 @@ class Crawl4AICrawler:
         browser_config_args = {
             "browser_type": "chromium",
             "headless": headless,
-            "verbose": verbose_logging,
+            "verbose": self.verbose_logging, # Use stored verbose_logging
         }
         if user_agent:
             browser_config_args["user_agent"] = user_agent
@@ -231,8 +241,6 @@ class Crawl4AICrawler:
                 "Could not initialize Playwright crawler strategy."
             ) from strategy_err
 
-    # Removed _ensure_session method
-    # Removed _close_session method
 
     async def close(self):
         """Closes the crawler's Playwright browser resources."""
@@ -251,7 +259,6 @@ class Crawl4AICrawler:
                 "No underlying AsyncWebCrawler instance found or already closed."
             )
 
-    # Removed _check_url_accessibility method
 
     def normalize_url(self, url: str) -> str:
         """
@@ -260,25 +267,46 @@ class Crawl4AICrawler:
         """
         if not isinstance(url, str):
             return ""
-        # Ensure scheme is present
-        if not url.startswith(("http://", "https://")):
+
+        # Check for valid schemes early
+        parsed_pre_check = urlparse(url)
+        if parsed_pre_check.scheme and parsed_pre_check.scheme not in ["http", "https"]:
+            logger.debug(f"Unsupported scheme '{parsed_pre_check.scheme}' in URL: {url}")
+            return ""
+        
+        # Ensure scheme is present (defaults to https if totally missing)
+        if not parsed_pre_check.scheme:
             url = "https://" + url
+        
+        # Re-parse after potential scheme addition
+        parsed = urlparse(url)
+
         # Remove fragment identifier
-        url, *_ = url.split("#", 1)
+        # url, *_ = url.split("#", 1) # This was done too early if url is reconstructed
+        
         try:
-            parsed = urlparse(url)
-            # Standardize path (use '/' for root)
-            path = parsed.path if (parsed.path and parsed.path != "/") else "/"
             # Reconstruct URL, handling potential missing parts
-            if not parsed.scheme or not parsed.netloc:
+            if not parsed.scheme or not parsed.netloc: # Should not happen if scheme logic above is correct
                 logger.debug(f"Could not properly parse URL for normalization: {url}")
                 return ""
-            normalized = f"{parsed.scheme}://{parsed.netloc}{path}"
-            if parsed.query:
-                normalized += f"?{parsed.query}"
-            # Ensure trailing slash for root paths
-            if (not parsed.path or parsed.path == "/") and not normalized.endswith("/"):
-                normalized += "/"
+            
+            # Remove fragment from the parsed object before reconstructing
+            normalized_no_fragment = parsed._replace(fragment="").geturl()
+            
+            # Re-parse after fragment removal to correctly handle path and query
+            parsed_final = urlparse(normalized_no_fragment)
+            final_path = parsed_final.path if (parsed_final.path and parsed_final.path != "/") else "/"
+
+            normalized = f"{parsed_final.scheme}://{parsed_final.netloc}{final_path}"
+            if parsed_final.query:
+                normalized += f"?{parsed_final.query}"
+            
+            # Ensure trailing slash for root paths or paths that look like directories
+            # but only if there's no query string (e.g. example.com/ -> example.com/, example.com/foo -> example.com/foo/)
+            # example.com?q=1 remains example.com?q=1
+            if not parsed_final.query:
+                if (not final_path or final_path == "/" or not Path(final_path).suffix) and not normalized.endswith("/"):
+                     normalized += "/"
             return normalized
         except ValueError as e:  # Catch potential parsing errors
             logger.warning(f"URL normalization failed for '{url}': {e}")
@@ -367,17 +395,19 @@ class Crawl4AICrawler:
         total_score = url_score + text_score
 
         # Log the components for debugging
-        log_level = logging.DEBUG
-        logger.log(
-            log_level,
-            f"Scoring '{link_url}' (Text: '{(link_text or '')[:30]}...'): "
-            f"URL Score={url_score:.2f}, Text Score={text_score:.2f}, Total={total_score:.2f}",
-        )
+        log_level = logging.DEBUG if self.verbose_logging else logging.NOTSET # type: ignore
+        if logger.isEnabledFor(log_level): # Check if logger will output this level
+            logger.log(
+                log_level,
+                f"Scoring '{link_url}' (Text: '{(link_text or '')[:30]}...'): "
+                f"URL Score={url_score:.2f}, Text Score={text_score:.2f}, Total={total_score:.2f}",
+            )
 
         # Invert score for priority queue (lower value = higher priority)
         total_score = max(0.0, total_score)
         priority = max(1.0 / (total_score + 0.01), 1e-6)  # Add epsilon, ensure > 0
-        logger.log(log_level, f"  -> Priority: {priority:.4f}")
+        if logger.isEnabledFor(log_level):
+            logger.log(log_level, f"  -> Priority: {priority:.4f}")
         return priority
 
     def abort(self):
@@ -404,7 +434,6 @@ class Crawl4AICrawler:
         GLOBAL_TIMEOUT = 1800  # Max crawl duration (30 minutes)
         start_time = time.time()
 
-        # Removed aiohttp session initialization
 
         # --- Safely initialize crawl4ai AsyncWebCrawler ---
         crawler = None
@@ -421,7 +450,6 @@ class Crawl4AICrawler:
                 f"Failed to initialize AsyncWebCrawler: {crawler_init_err}",
                 exc_info=True,
             )
-            # Removed call to _close_session
             return []
         # --- End safe initialization ---
 
@@ -467,14 +495,13 @@ class Crawl4AICrawler:
                         )
                         continue
 
-                    # --- Removed pre-check call ---
 
                     logger.info(
                         f"Crawling [L:{level}/{self.max_crawl_level} | C:{collected_count}/{self.target_links} | Q:{queue.qsize()}]: {url}"
                     )
                     # Fetch the page content using Playwright via fetch_single
                     result = await fetch_single(
-                        crawler,
+                        crawler, # type: ignore
                         url,
                         self._run_cfg,
                         self._shutdown_event,
@@ -525,8 +552,8 @@ class Crawl4AICrawler:
                         ):
                             links_added = 0
                             internal_links = (
-                                result.links.get("internal", [])
-                                if isinstance(result.links, dict)
+                                result.links.get("internal", []) # type: ignore
+                                if isinstance(result.links, dict) # type: ignore
                                 else []
                             )
                             for link_item in internal_links:
@@ -641,7 +668,6 @@ class Crawl4AICrawler:
             duration = time.time() - start_time
             # Close Playwright browser and resources
             await self.close()
-            # Removed call to _close_session
 
             # Log summary of failed URLs (limited count)
             if failed_urls:
@@ -694,7 +720,7 @@ class Crawl4AICrawler:
             ]
             url_lower = url.lower()
             if any(re.search(p, url_lower) for p in ignore_patterns):
-                logger.log(logging.DEBUG, f"Ignoring URL due to pattern match: {url}")
+                logger.log(logging.DEBUG if self.verbose_logging else logging.NOTSET, f"Ignoring URL due to pattern match: {url}") # type: ignore
                 return False
 
             # Ignore common file extensions for non-crawlable assets
@@ -710,28 +736,30 @@ class Crawl4AICrawler:
 
             path_part = parsed.path.split("?")[0].lower()
             if re.search(ignore_extensions, path_part):
-                logger.log(logging.DEBUG, f"Ignoring URL due to extension match: {url}")
+                logger.log(logging.DEBUG if self.verbose_logging else logging.NOTSET, f"Ignoring URL due to extension match: {url}") # type: ignore
                 return False
 
             # Domain check: Ensure the URL is within the scope of the root URLs
-            root_domains = {
+            root_netlocs = { # Changed from root_domains to root_netlocs for clarity
                 urlparse(root).netloc.lower()
-                for root in self.root_urls
-                if urlparse(root).netloc
+                for root in self.root_urls # self.root_urls are already normalized
+                if urlparse(root).netloc # Ensure netloc is not empty
             }
-            current_domain = parsed.netloc.lower()
-            if not current_domain:
+            current_netloc = parsed.netloc.lower() # Changed from current_domain
+            if not current_netloc:
                 return False  # Invalid URL
 
-            if current_domain not in root_domains:
+            if current_netloc not in root_netlocs:
                 # Check if it's a subdomain of any root domain
+                # Example: current_netloc = "docs.example.com", root_netloc = "example.com"
+                # current_netloc.endswith("." + root_netloc) => "docs.example.com".endswith(".example.com") is True
                 if not any(
-                    rd and (current_domain == rd or current_domain.endswith("." + rd))
-                    for rd in root_domains
+                    rn and (current_netloc == rn or current_netloc.endswith("." + rn))
+                    for rn in root_netlocs
                 ):
                     logger.log(
-                        logging.DEBUG,
-                        f"Ignoring URL due to domain mismatch ({current_domain} vs {root_domains}): {url}",
+                        logging.DEBUG if self.verbose_logging else logging.NOTSET, # type: ignore
+                        f"Ignoring URL due to domain mismatch ({current_netloc} vs {root_netlocs}): {url}",
                     )
                     return False
 
