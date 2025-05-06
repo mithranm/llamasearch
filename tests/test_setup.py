@@ -3,17 +3,19 @@
 import unittest
 import tempfile
 import shutil
-import sys # Import sys
+import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock, call, ANY
 
 # Import the module to be tested (main function)
 from llamasearch import setup as llamasearch_setup_module
-from llamasearch.core.embedder import DEFAULT_MODEL_NAME as DEFAULT_EMBEDDER_MODEL
+from llamasearch.core.embedder import DEFAULT_MODEL_NAME as DEFAULT_EMBEDDER_MODEL, EnhancedEmbedder # Import class
 from llamasearch.core.onnx_model import (
     ONNX_MODEL_REPO_ID,
     ONNX_SUBFOLDER,
     MODEL_ONNX_BASENAME,
+    load_onnx_llm, # Import function used in verify
+    GenericONNXLLM # Import class used in verify
 )
 from llamasearch.exceptions import SetupError, ModelNotFoundError
 
@@ -36,7 +38,7 @@ class TestLlamaSearchSetup(unittest.TestCase):
             "llamasearch.setup.HfFolder.get_token"
         )
         self.mock_hf_token = self.patch_hf_folder_token.start()
-        self.mock_hf_token.return_value = "fake_token" # Default successful token
+        self.mock_hf_token.return_value = "fake_token"
 
         self.patch_snapshot_download = patch("llamasearch.setup.snapshot_download")
         self.mock_snapshot_download = self.patch_snapshot_download.start()
@@ -58,18 +60,21 @@ class TestLlamaSearchSetup(unittest.TestCase):
         )
         self.mock_verify_setup = self.patch_verify_setup.start()
 
+        # Keep EnhancedEmbedder and load_onnx_llm patched *by default*
         self.patch_enhanced_embedder = patch("llamasearch.setup.EnhancedEmbedder")
         self.mock_enhanced_embedder_cls = self.patch_enhanced_embedder.start()
-        self.mock_embedder_instance = MagicMock()
-        self.mock_enhanced_embedder_cls.return_value = self.mock_embedder_instance
-        # Mock the close method for embedder verification cleanup
+        self.mock_embedder_instance = MagicMock(spec=EnhancedEmbedder) # Add spec
+        self.mock_embedder_instance.get_embedding_dimension.return_value = 384
+        self.mock_embedder_instance.model = MagicMock()
         self.mock_embedder_instance.close = MagicMock()
+        self.mock_enhanced_embedder_cls.return_value = self.mock_embedder_instance
 
         self.patch_load_onnx_llm = patch("llamasearch.setup.load_onnx_llm")
         self.mock_load_onnx_llm = self.patch_load_onnx_llm.start()
-        self.mock_llm_instance = MagicMock()
-        # Mock necessary attributes for verify_setup
-        self.mock_llm_instance.model_info.model_id = "mock-model-id"
+        self.mock_llm_instance = MagicMock(spec=GenericONNXLLM)
+        self.mock_llm_instance.model_info = MagicMock() # Mock model_info attribute
+        self.mock_llm_instance.model_info.model_id = "mock-model-id-suffix"
+        self.mock_llm_instance._quant_suffix = "suffix"
         self.mock_llm_instance.unload = MagicMock()
         self.mock_load_onnx_llm.return_value = self.mock_llm_instance
 
@@ -79,18 +84,43 @@ class TestLlamaSearchSetup(unittest.TestCase):
         self.patch_gc_collect = patch("llamasearch.setup.gc.collect")
         self.mock_gc_collect = self.patch_gc_collect.start()
 
+        # List of patchers started in setUp to stop in tearDown
+        self.started_patchers = [
+            self.patch_data_manager, self.patch_hf_folder_token,
+            self.patch_snapshot_download, self.patch_hf_hub_download,
+            self.patch_shutil_rmtree, self.patch_shutil_copyfile,
+            self.patch_verify_setup, self.patch_enhanced_embedder,
+            self.patch_load_onnx_llm, self.patch_sys_exit, self.patch_gc_collect
+        ]
+
     def tearDown(self):
-        shutil.rmtree(self.temp_dir)
-        patch.stopall()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+        # <<< FIX: Stop only the patchers started in setUp >>>
+        for patcher in self.started_patchers:
+            patcher.stop()
+        # patch.stopall() # Avoid using stopall
 
     def _run_main(self, args_list=None):
         if args_list is None:
             args_list = []
-        with patch("sys.argv", ["setup.py"] + args_list):
-            llamasearch_setup_module.main()
+        self.mock_sys_exit.reset_mock()
+        self.mock_verify_setup.reset_mock()
+        self.mock_snapshot_download.reset_mock()
+        self.mock_hf_hub_download.reset_mock()
+        self.mock_shutil_rmtree.reset_mock()
+        self.mock_shutil_copyfile.reset_mock()
+        self.mock_load_onnx_llm.reset_mock()
+        self.mock_enhanced_embedder_cls.reset_mock()
+
+        # Use a separate patch context for sys.argv within the run
+        with patch.object(sys, 'argv', ["setup.py"] + args_list):
+            try:
+                llamasearch_setup_module.main()
+            except SystemExit as e:
+                # Log the caught exit but don't re-raise to allow test assertions
+                print(f"Test caught SystemExit({e.code}).")
 
     def _setup_mock_hf_download_for_onnx(self, suffix=""):
-        """Sets up the mock for hf_hub_download specifically for ONNX files."""
         onnx_model_rel_path = f"{ONNX_SUBFOLDER}/{MODEL_ONNX_BASENAME}{suffix}.onnx"
         mock_model_cache_path = self.mock_cache_dir / onnx_model_rel_path
         mock_model_cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -106,10 +136,8 @@ class TestLlamaSearchSetup(unittest.TestCase):
 
         def hf_download_side_effect(repo_id, filename, cache_dir, **kwargs):
             if filename == onnx_model_rel_path:
-                # Return str representation for copyfile compatibility
                 return str(mock_model_cache_path)
             elif mock_data_cache_path and filename == onnx_data_rel_path:
-                # Return str representation
                 return str(mock_data_cache_path)
             else:
                 from huggingface_hub.errors import EntryNotFoundError
@@ -126,8 +154,19 @@ class TestLlamaSearchSetup(unittest.TestCase):
         self.mock_snapshot_download.assert_any_call(
             repo_id=DEFAULT_EMBEDDER_MODEL, cache_dir=self.models_dir, local_files_only=True, local_dir_use_symlinks=False, ignore_patterns=ANY
         )
+        # <<< FIX: Define expected list locally >>>
+        expected_root_files = [
+            "config.json", "generation_config.json", "special_tokens_map.json",
+            "tokenizer.json", "tokenizer_config.json"
+        ]
         self.mock_snapshot_download.assert_any_call(
-            repo_id=ONNX_MODEL_REPO_ID, cache_dir=self.models_dir, local_dir=self.active_model_dir_expected, local_dir_use_symlinks=False, allow_patterns=None, ignore_patterns=ANY, force_download=False, resume_download=True, repo_type="model"
+            repo_id=ONNX_MODEL_REPO_ID,
+            cache_dir=self.models_dir,
+            local_dir=self.active_model_dir_expected,
+            local_dir_use_symlinks=False,
+            allow_patterns=expected_root_files, # Check specific files
+            ignore_patterns=["*", "*/*"], # Check ignore patterns
+            force_download=False, resume_download=True, repo_type="model"
         )
         self.mock_hf_hub_download.assert_any_call(
             repo_id=ONNX_MODEL_REPO_ID, filename=f"{ONNX_SUBFOLDER}/{MODEL_ONNX_BASENAME}{chosen_suffix}.onnx", cache_dir=self.models_dir, force_download=False, resume_download=True, local_files_only=False, local_dir_use_symlinks=False, repo_type="model"
@@ -169,7 +208,8 @@ class TestLlamaSearchSetup(unittest.TestCase):
         chosen_suffix = ""
         self._setup_mock_hf_download_for_onnx(suffix=chosen_suffix)
         self.active_model_dir_expected.mkdir(parents=True, exist_ok=True)
-        (self.active_onnx_dir_expected / "some_old_file").touch() # Add a file to ensure rmtree is needed
+        self.active_onnx_dir_expected.mkdir(parents=True, exist_ok=True)
+        (self.active_onnx_dir_expected / "some_old_file").touch()
 
         self._run_main(["--force"])
 
@@ -177,25 +217,37 @@ class TestLlamaSearchSetup(unittest.TestCase):
         self.mock_snapshot_download.assert_any_call(
             repo_id=DEFAULT_EMBEDDER_MODEL, cache_dir=self.models_dir, force_download=True, resume_download=False, local_files_only=False, local_dir_use_symlinks=False, ignore_patterns=ANY
         )
+        expected_root_files = [
+            "config.json", "generation_config.json", "special_tokens_map.json",
+            "tokenizer.json", "tokenizer_config.json"
+        ]
+        self.mock_snapshot_download.assert_any_call(
+            repo_id=ONNX_MODEL_REPO_ID,
+            cache_dir=self.models_dir,
+            local_dir=self.active_model_dir_expected,
+            local_dir_use_symlinks=False,
+            allow_patterns=expected_root_files,
+            ignore_patterns=["*", "*/*"],
+            force_download=True,
+            resume_download=False,
+            repo_type="model"
+        )
         self.mock_hf_hub_download.assert_any_call(
             repo_id=ONNX_MODEL_REPO_ID, filename=f"{ONNX_SUBFOLDER}/{MODEL_ONNX_BASENAME}{chosen_suffix}.onnx", cache_dir=self.models_dir, force_download=True, resume_download=False, local_files_only=False, local_dir_use_symlinks=False, repo_type="model"
         )
         self.mock_verify_setup.assert_called_once_with(chosen_suffix)
         self.mock_sys_exit.assert_called_once_with(0)
 
-    # <<< New Test: Force with shutil.rmtree error >>>
     def test_main_force_rmtree_error(self):
         chosen_suffix = ""
         self._setup_mock_hf_download_for_onnx(suffix=chosen_suffix)
         self.active_model_dir_expected.mkdir(parents=True, exist_ok=True)
         self.mock_shutil_rmtree.side_effect = OSError("Permission denied")
 
-        with self.assertRaises(SystemExit) as cm:
-             self._run_main(["--force"])
-
-        self.assertEqual(cm.exception.code, 1)
+        self._run_main(["--force"])
+        self.mock_sys_exit.assert_called_once_with(1) # <<< FIX >>>
         self.mock_shutil_rmtree.assert_called_once_with(self.active_model_dir_expected)
-        self.mock_verify_setup.assert_not_called() # Should exit before verification
+        self.mock_verify_setup.assert_not_called()
 
     def test_main_embedder_download_failure(self):
         self.mock_snapshot_download.side_effect = [
@@ -225,21 +277,17 @@ class TestLlamaSearchSetup(unittest.TestCase):
         self._run_main(["--int8"])
         self.mock_sys_exit.assert_called_once_with(1)
 
-    # <<< New Test: ONNX copyfile fails >>>
     def test_main_onnx_copyfile_failure(self):
         chosen_suffix = "_int8"
         self._setup_mock_hf_download_for_onnx(suffix=chosen_suffix)
         self.mock_shutil_copyfile.side_effect = IOError("Disk full")
 
-        with self.assertRaises(SystemExit) as cm:
-            self._run_main(["--int8"])
-
-        self.assertEqual(cm.exception.code, 1)
-        # Check that copy was attempted
+        self._run_main(["--int8"])
+        self.mock_sys_exit.assert_called_once_with(1) # <<< FIX >>>
         expected_onnx_src = str(self.mock_cache_dir / ONNX_SUBFOLDER / f"{MODEL_ONNX_BASENAME}{chosen_suffix}.onnx")
         expected_onnx_dst = self.active_onnx_dir_expected / f"{MODEL_ONNX_BASENAME}{chosen_suffix}.onnx"
         self.mock_shutil_copyfile.assert_called_once_with(expected_onnx_src, expected_onnx_dst)
-        self.mock_verify_setup.assert_not_called() # Should exit before verification
+        self.mock_verify_setup.assert_not_called()
 
     def test_main_onnx_llm_fp32_data_file_missing(self):
         """Test failure when fp32 is chosen but .onnx_data is missing from repo."""
@@ -268,39 +316,55 @@ class TestLlamaSearchSetup(unittest.TestCase):
         self.mock_verify_setup.assert_called_once_with(chosen_suffix)
         self.mock_sys_exit.assert_called_once_with(1)
 
-    # <<< New Test: Verification fails with ModelNotFoundError (Embedder) >>>
-    @patch("llamasearch.setup.EnhancedEmbedder", side_effect=ModelNotFoundError("Embedder missing"))
-    def test_main_verify_embedder_missing(self, mock_embedder_error):
+    # <<< FIX: Use 'with patch(...)' for local patch scope >>>
+    def test_main_verify_embedder_missing(self):
+        """Test setup exit when verify_setup fails on embedder."""
         chosen_suffix = ""
         self._setup_mock_hf_download_for_onnx(suffix=chosen_suffix)
-        # Make verify_setup call the *actual* function now, but patch its internals
-        self.patch_verify_setup.stop() # Stop patching verify_setup itself
-        self.patch_load_onnx_llm.start() # Keep LLM patched
+        # Stop the class-level patch for verify_setup for this test
+        self.patch_verify_setup.stop()
 
-        with self.assertRaises(SystemExit) as cm:
-             self._run_main()
+        with patch("llamasearch.setup.EnhancedEmbedder", side_effect=ModelNotFoundError("Embedder missing")) as mock_embedder_error, \
+             patch("llamasearch.setup.load_onnx_llm") as mock_llm_loader: # Keep LLM loader patched
 
-        self.assertEqual(cm.exception.code, 1)
-        self.mock_load_onnx_llm.assert_not_called() # Should fail before LLM verification
-        mock_embedder_error.assert_called_once()
+            self._run_main() # Run main, expect it to call verify_setup which raises SetupError
 
-    # <<< New Test: Verification fails with ModelNotFoundError (LLM) >>>
-    @patch("llamasearch.setup.load_onnx_llm", side_effect=ModelNotFoundError("LLM missing"))
-    def test_main_verify_llm_missing(self, mock_llm_error):
+            # Assert that the main loop caught SetupError and exited
+            self.mock_sys_exit.assert_called_once_with(1)
+            mock_embedder_error.assert_called_once() # Ensure the patched class was called
+            mock_llm_loader.assert_not_called() # Should fail before LLM verification
+
+        # Restart the patch for other tests (optional, but good practice if not using test class per patch)
+        self.patch_verify_setup.start()
+
+    # <<< FIX: Use 'with patch(...)' and configure embedder mock correctly >>>
+    def test_main_verify_llm_missing(self):
+        """Test setup exit when verify_setup fails on LLM."""
         chosen_suffix = ""
         self._setup_mock_hf_download_for_onnx(suffix=chosen_suffix)
-        # Make verify_setup call the *actual* function now
-        self.patch_verify_setup.stop() # Stop patching verify_setup itself
-        self.patch_enhanced_embedder.start() # Keep embedder patched
+        # Stop the class-level patch for verify_setup for this test
+        self.patch_verify_setup.stop()
 
-        with self.assertRaises(SystemExit) as cm:
-            self._run_main()
+        with patch("llamasearch.setup.EnhancedEmbedder") as mock_embedder_cls, \
+             patch("llamasearch.setup.load_onnx_llm", side_effect=ModelNotFoundError("LLM missing")) as mock_llm_error:
 
-        self.assertEqual(cm.exception.code, 1)
-        self.mock_enhanced_embedder_cls.assert_called_once() # Embedder check should pass
-        mock_llm_error.assert_called_once()
+            # Configure the embedder mock *inside the context* to pass verification
+            mock_embedder_inst = MagicMock(spec=EnhancedEmbedder)
+            mock_embedder_inst.get_embedding_dimension.return_value = 384
+            mock_embedder_inst.model = MagicMock()
+            mock_embedder_inst.close = MagicMock()
+            mock_embedder_cls.return_value = mock_embedder_inst
 
-    # <<< New Test: HF Token check fails >>>
+            self._run_main() # Run main
+
+            # Assert that the main loop caught SetupError and exited
+            self.mock_sys_exit.assert_called_once_with(1)
+            mock_embedder_cls.assert_called_once() # Embedder check should pass
+            mock_llm_error.assert_called_once_with(onnx_quantization='auto') # LLM load (inside verify) should fail
+
+        # Restart the patch for other tests
+        self.patch_verify_setup.start()
+
     def test_main_hf_token_check_fails(self):
         """Test warning when HF token check fails."""
         self.mock_hf_token.side_effect = Exception("Cannot access token")
@@ -311,9 +375,8 @@ class TestLlamaSearchSetup(unittest.TestCase):
             self._run_main()
 
         self.assertTrue(any("Could not check HF token" in log for log in cm.output))
-        self.mock_sys_exit.assert_called_once_with(0) # Should still succeed
+        self.mock_sys_exit.assert_called_once_with(0)
 
-    # <<< New Test: HF Token check returns None >>>
     def test_main_hf_token_is_none(self):
         """Test warning when HF token is not set."""
         self.mock_hf_token.return_value = None
@@ -323,8 +386,8 @@ class TestLlamaSearchSetup(unittest.TestCase):
         with self.assertLogs(logger='llamasearch.setup', level='WARNING') as cm:
             self._run_main()
 
-        self.assertTrue(any("HF token not found. Downloads might fail." in log for log in cm.output))
-        self.mock_sys_exit.assert_called_once_with(0) # Should still succeed
+        self.assertTrue(any("HF token not found. Downloads might fail for gated models" in log for log in cm.output))
+        self.mock_sys_exit.assert_called_once_with(0)
 
     # Test the download_file_with_retry helper
     @patch("llamasearch.setup.hf_hub_download")
@@ -332,7 +395,7 @@ class TestLlamaSearchSetup(unittest.TestCase):
     def test_download_file_with_retry_success_first_attempt(self, mock_sleep, mock_hf_dl_local):
         mock_file_path = self.temp_dir / "testfile.txt"
         mock_hf_dl_local.return_value = str(mock_file_path)
-        mock_file_path.touch() # Simulate file exists after download
+        mock_file_path.touch()
         result = llamasearch_setup_module.download_file_with_retry(
             "repo", "testfile.txt", self.temp_dir, False
         )
@@ -368,22 +431,19 @@ class TestLlamaSearchSetup(unittest.TestCase):
         self.assertEqual(mock_hf_dl_local.call_count, 2)
         self.assertEqual(mock_sleep.call_count, 1)
 
-    # <<< New Test: download retry FileNotFoundError >>>
     @patch("llamasearch.setup.hf_hub_download")
     @patch("llamasearch.setup.time.sleep")
     def test_download_file_with_retry_filenotfound_error(self, mock_sleep, mock_hf_dl_local):
         """Test retry logic when hf_hub_download returns path but file doesn't exist."""
         mock_file_path_str = str(self.temp_dir / "testfile.txt")
-        # Simulate download success but file missing
         mock_hf_dl_local.side_effect = [mock_file_path_str, mock_file_path_str]
-        # Don't touch the file
 
         with self.assertRaisesRegex(SetupError, "Failed DL after retries: testfile.txt"):
              with self.assertLogs(logger='llamasearch.setup', level='WARNING') as cm:
                   llamasearch_setup_module.download_file_with_retry(
                        "repo", "testfile.txt", self.temp_dir, False, max_retries=1, delay=1
                   )
-                  self.assertTrue(any("invalid after DL" in log for log in cm.output))
+                  self.assertTrue(any(f"File testfile.txt invalid or DNE after DL attempt 1" in log for log in cm.output))
 
         self.assertEqual(mock_hf_dl_local.call_count, 2)
         self.assertEqual(mock_sleep.call_count, 1)

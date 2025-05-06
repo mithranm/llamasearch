@@ -43,11 +43,12 @@ class CPUInfo(BaseModel):
 class MemoryInfo(BaseModel):
     """System memory (RAM) information."""
 
-    total_gb: float = Field(..., gt=0, description="Total physical RAM in GiB.")
+    # <<< FIX: Change gt=0 to ge=0 to allow 0 on failure >>>
+    total_gb: float = Field(..., ge=0, description="Total physical RAM in GiB.")
     available_gb: float = Field(
         ..., ge=0, description="Available RAM (usable by new processes) in GiB."
     )
-    used_gb: float = Field(..., description="Used RAM in GiB.")
+    used_gb: float = Field(..., ge=0, description="Used RAM in GiB.") # Also ge=0
     percent_used: float = Field(
         ..., ge=0, le=100, description="Percentage of RAM currently used."
     )
@@ -141,7 +142,7 @@ def detect_cpu_capabilities() -> CPUInfo:
             if not model_name:
                 try:
                     # Use creationflags only on Windows
-                    cflags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW
+                    cflags = getattr(subprocess, 'DETACHED_PROCESS', 0x00000008) | getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000)
                     result = subprocess.run(
                         "wmic cpu get name", shell=True, capture_output=True,
                         text=True, check=False, creationflags=cflags,
