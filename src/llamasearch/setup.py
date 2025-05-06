@@ -1,9 +1,12 @@
+# src/llamasearch/setup.py
+
+#!/usr/bin/env python3
 """
 setup.py - Downloads and verifies LlamaSearch models (CPU-Only).
 
 Configured for a generic ONNX Causal LM (Llama 3.2 1B) and embedder.
-Downloads necessary files based on user-specified quantization flag
-and assembles the active model directory.
+Requires user to specify a quantization flag. Downloads necessary files
+based on the chosen flag and assembles the active model directory.
 """
 
 import argparse
@@ -11,7 +14,7 @@ import shutil
 import sys
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import gc
 
 from huggingface_hub import (
@@ -21,7 +24,7 @@ from huggingface_hub import (
 from huggingface_hub.errors import (
     EntryNotFoundError,
     LocalEntryNotFoundError,
-    HfHubHTTPError, # <<< Added specific HTTP error >>>
+    HfHubHTTPError,
 )
 from huggingface_hub.utils._hf_folder import HfFolder
 
@@ -32,16 +35,23 @@ from llamasearch.core.onnx_model import (
     ONNX_SUBFOLDER,
     ONNX_MODEL_REPO_ID,
     load_onnx_llm,
+    LLM, # Import LLM protocol
+    GenericONNXLLM # Import concrete class for verify_setup isinstance check
 )
-from llamasearch.core.onnx_model import LLM  # Import LLM protocol
 from llamasearch.data_manager import data_manager
 from llamasearch.exceptions import ModelNotFoundError, SetupError
 from llamasearch.utils import setup_logging
 
 logger = setup_logging("llamasearch.setup")
 
+# --- Define allowed root files explicitly ---
+# These are the files expected/needed at the root of the active_model directory
+root_files_allow = [
+    "config.json", "generation_config.json", "special_tokens_map.json",
+    "tokenizer.json", "tokenizer_config.json"
+]
 
-# Helper: Download with Retries (No change needed)
+# Helper: Download with Retries
 def download_file_with_retry(
     repo_id: str,
     filename: str,
@@ -51,10 +61,10 @@ def download_file_with_retry(
     delay: int = 5,
     repo_type: Optional[str] = "model",
     **kwargs,
-) -> str: # <<< Return type hint added >>>
+) -> str:
     """Attempts to download a file with retries on failure."""
     assert isinstance(cache_dir, Path)
-    last_error : Optional[Exception] = None # Track last error
+    last_error : Optional[Exception] = None
     for attempt in range(max_retries + 1):
         try:
             logger.debug(
@@ -71,64 +81,59 @@ def download_file_with_retry(
                 repo_type=repo_type,
                 **kwargs,
             )
-            # Check if path is None or empty string, which can happen
             if not file_path_str:
                  raise FileNotFoundError(f"hf_hub_download returned invalid path: {file_path_str}")
 
             fpath = Path(file_path_str)
-            # Check if file actually exists after download call returns
-            if not fpath.is_file(): # Check is_file() for robustness
+            if not fpath.is_file():
                 raise FileNotFoundError(
                     f"File {filename} invalid or DNE after DL attempt {attempt + 1} at path {fpath}."
                 )
             logger.debug(f"OK DL {filename} -> {file_path_str}")
-            return file_path_str # Return the string path
+            return file_path_str
         except EntryNotFoundError as e:
             logger.debug(
                 f"File {filename} not in repo {repo_id} (attempt {attempt + 1})."
             )
-            last_error = e # Store last error
+            last_error = e
             raise # Reraise immediately, no retry for 404
-        except (ConnectionError, TimeoutError, HfHubHTTPError, FileNotFoundError) as e: # Catch more specific errors
+        except (ConnectionError, TimeoutError, HfHubHTTPError, FileNotFoundError) as e:
             logger.warning(f"DL attempt {attempt + 1} for {filename} failed: {e}")
-            last_error = e # Store last error
+            last_error = e
             if attempt < max_retries:
                 logger.info(f"Retrying download of {filename} in {delay} seconds...")
                 time.sleep(delay)
             else:
-                 # Raise SetupError wrapping the last encountered error
                 raise SetupError(f"Failed DL after retries: {filename}") from last_error
         except Exception as e:
             logger.error(
                 f"Unexpected DL error {filename} attempt {attempt + 1}: {e}",
                 exc_info=True,
             )
-            last_error = e # Store last error
+            last_error = e
             raise SetupError(f"Failed DL unexpected: {filename}") from last_error
-    # This should not be reachable if max_retries >= 0
     raise SetupError(f"Download logic error for {filename}.")
 
 
-# --- Embedder Check/Download (No functional change needed) ---
+# --- Embedder Check/Download ---
 def check_or_download_embedder(models_dir: Path, force: bool = False) -> None:
     model_name = DEFAULT_EMBEDDER_MODEL
     logger.info(f"Checking/Downloading Embedder: {model_name}")
     ignore_patterns: List[str] = ["*.onnx", "onnx/*", "*.gguf", "gguf/*", "openvino/*"]
     logger.info(f"Ignoring patterns: {ignore_patterns}")
     try:
-        # Attempt local check first only if not forcing
         if not force:
             try:
                 logger.debug(f"Checking locally for {model_name} in {models_dir}")
                 snapshot_download(
                     repo_id=model_name,
                     cache_dir=models_dir,
-                    local_files_only=True, # <<< Check locally >>>
+                    local_files_only=True,
                     local_dir_use_symlinks=False,
                     ignore_patterns=ignore_patterns,
                 )
                 logger.info(f"Embedder '{model_name}' (PyTorch) found locally.")
-                return # Found locally, nothing more to do
+                return
             except (EntryNotFoundError, LocalEntryNotFoundError, FileNotFoundError):
                 logger.info(
                     f"Embedder '{model_name}' (PyTorch) not found/incomplete locally. Proceeding to download/verify..."
@@ -136,24 +141,22 @@ def check_or_download_embedder(models_dir: Path, force: bool = False) -> None:
             except Exception as local_check_err:
                  logger.warning(f"Local check for embedder failed ({local_check_err}), proceeding to download/verify...")
 
-        # Download or verify remote if local check failed or force=True
         logger.info(f"Downloading/Verifying embedder {model_name} from Hub...")
         snapshot_download(
             repo_id=model_name,
             cache_dir=models_dir,
             force_download=force,
             resume_download=not force,
-            local_files_only=False, # <<< Ensure fetching from remote >>>
+            local_files_only=False,
             local_dir_use_symlinks=False,
             ignore_patterns=ignore_patterns,
         )
         logger.info(f"Embedder '{model_name}' (PyTorch) cache verified/downloaded.")
     except Exception as e:
-        # Catch any exception during download/verification
         raise SetupError(f"Failed get/verify embedder {model_name}") from e
 
 
-# --- Generic ONNX LLM Check/Download (Modified for explicit suffix) ---
+# --- Generic ONNX LLM Check/Download ---
 def check_or_download_onnx_llm(
     models_dir: Path, quant_suffix: str, force: bool = False
 ) -> None:
@@ -166,25 +169,21 @@ def check_or_download_onnx_llm(
     active_onnx_dir = active_model_dir / ONNX_SUBFOLDER
     needs_clean = force
 
-    # Determine if cleaning is needed even if force=False
     if not needs_clean and active_model_dir.exists():
-        # Check if the specific ONNX file for the target suffix exists
         target_onnx_file = active_onnx_dir / f"{MODEL_ONNX_BASENAME}{quant_suffix}.onnx"
-        if not target_onnx_file.is_file(): # Use is_file() for robustness
+        if not target_onnx_file.is_file():
             needs_clean = True
             logger.warning(
                 f"Target ONNX file '{target_onnx_file.name}' missing in {active_onnx_dir}. Forcing clean assembly."
             )
-        # Also check for data file if target is fp32
         elif quant_suffix == "":
             target_data_file = active_onnx_dir / f"{MODEL_ONNX_BASENAME}.onnx_data"
-            if not target_data_file.is_file(): # Use is_file()
+            if not target_data_file.is_file():
                 needs_clean = True
                 logger.warning(
                     f"Target ONNX data file '{target_data_file.name}' missing for fp32 in {active_onnx_dir}. Forcing clean assembly."
                 )
 
-    # Clean if forced or if target files are missing
     if needs_clean and active_model_dir.exists():
         logger.info(f"Cleaning existing active model directory: {active_model_dir}")
         try:
@@ -192,7 +191,6 @@ def check_or_download_onnx_llm(
         except OSError as e:
             raise SetupError(f"Failed clear active dir {active_model_dir}: {e}") from e
 
-    # Ensure directories exist before proceeding
     active_model_dir.mkdir(parents=True, exist_ok=True)
     active_onnx_dir.mkdir(parents=True, exist_ok=True)
 
@@ -201,20 +199,14 @@ def check_or_download_onnx_llm(
 
     # 1. Download all root-level config/tokenizer files etc. into active_model_dir
     logger.info(f"Downloading/Verifying root files from {repo_id} into {active_model_dir}...")
-    # Define files expected at the root level (adjust if repo structure changes)
-    root_files_allow = [
-        "config.json", "generation_config.json", "special_tokens_map.json",
-        "tokenizer.json", "tokenizer_config.json"
-    ]
-    # Download only the allowed root files directly into the target active_model_dir
     try:
         snapshot_download(
             repo_id=repo_id,
-            cache_dir=cache_location, # Still use main cache for underlying storage
-            local_dir=active_model_dir,  # <<< Download directly into active dir >>>
+            cache_dir=cache_location,
+            local_dir=active_model_dir,
             local_dir_use_symlinks=False,
-            allow_patterns=root_files_allow, # <<< Only download these specific files >>>
-            ignore_patterns=["*", "*/*"], # Ignore everything else initially
+            allow_patterns=root_files_allow, # Use defined list
+            ignore_patterns=["*", "*/*"],
             force_download=force,
             resume_download=not force,
             repo_type="model",
@@ -230,21 +222,20 @@ def check_or_download_onnx_llm(
         source_path_str = download_file_with_retry(
             repo_id=repo_id,
             filename=onnx_model_rel_path,
-            cache_dir=cache_location,  # Download to main cache first
+            cache_dir=cache_location,
             force=force,
             repo_type="model",
         )
-        # source_path_str is guaranteed to be non-None and exist if no exception
         target_onnx_path = active_onnx_dir / Path(onnx_model_rel_path).name
         logger.debug(f"Copying {source_path_str} to {target_onnx_path}")
-        shutil.copyfile(source_path_str, target_onnx_path) # Copy from cache to active
+        shutil.copyfile(source_path_str, target_onnx_path)
         logger.debug(f"Copied {onnx_model_rel_path} to {target_onnx_path}")
     except EntryNotFoundError:
         logger.error(
             f"Required ONNX file '{onnx_model_rel_path}' not found in repo {repo_id}."
         )
         raise SetupError(f"Required ONNX file missing: {onnx_model_rel_path}")
-    except (SetupError, IOError, OSError) as e: # Catch copy errors too
+    except (SetupError, IOError, OSError) as e:
         raise SetupError(f"Error getting/copying ONNX file {onnx_model_rel_path}: {e}") from e
     except Exception as e:
         raise SetupError(f"Unexpected error processing ONNX file {onnx_model_rel_path}: {e}") from e
@@ -258,25 +249,23 @@ def check_or_download_onnx_llm(
             source_path_str = download_file_with_retry(
                 repo_id=repo_id,
                 filename=onnx_data_rel_path,
-                cache_dir=cache_location,  # Download to main cache
+                cache_dir=cache_location,
                 force=force,
                 repo_type="model",
             )
-            # source_path_str is guaranteed to be non-None and exist if no exception
             target_data_path = active_onnx_dir / Path(onnx_data_rel_path).name
             logger.debug(f"Copying {source_path_str} to {target_data_path}")
-            shutil.copyfile(source_path_str, target_data_path) # Copy from cache to active
+            shutil.copyfile(source_path_str, target_data_path)
             logger.debug(f"Copied {onnx_data_rel_path} to {target_data_path}")
             logger.info(f"Found and processed ONNX data file: {onnx_data_rel_path}")
         except EntryNotFoundError:
-            # This IS an error for fp32
             logger.error(
                 f"Required ONNX data file '{onnx_data_rel_path}' not found for fp32 model in repo {repo_id}."
             )
             raise SetupError(
                 f"Required ONNX data file missing for fp32: {onnx_data_rel_path}"
             )
-        except (SetupError, IOError, OSError) as e: # Catch copy errors too
+        except (SetupError, IOError, OSError) as e:
             raise SetupError(
                 f"Error getting/copying ONNX data file {onnx_data_rel_path}: {e}"
             ) from e
@@ -290,28 +279,25 @@ def check_or_download_onnx_llm(
     logger.info(f"Assembly of {active_model_dir} complete for {quant_name}.")
 
 
-# --- Verification Function (Modified for explicit suffix) ---
+# --- Verification Function ---
 def verify_setup(quant_suffix_to_verify: str):
     """Attempts to load models based on the *installed* suffix in active_model."""
     logger.info("--- Verifying Model Setup (CPU-Only) ---")
     all_verified = True
     embedder = None
-    llm = None # Initialize llm to None
+    llm = None
 
-    # Verify Embedder (No change needed)
+    # Verify Embedder
     logger.info(f"Verifying Embedder '{DEFAULT_EMBEDDER_MODEL}' (CPU)...")
     try:
         embedder = EnhancedEmbedder()
         dim = embedder.get_embedding_dimension()
-        if dim and dim > 0 and embedder.model is not None:
-            logger.info(f"Embedder OK (CPU, Dim: {dim}).")
-        else:
-            # Raise error instead of just logging
-            raise SetupError(f"Embedder invalid state (Model:{embedder.model is not None}, Dim:{dim}). Check logs.")
+        if not (dim and isinstance(dim, int) and dim > 0 and embedder.model is not None):
+             raise SetupError(f"Embedder invalid state (Model:{embedder.model is not None}, Dim:{dim}). Check logs.")
+        logger.info(f"Embedder OK (CPU, Dim: {dim}).")
     except ModelNotFoundError as e:
         logger.error(f"FAIL: Embedder model not found. {e}")
         all_verified = False
-        # Reraise as SetupError for main loop to catch
         raise SetupError(f"Embedder model files not found: {e}") from e
     except Exception as e:
         logger.error(f"FAIL: Error loading CPU embedder: {e}", exc_info=True)
@@ -323,25 +309,20 @@ def verify_setup(quant_suffix_to_verify: str):
                 embedder.close()
             except Exception as close_e:
                 logger.warning(f"Error closing embedder during verification: {close_e}")
-            del embedder # Aid garbage collection
+            del embedder
             gc.collect()
 
-    # Verify Generic ONNX LLM (CPU) - Loads whatever is in active_model
+    # Verify Generic ONNX LLM (CPU)
     logger.info("Verifying Generic ONNX LLM (CPU in active_model)...")
     try:
-        # load_onnx_llm now detects the suffix inside active_model
-        # Pass "auto" so it performs detection based on the assembled active_model dir
+        # <<< Pass "auto" to force detection based on active_model >>>
         llm = load_onnx_llm(onnx_quantization="auto")
-        if llm and isinstance(llm, LLM):
-            # Retrieve suffix actually loaded by load_onnx_llm
-            # Accessing protected member _quant_suffix is necessary here for verification logic
+        if llm and isinstance(llm, GenericONNXLLM): # Check specific type
+            # Accessing protected member _quant_suffix is necessary here for verification
             loaded_suffix = getattr(llm, "_quant_suffix", "unknown")
-
             logger.info(
                 f"ONNX LLM OK ({llm.model_info.model_id} - suffix '{loaded_suffix}' loaded from active_model on CPU)."
             )
-            # Check if loaded suffix matches the one setup *intended* to install
-            # This ensures the correct files were assembled
             if loaded_suffix != quant_suffix_to_verify:
                 logger.error(
                     f"FAIL: Verification loaded suffix '{loaded_suffix}' but setup intended to install '{quant_suffix_to_verify}'."
@@ -349,12 +330,10 @@ def verify_setup(quant_suffix_to_verify: str):
                 all_verified = False
                 raise SetupError("Loaded ONNX model quantization does not match setup intent.")
         else:
-             # Should not happen if load_onnx_llm doesn't raise error, but handle defensively
             raise SetupError("ONNX LLM loader returned None or unexpected type.")
     except ModelNotFoundError as e:
         logger.error(f"FAIL: ONNX LLM files missing or incomplete in active_model. {e}")
         all_verified = False
-        # Reraise as SetupError
         raise SetupError(f"ONNX LLM model files not found in active_model: {e}") from e
     except Exception as e:
         logger.error(
@@ -368,18 +347,16 @@ def verify_setup(quant_suffix_to_verify: str):
                 llm.unload()
             except Exception as unload_e:
                 logger.warning(f"Error unloading LLM during verification: {unload_e}")
-            del llm # Aid garbage collection
+            del llm
             gc.collect()
 
     if not all_verified:
-        # This path might not be reached if exceptions are raised earlier,
-        # but kept for logical completeness.
         raise SetupError("One or more models failed CPU verification.")
     else:
         logger.info("--- Model Verification Successful (CPU-Only) ---")
 
 
-# --- Main Setup Function (Modified argparse) ---
+# --- Main Setup Function ---
 def main():
     parser = argparse.ArgumentParser(
         description="Download/verify models for LlamaSearch (CPU-Only)."
@@ -388,13 +365,14 @@ def main():
         "--force", action="store_true", help="Force redownload/reassembly"
     )
     # Use mutually exclusive group for quantization flags
+    # <<< Make the group implicitly required by checking its value later >>>
     quant_group = parser.add_mutually_exclusive_group()
     quant_group.add_argument(
         "--fp32",
         action="store_const",
         dest="quant_suffix",
         const="",
-        help="Download FP32 ONNX model (default).",
+        help="Download FP32 ONNX model.",
     )
     quant_group.add_argument(
         "--fp16",
@@ -446,15 +424,24 @@ def main():
         help="Download BNB 4-bit ONNX model.",
     )
 
-    parser.set_defaults(quant_suffix="")  # Default to FP32 (empty suffix)
+    # <<< Remove the default setting >>>
+    # parser.set_defaults(quant_suffix="")
 
     args = parser.parse_args()
+
+    # <<< Add check: Ensure a quantization flag was provided >>>
+    if args.quant_suffix is None:
+        parser.error(
+            "A quantization flag (e.g., --fp16, --int8, --q4, --fp32) is required."
+        )
+        # parser.error automatically calls sys.exit(2)
+
     logger.info("--- Starting LlamaSearch Model Setup (CPU-Only) ---")
     if args.force:
         logger.info("Force mode enabled: Active directory will be recreated.")
 
     # Determine the chosen quantization suffix
-    chosen_suffix = args.quant_suffix
+    chosen_suffix = args.quant_suffix # Will not be None here
     chosen_quant_name = chosen_suffix.lstrip("_") if chosen_suffix else "fp32"
     logger.info(
         f"User selected quantization: {chosen_quant_name} (suffix: '{chosen_suffix}')"
@@ -469,7 +456,6 @@ def main():
         models_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Using models directory: {models_dir}")
 
-        # Check HF Token (optional, provide warning)
         try:
             if HfFolder.get_token():
                 logger.info("HF token found.")
@@ -480,22 +466,21 @@ def main():
 
         # Download/Verify components
         check_or_download_embedder(models_dir, args.force)
-        # Pass the chosen suffix directly for download/assembly
         check_or_download_onnx_llm(models_dir, chosen_suffix, args.force)
 
-        # Final Verification (CPU) - verify the suffix that was intended to be installed
+        # Final Verification (CPU)
         verify_setup(chosen_suffix)
         logger.info(
             f"--- LlamaSearch Model Setup Completed Successfully (Quant: {chosen_quant_name}) ---"
         )
-        sys.exit(0) # Success exit code
+        sys.exit(0)
 
     except SetupError as e:
         logger.error(f"Setup failed: {e}")
-        sys.exit(1) # Failure exit code
+        sys.exit(1)
     except Exception as e:
         logger.error(f"Unexpected error during setup: {e}", exc_info=True)
-        sys.exit(1) # Failure exit code
+        sys.exit(1)
 
 
 if __name__ == "__main__":
