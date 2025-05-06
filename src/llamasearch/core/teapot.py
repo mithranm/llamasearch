@@ -1,8 +1,6 @@
 # src/llamasearch/core/teapot.py
 
 import gc
-
-# <<< Removed unused logging import >>>
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, List
 
@@ -13,9 +11,7 @@ from transformers import AutoTokenizer, PreTrainedTokenizer
 
 from llamasearch.data_manager import data_manager
 from llamasearch.exceptions import ModelNotFoundError, SetupError
-
-# <<< Removed unused detect_hardware_info import >>>
-from llamasearch.hardware import HardwareInfo  # Keep HardwareInfo for type hints
+from llamasearch.hardware import detect_hardware_info # Import detect_hardware_info for selection logic
 from llamasearch.protocols import LLM, ModelInfo
 from llamasearch.utils import setup_logging
 
@@ -25,8 +21,6 @@ logger = setup_logging(__name__, use_qt_handler=True)
 TEAPOT_REPO_ID = "teapotai/teapotllm"
 ONNX_SUBFOLDER = "onnx"
 REQUIRED_ONNX_BASENAMES = ["encoder_model", "decoder_model", "decoder_with_past_model"]
-# Order matters for auto-detection fallback (prefer less quantized if available)
-# "" (fp32) is highest priority, "_bnb4" is lowest.
 QUANTIZATION_SUFFIXES_PRIORITY = [
     "",
     "_fp16",
@@ -36,7 +30,7 @@ QUANTIZATION_SUFFIXES_PRIORITY = [
     "_uint8",
     "_bnb4",
 ]
-
+TEAPOT_CONTEXT_LENGTH = 1024 # Define the expected context length
 TEAPOT_BASE_FILES = [
     "config.json",
     "tokenizer.json",
@@ -77,59 +71,39 @@ class TeapotONNXModelInfo(ModelInfo):
 
 # --- Helper functions ---
 def _determine_onnx_provider(
+    # Parameters kept for potential future extension, but ignored internally
     preferred_provider: Optional[str] = None,
     preferred_options: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, Optional[Dict[str, Any]]]:
-    """Determines the best available ONNX Runtime provider."""
-    provider = preferred_provider or "CPUExecutionProvider"
-    options = preferred_options if preferred_options is not None else {}
+    """Determines the ONNX Runtime provider. Always returns CPU for this setup."""
+    provider = "CPUExecutionProvider"
+    options = {} # No specific options needed for CPU generally
     available_providers = onnxruntime.get_available_providers()
     logger.debug(f"Available ONNX Runtime providers: {available_providers}")
-    if preferred_provider:
-        if preferred_provider not in available_providers:
-            logger.warning(
-                f"Preferred provider '{preferred_provider}' not available. Falling back to CPU."
-            )
-            provider, options = "CPUExecutionProvider", {}
-        else:
-            provider = preferred_provider
-            logger.info(f"Using preferred ONNX provider: {provider}")
-    else:
-        # Order of preference: CUDA > ROCm > CoreML > CPU
-        if "CUDAExecutionProvider" in available_providers:
-            provider = "CUDAExecutionProvider"
-            options["device_id"] = options.get("device_id", 0)
-        elif "ROCMExecutionProvider" in available_providers:
-            provider = "ROCMExecutionProvider"
-            options["device_id"] = options.get("device_id", 0)
-        elif "CoreMLExecutionProvider" in available_providers:
-            # Prefer CoreML over CPU on macOS if available
-            provider = "CoreMLExecutionProvider"
-            logger.info("CoreML provider detected and selected.")
-            # Remove potentially incompatible CPU options if CoreML is chosen
-            options = {}
-        else:
-            provider = "CPUExecutionProvider"
-        logger.info(f"Auto-selecting available ONNX provider: {provider}")
+    if "CPUExecutionProvider" not in available_providers:
+         # This should practically never happen with standard onnxruntime install
+         logger.critical("FATAL: CPUExecutionProvider not found in ONNX Runtime!")
+         raise RuntimeError("ONNX Runtime CPU provider is missing.")
 
-    # Log final decision
-    logger.info(
-        f"Final ONNX provider choice: {provider} with options: {options or '{}'}"
-    )
+    logger.info(f"Forcing ONNX provider to CPU: {provider}")
     return provider, options if options else None
 
 
 def _select_onnx_quantization(
-    hw: HardwareInfo,  # HardwareInfo used for type hint, but detect_hardware_info import removed
-    onnx_provider: str,
-    onnx_provider_opts: Optional[Dict[str, Any]],
+    # hw: HardwareInfo, # hw parameter no longer used directly, get info inside
+    # onnx_provider: str, # Always CPU
+    # onnx_provider_opts: Optional[Dict[str, Any]], # Always None for CPU
     preference: str,
 ) -> str:
-    """Selects the most appropriate ONNX quantization suffix."""
+    """
+    Selects the most appropriate ONNX quantization suffix for CPU,
+    considering RAM requirements including embedder overhead.
+    """
     preference_map = {
         p: f"_{p}" for p in ["fp16", "int8", "q4", "q4f16", "bnb4", "uint8"]
     }
     preference_map["fp32"] = ""
+
     if preference != "auto":
         if preference in preference_map:
             logger.info(f"Using user-preferred ONNX quantization: {preference}")
@@ -138,67 +112,54 @@ def _select_onnx_quantization(
             logger.warning(
                 f"Invalid quantization preference '{preference}'. Falling back to 'auto'."
             )
-    logger.info("Performing automatic ONNX quantization selection...")
-    req_fp32_gb, req_fp16_gb, req_int8_gb, req_q4_gb = 8.0, 5.0, 3.0, 2.0
+
+    logger.info("Performing automatic ONNX quantization selection for CPU...")
+
+    # --- Increased Memory Requirements (Estimate ~2GB overhead for embedder + OS) ---
+    embedder_overhead_gb = 2.0
+    req_fp32_gb = 8.0 + embedder_overhead_gb # ~10 GB
+    req_fp16_gb = 5.0 + embedder_overhead_gb # ~7 GB
+    req_int8_gb = 3.0 + embedder_overhead_gb # ~5 GB
+    req_q4_gb = 2.0 + embedder_overhead_gb # ~4 GB
+    # ------------------------------------------------------------------------
+
+    hw_info = detect_hardware_info() # Get hardware info here
     # Use TOTAL RAM for selection logic, as available RAM can fluctuate wildly
-    ram_gb, has_avx2 = hw.memory.total_gb, hw.cpu.supports_avx2
+    ram_gb, has_avx2 = hw_info.memory.total_gb, hw_info.cpu.supports_avx2
+    onnx_provider = "CPUExecutionProvider" # Explicitly state CPU for logging clarity
+
     logger.info(
         f"System Info - Total RAM: {ram_gb:.1f} GB, AVX2: {has_avx2}, Provider: {onnx_provider}"
     )
-    is_gpu = (
-        "CUDAExecutionProvider" in onnx_provider
-        or "ROCMExecutionProvider" in onnx_provider
+    logger.info(
+        f"Quantization RAM Thresholds (incl. ~{embedder_overhead_gb:.1f}GB overhead): "
+        f"FP32>={req_fp32_gb:.1f}, FP16>={req_fp16_gb:.1f}, INT8>={req_int8_gb:.1f}, Q4>={req_q4_gb:.1f}"
     )
-    is_coreml = "CoreMLExecutionProvider" in onnx_provider
-    selected_quant = "_bnb4"  # Default lowest
 
-    if is_gpu:
-        # GPU RAM is the primary constraint, but we don't detect it reliably yet.
-        # Fallback to system RAM as a rough proxy.
-        logger.warning(
-            "GPU detected, but GPU RAM check not implemented. Using system RAM as proxy."
-        )
-        if ram_gb >= req_fp16_gb + 5.0:  # Higher buffer for GPU
-            selected_quant = "_fp16"
-        elif ram_gb >= req_int8_gb + 2.0:
-            selected_quant = "_int8"
-        elif ram_gb >= req_q4_gb + 1.0:
-            selected_quant = (
-                "_q4"  # q4 often performs better than bnb4 on GPU if RAM allows
+    selected_quant = "_bnb4"  # Lowest fallback
+
+    # CPU Logic (using TOTAL RAM and higher thresholds)
+    if ram_gb >= req_fp32_gb:
+        selected_quant = ""  # fp32
+    elif ram_gb >= req_fp16_gb:
+        selected_quant = "_fp16"
+    elif ram_gb >= req_int8_gb:
+        selected_quant = "_int8"
+        if not has_avx2:
+            logger.warning(
+                "Selecting INT8 on CPU without detected AVX2 support. Performance might be suboptimal."
             )
-        else:
-            selected_quant = "_bnb4"
-        logger.info(f"GPU Selection (using System RAM proxy): {selected_quant}")
-    elif is_coreml:
-        # CoreML usually handles quantization well, int8 is often a good balance
-        # but let's try q4 first as it's smaller
-        if ram_gb >= req_int8_gb:
-            selected_quant = "_int8"  # Prefer int8 if enough RAM
-        elif ram_gb >= req_q4_gb:
-            selected_quant = "_q4"
-        else:
-            selected_quant = "_bnb4"  # Fallback
-        logger.info(f"CoreML Selection: {selected_quant}")
-    else:  # CPU Logic (using TOTAL RAM)
-        if ram_gb >= req_fp32_gb + 2.0:  # Extra buffer for OS etc.
-            selected_quant = ""  # fp32
-        elif ram_gb >= req_fp16_gb + 1.0:
-            selected_quant = "_fp16"
-        elif ram_gb >= req_int8_gb + 0.5:
-            selected_quant = "_int8"
-            if not has_avx2:
-                logger.warning(
-                    "Selecting INT8 on CPU without detected AVX2 support. Performance might be suboptimal."
-                )
-        elif ram_gb >= req_q4_gb:
-            selected_quant = "_q4"
-        else:
-            selected_quant = "_bnb4"  # Lowest fallback
-        logger.info(f"CPU Selection based on TOTAL RAM/AVX2: {selected_quant}")
+    elif ram_gb >= req_q4_gb:
+        selected_quant = "_q4"
+    else:
+        selected_quant = "_bnb4" # Lowest fallback (might still struggle on very low RAM)
+        if ram_gb < req_q4_gb:
+            logger.warning(f"Total RAM ({ram_gb:.1f} GB) is below the minimum recommended threshold ({req_q4_gb:.1f} GB) for Q4. Performance may be severely impacted.")
+
+    logger.info(f"CPU Selection based on TOTAL RAM/AVX2: {selected_quant}")
     return selected_quant
 
 
-# --- NEW Helper to Detect Existing Quantization ---
 def _detect_available_onnx_suffix(onnx_dir: Path) -> Optional[str]:
     """
     Detects the best available quantization suffix based on files present.
@@ -210,12 +171,10 @@ def _detect_available_onnx_suffix(onnx_dir: Path) -> Optional[str]:
 
     available_suffixes = set()
     try:
-        # Find all potential encoder files to deduce suffixes
         for item in onnx_dir.glob("encoder_model*.onnx"):
             if item.is_file():
                 name = item.name
                 if name.startswith("encoder_model") and name.endswith(".onnx"):
-                    # Extract suffix part (e.g., _int8, _q4, or empty for fp32)
                     suffix = name.replace("encoder_model", "").replace(".onnx", "")
                     available_suffixes.add(suffix)
     except Exception as e:
@@ -228,7 +187,6 @@ def _detect_available_onnx_suffix(onnx_dir: Path) -> Optional[str]:
 
     logger.debug(f"Found potential suffixes in {onnx_dir}: {available_suffixes}")
 
-    # Check for complete sets based on priority
     for suffix in QUANTIZATION_SUFFIXES_PRIORITY:
         if suffix in available_suffixes:
             is_complete = True
@@ -242,9 +200,7 @@ def _detect_available_onnx_suffix(onnx_dir: Path) -> Optional[str]:
                     break
             if is_complete:
                 logger.info(f"Detected complete ONNX model set with suffix: '{suffix}'")
-                return (
-                    suffix  # Return the first complete suffix found based on priority
-                )
+                return suffix
 
     logger.error(
         f"No complete set of ONNX model files found in {onnx_dir} for any detected suffix."
@@ -254,23 +210,22 @@ def _detect_available_onnx_suffix(onnx_dir: Path) -> Optional[str]:
 
 # --- TeapotONNXLLM Wrapper Class ---
 class TeapotONNXLLM(LLM):
-    """Wraps the loaded Teapot ONNX model and tokenizer."""
+    """Wraps the loaded Teapot ONNX model and tokenizer for CPU execution."""
 
     def __init__(
         self,
-        model: Any,  # Keep Any type hint
+        model: Any,
         tokenizer: PreTrainedTokenizer,
-        quant_suffix: str,  # The suffix actually loaded
-        provider: str,
-        provider_options: Optional[Dict[str, Any]],
+        quant_suffix: str,
+        provider: str, # Will always be CPUExecutionProvider
+        provider_options: Optional[Dict[str, Any]], # Will always be None or {}
     ):
         self._model = model
         self._tokenizer = tokenizer
-        # Use the actual loaded quant_suffix for ModelInfo
         self._info = TeapotONNXModelInfo(
             TEAPOT_REPO_ID,
             quant_suffix,
-            1024,  # Hardcoded, but this is the actual teapot max length
+            TEAPOT_CONTEXT_LENGTH,
         )
         self._is_loaded = True
         self._provider = provider
@@ -286,42 +241,7 @@ class TeapotONNXLLM(LLM):
 
     @property
     def device(self) -> torch.device:
-        """Determines the effective device the model is running on."""
-        # --- Add assertion ---
-        assert self._is_loaded and self._model is not None, (
-            "Model must be loaded to access device."
-        )
-        # --- End assertion ---
-        # ORTModel might not have a direct .device attribute reflecting the ONNX provider target
-        # We rely on the provider string used during initialization
-        provider_name = self._provider
-        if provider_name == "CUDAExecutionProvider":
-            return torch.device(
-                f"cuda:{self._provider_options.get('device_id', 0)}"
-                if self._provider_options
-                else "cuda:0"
-            )
-        if provider_name == "ROCMExecutionProvider":
-            # ROCm support in PyTorch might vary, assume basic device mapping
-            return torch.device(
-                f"rocm:{self._provider_options.get('device_id', 0)}"
-                if self._provider_options
-                else "rocm:0"
-            )
-        if provider_name == "CoreMLExecutionProvider":
-            # CoreML runs on the Neural Engine, conceptually map to MPS if available, else CPU
-            # Check if MPS is available and built
-            is_mps_available = (
-                hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
-            )
-            is_mps_built = (
-                hasattr(torch.backends, "mps") and torch.backends.mps.is_built()
-            )
-            if is_mps_available and is_mps_built:
-                return torch.device("mps")
-            else:
-                return torch.device("cpu")
-        # Default to CPU for CPUExecutionProvider or unknown providers
+        """Returns the device (always CPU)."""
         return torch.device("cpu")
 
     def generate(
@@ -333,27 +253,32 @@ class TeapotONNXLLM(LLM):
         repeat_penalty: float = 1.0,
         **kwargs: Any,
     ) -> Tuple[str, Any]:
-        """Generates text using the loaded ONNX model."""
+        """Generates text using the loaded ONNX model on CPU."""
         if not self._is_loaded:
             return "Error: Model not loaded.", {"error": "Model not loaded"}
-        # --- Add assertions ---
         assert self._model is not None, "Model cannot be None during generation."
         assert self._tokenizer is not None, (
             "Tokenizer cannot be None during generation."
         )
-        # --- End assertions ---
         try:
-            target_device = self.device  # Get the effective device
-            # Some providers might need inputs on CPU even if compute happens elsewhere
-            # For simplicity, let's try putting inputs on the target device first
+            # For CPU, input and target device are the same
+            target_device = self.device
             input_device = target_device
 
-            max_input_length = self.model_info.context_length - max_tokens
+            model_context_length = self.model_info.context_length
+            buffer = 10
+            max_input_length = model_context_length - max_tokens - buffer
             if max_input_length <= 0:
-                logger.warning(
-                    f"max_tokens ({max_tokens}) exceeds context length ({self.model_info.context_length}). Truncating severely."
-                )
-                max_input_length = max(10, self.model_info.context_length // 2)
+                 logger.warning(
+                     f"max_tokens ({max_tokens}) requested is too large for model context ({model_context_length}). "
+                     f"Reducing max_input_length significantly."
+                 )
+                 max_input_length = max(10, model_context_length // 2)
+
+            logger.debug(
+                f"Tokenizing prompt. Model Context: {model_context_length}, Max New Tokens: {max_tokens}, "
+                f"Calculated Max Input Tokens: {max_input_length}"
+            )
 
             inputs = self._tokenizer(
                 prompt,
@@ -361,20 +286,18 @@ class TeapotONNXLLM(LLM):
                 truncation=True,
                 max_length=max_input_length,
                 padding=False,
-            )
+            ).to(input_device) # Send to CPU
 
-            # Move inputs to the target device
-            try:
-                inputs = inputs.to(input_device)
-            except Exception as move_err:
-                logger.warning(
-                    f"Could not move inputs to {input_device}, keeping on CPU: {move_err}"
-                )
-                input_device = torch.device("cpu")  # Fallback to CPU if move fails
-                inputs = inputs.to(input_device)
+            input_ids = inputs.get("input_ids")
+            if not isinstance(input_ids, torch.Tensor):
+                 raise TypeError("Tokenizer did not return a Tensor for input_ids")
+            actual_input_tokens = input_ids.shape[1]
+            logger.debug(f"Actual input tokens after tokenization/truncation: {actual_input_tokens}")
 
-            gen_kwargs = {"max_new_tokens": max_tokens, **kwargs}
-            # Sampling logic
+            gen_kwargs = {
+                 "max_new_tokens": max_tokens,
+                 **kwargs
+            }
             if temperature > 0.0 or (top_p is not None and top_p < 1.0):
                 gen_kwargs["do_sample"] = True
                 if temperature > 0.0:
@@ -386,44 +309,28 @@ class TeapotONNXLLM(LLM):
             if repeat_penalty != 1.0:
                 gen_kwargs["repetition_penalty"] = repeat_penalty
 
-            input_ids = inputs.get("input_ids")
-            if not isinstance(input_ids, torch.Tensor):
-                raise TypeError("Tokenizer did not return a Tensor for input_ids")
-            in_tokens = input_ids.shape[1]
             logger.debug(
-                f"Generating ONNX. Input Tokens:{in_tokens}, Target Device:{target_device}, Input Device: {input_device}, Kwargs:{gen_kwargs}"
+                f"Generating ONNX on CPU. Kwargs:{gen_kwargs}"
             )
 
             with torch.no_grad():
                 outputs = self._model.generate(**inputs, **gen_kwargs)
 
-            out_ids = outputs[0]
-            # Move outputs back to CPU for decoding if they aren't already
-            if isinstance(out_ids, torch.Tensor) and out_ids.device != torch.device(
-                "cpu"
-            ):
-                out_ids = out_ids.to("cpu")
-
+            out_ids = outputs[0].to("cpu") # Ensure output is on CPU
             raw_result = self._tokenizer.decode(out_ids, skip_special_tokens=True)
             logger.debug(f"Raw decoded result (before strip): '{raw_result}'")
-            # Strip the original prompt text more robustly
+
             result = raw_result
-            # <<< FIX: E701 Multiple statements on one line >>>
             if result.startswith(prompt):
                 result = result[len(prompt) :]
-            # <<< END FIX >>>
             result = result.strip()
-
             logger.debug(f"Final result (after strip): '{result}'")
-            # <<< FIX: E701 Multiple statements on one line >>>
-            out_tokens = 0
-            if isinstance(out_ids, torch.Tensor):
-                out_tokens = len(out_ids)
-            # <<< END FIX >>>
+
+            out_tokens = len(out_ids)
 
             return result, {
                 "output_token_count": out_tokens,
-                "input_token_count": in_tokens,
+                "input_token_count": actual_input_tokens,
             }
         except Exception as e:
             logger.error(f"ONNX generation error: {e}", exc_info=True)
@@ -434,17 +341,9 @@ class TeapotONNXLLM(LLM):
         return self._is_loaded
 
     def unload(self) -> None:
-        """Unloads the model and attempts garbage collection."""
+        """Unloads the model and attempts garbage collection (CPU only)."""
         logger.info(f"Unloading TeapotONNXLLM ({self.model_info.model_id})...")
-        # Get device type *before* deleting the model
-        dev_type = "cpu"  # Default
-        try:
-            if self._model is not None:
-                dev_type = self.device.type  # Get device type if model exists
-        except Exception:
-            logger.warning("Could not determine device type before unloading.")
 
-        # Explicitly delete the model and tokenizer references *before* GC
         try:
             if hasattr(self, "_model") and self._model is not None:
                 logger.debug("Deleting internal _model reference...")
@@ -459,58 +358,38 @@ class TeapotONNXLLM(LLM):
         except Exception as e:
             logger.error(f"Error deleting internal model/tokenizer references: {e}")
         finally:
-            # Ensure attributes are None even if del failed
             self._model = None
             self._tokenizer = None
             self._is_loaded = False
 
-        # Force garbage collection
         logger.debug("Running garbage collection...")
         gc.collect()
-
-        # Clear GPU caches if applicable
-        if dev_type == "cuda" and torch.cuda.is_available():
-            logger.debug("Clearing CUDA cache after unloading TeapotONNXLLM.")
-            torch.cuda.empty_cache()
-        elif dev_type == "mps":
-            is_mps_available = (
-                hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
-            )
-            is_mps_built = (
-                hasattr(torch.backends, "mps") and torch.backends.mps.is_built()
-            )
-            if is_mps_available and is_mps_built:
-                try:
-                    logger.debug("Attempting to clear MPS cache...")
-                    torch.mps.empty_cache()
-                except Exception as mps_err:
-                    logger.warning(f"Could not clear MPS cache: {mps_err}")
+        # No GPU/MPS cache clearing needed for CPU
 
         logger.info("TeapotONNXLLM unloaded.")
 
 
 # --- Loader Function ---
 def load_teapot_onnx_llm(
-    onnx_quantization: str = "auto",  # Preference, not strict requirement
+    onnx_quantization: str = "auto",
+    # Parameters kept for potential future extension, but ignored internally
     preferred_provider: Optional[str] = None,
     preferred_options: Optional[Dict[str, Any]] = None,
 ) -> Optional[TeapotONNXLLM]:
     """
-    Loads the Teapot ONNX model from the assembled 'active_teapot' directory.
-    Detects the available quantization if preference is 'auto' or unavailable.
+    Loads the Teapot ONNX model from the assembled 'active_teapot' directory
+    for CPU execution. Detects the available quantization if preference is 'auto'
+    or unavailable.
     """
     logger.info(
-        f"--- Initializing Teapot ONNX LLM (Quant Pref: {onnx_quantization}) ---"
+        f"--- Initializing Teapot ONNX LLM for CPU (Quant Pref: {onnx_quantization}) ---"
     )
     onnx_model, tokenizer = None, None
     try:
-        # Determine provider first
-        provider, options = _determine_onnx_provider(
-            preferred_provider, preferred_options
-        )
+        # Determine provider (will always be CPU)
+        provider, options = _determine_onnx_provider(None, None) # Pass None to force CPU
         logger.info(f"Using ONNX Provider: {provider}")
 
-        # Locate model directory
         paths = data_manager.get_data_paths()
         models_dir_str = paths.get("models")
         if not models_dir_str:
@@ -523,7 +402,6 @@ def load_teapot_onnx_llm(
             f"Attempting to load from active model directory: {active_model_dir}"
         )
 
-        # Basic directory verification
         if not active_model_dir.is_dir():
             raise ModelNotFoundError(
                 f"Active directory '{active_model_dir}' not found. Run setup."
@@ -534,8 +412,11 @@ def load_teapot_onnx_llm(
                 f"ONNX subfolder missing in {active_model_dir}. Run setup."
             )
 
+        # Select quantization (CPU specific logic)
+        # hw_info = detect_hardware_info() # No longer needed here, called inside select
+        suffix_to_load: Optional[str] = _select_onnx_quantization(onnx_quantization)
+
         # --- Determine the quantization suffix to load ---
-        suffix_to_load: Optional[str] = None
         preference_map = {
             p: f"_{p}" for p in ["fp16", "int8", "q4", "q4f16", "bnb4", "uint8"]
         }
@@ -544,7 +425,6 @@ def load_teapot_onnx_llm(
         if onnx_quantization != "auto":
             preferred_suffix = preference_map.get(onnx_quantization)
             if preferred_suffix is not None:
-                # Check if the preferred suffix actually exists
                 is_complete = True
                 for basename in REQUIRED_ONNX_BASENAMES:
                     onnx_fname = f"{basename}{preferred_suffix}.onnx"
@@ -564,7 +444,6 @@ def load_teapot_onnx_llm(
                     f"Invalid quantization preference '{onnx_quantization}'. Falling back to detection."
                 )
 
-        # If no valid preference or preference was 'auto', detect available suffix
         if suffix_to_load is None:
             logger.info("Detecting available ONNX quantization in active directory...")
             suffix_to_load = _detect_available_onnx_suffix(onnx_sub)
@@ -576,6 +455,7 @@ def load_teapot_onnx_llm(
             logger.info(
                 f"Detected and selected quantization suffix: '{suffix_to_load}' ({loaded_quant_str})"
             )
+
 
         # --- Verify all required files exist with the chosen suffix ---
         required_files_rel: List[str] = list(TEAPOT_BASE_FILES)
@@ -601,7 +481,6 @@ def load_teapot_onnx_llm(
             f"Loading ONNX model components from {active_model_dir} with suffix '{suffix_to_load}'..."
         )
 
-        # <<< FIX: Pass filenames as explicit keyword arguments >>>
         encoder_fn = f"{ONNX_SUBFOLDER}/encoder_model{suffix_to_load}.onnx"
         decoder_fn = f"{ONNX_SUBFOLDER}/decoder_model{suffix_to_load}.onnx"
         decoder_past_fn = (
@@ -616,17 +495,12 @@ def load_teapot_onnx_llm(
             encoder_file_name=encoder_fn,
             decoder_file_name=decoder_fn,
             decoder_with_past_file_name=decoder_past_fn,
-            # Removed **onnx_file_paths
             export=False,
-            provider=provider,
-            provider_options=options,
-            use_io_binding=(
-                "CUDAExecutionProvider" in provider
-                or "ROCMExecutionProvider" in provider
-            ),
-            local_files_only=True,  # Ensure it only uses local files
+            provider=provider, # Will be CPUExecutionProvider
+            provider_options=options, # Will be {} or None
+            use_io_binding=False, # IO Binding not relevant for CPU
+            local_files_only=True,
         )
-        # <<< END FIX >>>
 
         logger.debug(f"Loading tokenizer from {active_model_dir}...")
         tokenizer = AutoTokenizer.from_pretrained(
@@ -636,7 +510,6 @@ def load_teapot_onnx_llm(
         logger.info(
             f"Teapot ONNX model (suffix '{suffix_to_load}') and tokenizer loaded successfully."
         )
-        # Pass the suffix_to_load to the wrapper
         llm_instance = TeapotONNXLLM(
             onnx_model, tokenizer, suffix_to_load, provider, options
         )
@@ -651,15 +524,12 @@ def load_teapot_onnx_llm(
         logger.error(
             f"Failed during Teapot ONNX LLM initialization: {e}", exc_info=True
         )
-        # --- Cleanup ---
         if onnx_model is not None:
             del onnx_model
         if tokenizer is not None:
             del tokenizer
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        # --- End Cleanup ---
+        # No GPU cache clearing needed
         raise RuntimeError(
             f"Failed to load Teapot ONNX model ({e.__class__.__name__}): {e}"
         ) from e

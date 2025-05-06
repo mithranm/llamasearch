@@ -1,4 +1,4 @@
-# src/llamasearch/core/llmsearch.py (CPU-Only, mxbai Embedder - CORRECTED SYNTAX)
+# src/llamasearch/core/llmsearch.py
 
 import json
 import threading
@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 import difflib
 import gc  # Import gc for explicit calls
+import html # Import html for escaping
 
 import chromadb
 from chromadb.api.types import (
@@ -127,6 +128,7 @@ class LLMSearch:
             if not self.model:
                 raise RuntimeError("load_teapot_onnx_llm returned None")
             model_info = self.model.model_info
+            # Use the context length reported by the model info protocol
             self.context_length = model_info.context_length
             self.llm_device_type = "cpu"
             self.logger.info(
@@ -757,11 +759,14 @@ class LLMSearch:
             try:
                 tokenizer = getattr(self.model, "_tokenizer", None)
                 if tokenizer and hasattr(tokenizer, "__call__"):
+                    # Call tokenizer without padding and special tokens for length check
                     ids = tokenizer(text, add_special_tokens=False).get("input_ids")
                     if isinstance(ids, list):
                         return len(ids)
-            except Exception:
-                pass
+            except Exception as tok_err:
+                 logger.warning(f"Tokenizer failed to get token count: {tok_err}", exc_info=self.debug)
+                 # Fallback if tokenizer fails
+                 pass
         return max(1, len(text) // 4)  # Fallback
 
     def llm_query(self, query_text: str, debug_mode: bool = False) -> Dict[str, Any]:
@@ -777,7 +782,7 @@ class LLMSearch:
         retrieval_time, gen_time = -1.0, -1.0
         query_embedding_time = 0.0
         final_context = ""
-        retrieved_display = "No relevant chunks retrieved."
+        retrieved_display_html = "<p><i>No relevant chunks retrieved.</i></p>" # Default HTML
         response = "Error: Query processing failed."
         vec_results_count, bm25_results_count = 0, 0
 
@@ -935,7 +940,7 @@ class LLMSearch:
                         )
                         if (
                             chroma_get
-                            and chroma_get.get("ids") 
+                            and chroma_get.get("ids")
                             and chroma_get.get("documents") is not None
                             and chroma_get.get("metadatas") is not None
                         ):
@@ -946,8 +951,10 @@ class LLMSearch:
                                 "metadata": metas[0] if metas else {},
                             }
                         else:
+                            logger.warning(f"Could not fetch document for chunk {chunk_id} from ChromaDB.")
                             continue  # Skip if fetch fails
-                    except Exception:
+                    except Exception as fetch_err:
+                        logger.warning(f"Error fetching chunk {chunk_id} from ChromaDB: {fetch_err}")
                         continue
 
                 current_text = doc_lookup[chunk_id].get("document", "")
@@ -976,7 +983,7 @@ class LLMSearch:
             else:
                 self.logger.warning("No unique chunks selected after filtering.")
 
-            # 5. Build Context String
+            # 5. Build Context String & HTML Display String
             if not top_chunk_ids:
                 response = "Could not find relevant information."
                 query_time = (
@@ -985,14 +992,14 @@ class LLMSearch:
                 return {
                     "response": response,
                     "debug_info": debug_info if debug_mode else {},
-                    "retrieved_context": retrieved_display,
-                    "formatted_response": f"<h2>AI Answer</h2><p>{response}</p><h2>Retrieved Context</h2>{retrieved_display}",
+                    "retrieved_context": retrieved_display_html, # Return HTML
+                    "formatted_response": f"<h2>AI Answer</h2><p>{html.escape(response)}</p><h2>Retrieved Context</h2>{retrieved_display_html}",
                     "query_time_seconds": query_time,
                     "generation_time_seconds": 0,
                 }
 
             temp_context_parts = []
-            temp_display_list = []
+            temp_display_parts_html = [] # For HTML display
             prompt_base = (
                 f"{system_instruction}\n\nContext:\n\n\nQuery: {query_text}\n\nAnswer:"
             )
@@ -1013,43 +1020,54 @@ class LLMSearch:
                 if not doc_text.strip():
                     continue
 
-                (
-                    source_path,
-                    filename,
-                    original_url,
-                    display_source,
-                ) = "N/A", "N/A", None, "N/A"
-                if isinstance(metadata, dict):
-                    source_path, filename, original_url = (
-                        metadata.get("source_path", "N/A"),
-                        metadata.get("filename", "N/A"),
-                        metadata.get("original_url"),
-                    )
-                    if original_url:
-                        display_source = original_url
-                    elif filename != "N/A":
-                        display_source = filename
-                    elif source_path != "N/A":
-                        try:
-                            display_source = Path(source_path).name
-                        except Exception:
-                            pass
+                # --- Prepare source display ---
+                source_path = metadata.get("source_path", "N/A")
+                filename = metadata.get("filename", "N/A")
+                original_url = metadata.get("original_url")
+                chunk_index = metadata.get("original_chunk_index", "N/A") # Get original index
 
+                display_source_text = "N/A"
+                source_display_html = "<i>Source N/A</i>"
+                if original_url:
+                    display_source_text = original_url
+                    safe_url = html.escape(original_url)
+                    source_display_html = f'<a href="{safe_url}" style="color: #0066cc;">{safe_url}</a>'
+                elif filename != "N/A":
+                    display_source_text = filename
+                    source_display_html = f"<b>{html.escape(filename)}</b> (Path: {html.escape(source_path)})"
+                elif source_path != "N/A":
+                    try:
+                         display_source_text = Path(source_path).name
+                         source_display_html = f"<b>{html.escape(display_source_text)}</b> (Path: {html.escape(source_path)})"
+                    except Exception:
+                         display_source_text = source_path
+                         source_display_html = html.escape(source_path)
+
+                # Log context details if debug mode is on
+                if debug_mode:
+                    logger.debug(f"Adding Context Chunk Rank {i+1}: ID={chunk_id}, Score={score:.4f}, Source={display_source_text}, Index={chunk_index}, Text='{doc_text[:80]}...'")
+
+                # --- Build strings for LLM and HTML display ---
                 header_for_llm = (
-                    f"[Source: {display_source} | Rank: {i + 1}]\n"  # Simplified header
+                    f"[Source: {display_source_text} | Rank: {i + 1}]\n" # Simpler for LLM
                 )
-                source_display_html = (
-                    f'<a href="{original_url}">{original_url}</a>'
-                    if original_url
-                    else source_path
-                )
-                header_for_display = f"--- Rank {i + 1} (Score: {score:.4f}) ---\nSource: {source_display_html}\n"
-                doc_chunk_full_text = f"{header_for_llm}{doc_text}\n\n"
-                doc_chunk_len = self._get_token_count(doc_chunk_full_text)
+                # Use CSS for better styling control
+                header_for_display_html = (
+                     f'<div style="border-top: 1px solid #eee; margin-top: 10px; padding-top: 5px; font-size: 0.9em; color: #333;">'
+                     f'<b>Rank {i + 1}</b> (Score: {score:.4f}) | '
+                     f'Source: {source_display_html} | Chunk Index: {chunk_index}'
+                     f'</div>'
+                 )
+
+                doc_chunk_full_text_llm = f"{header_for_llm}{doc_text}\n\n"
+                # Escape HTML in doc_text and replace newlines for display
+                doc_chunk_display_html = f"<p>{html.escape(doc_text).replace(chr(10), '<br>')}</p>"
+
+                doc_chunk_len = self._get_token_count(doc_chunk_full_text_llm)
 
                 if current_context_len + doc_chunk_len <= available_context_tokens:
-                    temp_context_parts.append(doc_chunk_full_text)
-                    temp_display_list.append(f"{header_for_display}{doc_text}\n\n")
+                    temp_context_parts.append(doc_chunk_full_text_llm)
+                    temp_display_parts_html.append(f"{header_for_display_html}{doc_chunk_display_html}")
                     current_context_len += doc_chunk_len
                     context_chunks_details.append(
                         {
@@ -1057,31 +1075,32 @@ class LLMSearch:
                             "rank": i + 1,
                             "score": score,
                             "token_count": doc_chunk_len,
-                            "source": display_source,
+                            "source": display_source_text, # Use the plain text version for logs
+                            "original_chunk_index": chunk_index,
                         }
                     )
                 else:
                     logger.warning(
-                        f"Stopping context build rank {i + 1}. Limit reached."
+                        f"Stopping context build rank {i + 1}. Limit reached ({current_context_len + doc_chunk_len} > {available_context_tokens} tokens)."
                     )
                     debug_info["context_truncated_at_chunk_rank"] = i + 1
                     break
 
             final_context = "".join(temp_context_parts).strip()
-            retrieved_display = (
-                "".join(temp_display_list).strip()
-                if temp_display_list
-                else "No relevant chunks in context."
+            retrieved_display_html = (
+                "".join(temp_display_parts_html).strip()
+                if temp_display_parts_html
+                else "<p><i>No relevant chunks selected for context.</i></p>"
             )
             debug_info["final_context_token_count"] = current_context_len
             debug_info["final_context_chars"] = len(final_context)
-            debug_info["final_context_chunks_details"] = context_chunks_details
+            debug_info["final_context_chunks_details"] = context_chunks_details # Contains simplified info
 
             if not final_context:
                 response = (
-                    "Error: Could not build context."
+                    "Error: Could not build context from selected chunks."
                     if top_chunk_ids
-                    else "Could not find info."
+                    else "Could not find relevant information."
                 )
                 query_time = (
                     retrieval_time if retrieval_time > 0 else query_embedding_time
@@ -1089,8 +1108,8 @@ class LLMSearch:
                 return {
                     "response": response,
                     "debug_info": debug_info if debug_mode else {},
-                    "retrieved_context": retrieved_display,
-                    "formatted_response": f"<h2>AI Answer</h2><p>{response}</p><h2>Retrieved Context</h2>{retrieved_display}",
+                    "retrieved_context": retrieved_display_html,
+                    "formatted_response": f"<h2>AI Answer</h2><p>{html.escape(response)}</p><h2>Retrieved Context</h2>{retrieved_display_html}",
                     "query_time_seconds": query_time,
                     "generation_time_seconds": 0,
                 }
@@ -1104,8 +1123,8 @@ class LLMSearch:
             return {
                 "response": response,
                 "debug_info": debug_info if debug_mode else {},
-                "retrieved_context": retrieved_display,
-                "formatted_response": f"<h2>AI Answer</h2><p>{response}</p><h2>Retrieved Context</h2>{retrieved_display}",
+                "retrieved_context": retrieved_display_html, # Return default/empty HTML
+                "formatted_response": f"<h2>AI Answer</h2><p>{html.escape(response)}</p><h2>Retrieved Context</h2>{retrieved_display_html}",
                 "query_time_seconds": query_time,
                 "generation_time_seconds": 0,
             }
@@ -1117,17 +1136,23 @@ class LLMSearch:
         debug_info["final_prompt_tokens_estimated"] = prompt_token_count
         if debug_mode:
             logger.debug(
-                f"--- LLM Prompt ({prompt_token_count} tokens) ---\n{prompt}\n--- LLM Prompt End ---"
+                f"--- LLM Prompt ({prompt_token_count} tokens / {self.context_length} limit) ---" # Show limit
             )
+            # Avoid logging excessively long prompts fully even in debug
+            log_prompt = (prompt[:1000] + "...") if len(prompt) > 1000 else prompt
+            logger.debug(log_prompt)
+            logger.debug("--- LLM Prompt End ---")
+
 
         if prompt_token_count >= self.context_length:
-            response = "Error: Prompt too long."
+            response = f"Error: Prompt too long for model context limit ({prompt_token_count} >= {self.context_length}). Context may need to be reduced."
+            logger.error(response)
             query_time = retrieval_time if retrieval_time > 0 else query_embedding_time
             return {
                 "response": response,
                 "debug_info": debug_info if debug_mode else {},
-                "retrieved_context": retrieved_display,
-                "formatted_response": f"<h2>AI Answer</h2><p>{response}</p><h2>Retrieved Context</h2>{retrieved_display}",
+                "retrieved_context": retrieved_display_html,
+                "formatted_response": f"<h2>AI Answer</h2><p>{html.escape(response)}</p><h2>Retrieved Context</h2>{retrieved_display_html}",
                 "query_time_seconds": query_time,
                 "generation_time_seconds": 0,
             }
@@ -1152,9 +1177,10 @@ class LLMSearch:
             )
             response = text_response.strip() if text_response else ""
         except InterruptedError:
-            response = "LLM cancelled."
+            response = "LLM generation cancelled during shutdown."
+            logger.warning(response)
         except Exception as e:
-            logger.error(f"LLM gen error: {e}", exc_info=debug_mode)
+            logger.error(f"LLM generation error: {e}", exc_info=debug_mode)
             raw_llm_output = {"error": str(e)}
             response = f"LLM Error: {e}"
 
@@ -1168,12 +1194,13 @@ class LLMSearch:
         ):
             response = f"LLM Error: {raw_llm_output['error']}"
         elif not response or response.isspace():
-            response = "(LLM empty response)"
+            response = "(LLM returned empty response)"
 
         # 7. Final Result
         total_time = time.time() - start_time_total
         debug_info["total_query_processing_time"] = f"{total_time:.3f}s"
-        formatted_response = f"<h2>AI Answer</h2><p>{response}</p><h2>Retrieved Context</h2>{retrieved_display}"
+        # Escape the final AI response for HTML safety
+        formatted_response_html = f"<h2>AI Answer</h2><p>{html.escape(response)}</p><h2>Retrieved Context</h2>{retrieved_display_html}"
         try:
             log_query(
                 query_text,
@@ -1189,10 +1216,10 @@ class LLMSearch:
         )
         self.logger.info(f"Search Result:\n{response}")
         return {
-            "response": response,
+            "response": response, # Plain text response
             "debug_info": debug_info if debug_mode else {},
-            "retrieved_context": retrieved_display,
-            "formatted_response": formatted_response,
+            "retrieved_context": retrieved_display_html, # HTML context for GUI
+            "formatted_response": formatted_response_html, # Full combined HTML
             "query_time_seconds": query_time_final,
             "generation_time_seconds": gen_time if gen_time > 0 else 0,
         }

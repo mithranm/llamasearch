@@ -37,7 +37,6 @@ from llamasearch.core.teapot import (
 )
 from llamasearch.data_manager import data_manager
 from llamasearch.exceptions import ModelNotFoundError, SetupError
-from llamasearch.hardware import detect_hardware_info  # CPU/Mem only
 from llamasearch.utils import setup_logging
 
 logger = setup_logging("llamasearch.setup")
@@ -169,11 +168,9 @@ def check_or_download_teapot_onnx(
 ) -> None:
     """Downloads required Teapot files and assembles the 'active_teapot' dir."""
     logger.info(f"Checking/Downloading Teapot ONNX Files (Quantization: {quant_pref})")
-    hw_info = detect_hardware_info()
-    provider_name, _ = _determine_onnx_provider(
-        preferred_provider="CPUExecutionProvider"
-    )
-    quant_suffix = _select_onnx_quantization(hw_info, provider_name, None, quant_pref)
+    # Always use CPUExecutionProvider for ONNX, no hardware detection needed
+    provider_name, _ = _determine_onnx_provider("CPUExecutionProvider")
+    quant_suffix = _select_onnx_quantization(quant_pref)
     logger.info(f"Targeting ONNX quantization suffix: '{quant_suffix}' for CPU")
 
     active_model_dir = models_dir / "active_teapot"
