@@ -21,7 +21,7 @@ from tqdm import tqdm
 
 # Try importing transformers config for type checking, but don't fail if not installed
 try:
-    from transformers import PretrainedConfig
+    from transformers.configuration_utils import PretrainedConfig
 except ImportError:
     PretrainedConfig = None # type: ignore
 
@@ -141,6 +141,7 @@ class EnhancedEmbedder:
 
         self.model: Optional[SentenceTransformer] = None
         self._shutdown_event: Optional[threading.Event] = None
+        logger.debug("Embedder: Calling _load_model()...")
         self._load_model()
 
     def set_shutdown_event(self, event: threading.Event):
@@ -149,6 +150,7 @@ class EnhancedEmbedder:
 
     def _load_model(self):
         """Load the embedding model onto the CPU, with optional truncation."""
+        logger.debug("Embedder: Entered _load_model()")
         model_name = self.config.model_name
         target_device = self.config.device  # Always "cpu"
         logger.info(f"Preparing to load embedder model: {model_name} onto CPU")

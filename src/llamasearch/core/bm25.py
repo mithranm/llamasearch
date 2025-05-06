@@ -32,8 +32,11 @@ class WhooshBM25Retriever:
 
     def __init__(self, storage_dir: Path) -> None:
         self.storage_dir = storage_dir
+        logger.debug("BM25: Creating storage directory if needed...")
         self.storage_dir.mkdir(parents=True, exist_ok=True)
+        logger.debug("BM25: Instantiating BM25Schema...")
         self.schema = BM25Schema()
+        logger.debug("BM25: BM25Schema instantiated.")
         self.index_path = self.storage_dir / "whoosh_bm25_index"
         self.ix: Optional[whoosh_index.Index] = None
         self.parser: Optional[QueryParser] = None
@@ -43,31 +46,46 @@ class WhooshBM25Retriever:
         """Opens an existing Whoosh index or creates a new one."""
         # Locking is handled by the writer context manager later
         try:
-            if whoosh_index.exists_in(str(self.index_path)):
+            logger.debug(f"BM25: Checking if index exists at: {self.index_path}")
+            index_exists = whoosh_index.exists_in(str(self.index_path))
+            logger.debug(f"BM25: Index exists: {index_exists}")
+
+            if index_exists:
                 logger.info(f"Opening existing Whoosh index at: {self.index_path}")
                 try:
+                    logger.debug("BM25: Attempting whoosh_index.open_dir...")
                     self.ix = whoosh_index.open_dir(str(self.index_path), schema=self.schema)
+                    logger.debug("BM25: whoosh_index.open_dir successful.")
                 except whoosh_index.EmptyIndexError:
                      logger.warning(f"Whoosh index at {self.index_path} exists but is empty/corrupt. Recreating.")
                      shutil.rmtree(self.index_path) # Remove corrupt index
                      self.index_path.mkdir(parents=True, exist_ok=True) # Recreate dir
+                     logger.debug("BM25: Attempting whoosh_index.create_in...")
                      self.ix = whoosh_index.create_in(str(self.index_path), self.schema)
+                     logger.debug("BM25: whoosh_index.create_in successful.")
                 except Exception as open_err:
                     logger.error(f"Error opening existing Whoosh index {self.index_path}, attempting recreation: {open_err}", exc_info=True)
                     try:
                         shutil.rmtree(self.index_path)
                         self.index_path.mkdir(parents=True, exist_ok=True) # Recreate dir
+                        logger.debug("BM25: Attempting whoosh_index.create_in...")
                         self.ix = whoosh_index.create_in(str(self.index_path), self.schema)
+                        logger.debug("BM25: whoosh_index.create_in successful.")
                         logger.info(f"Recreated Whoosh index at: {self.index_path}")
                     except Exception as recreate_err:
                         logger.critical(f"FATAL: Could not recreate Whoosh index after open failure: {recreate_err}", exc_info=True)
                         raise RuntimeError("Failed to open or recreate Whoosh index") from recreate_err
             else:
                 logger.info(f"Creating new Whoosh index at: {self.index_path}")
+                logger.debug("BM25: Ensuring index directory exists...")
                 self.index_path.mkdir(parents=True, exist_ok=True) # Ensure dir exists
+                logger.debug("BM25: Attempting whoosh_index.create_in...")
                 self.ix = whoosh_index.create_in(str(self.index_path), self.schema)
+                logger.debug("BM25: whoosh_index.create_in successful.")
 
+            logger.debug("BM25: Initializing QueryParser...")
             self.parser = QueryParser("content", schema=self.ix.schema)
+            logger.debug("BM25: QueryParser initialized.")
             logger.info(f"Whoosh index ready. Doc count: {self.get_doc_count()}")
 
         except Exception as e:
@@ -89,8 +107,10 @@ class WhooshBM25Retriever:
         try:
             # Use the index writer directly; it handles locking.
             writer = self.ix.writer(timeout=DEFAULT_WRITER_TIMEOUT)
+            logger.debug("BM25: Attempting writer.update_document...")
             with writer: # Context manager handles commit/cancel and locking
                  writer.update_document(chunk_id=doc_id, content=text)
+            logger.debug("BM25: writer.update_document successful.")
             logger.debug(f"Added/Updated document chunk_id '{doc_id}' in Whoosh index.")
             return True
         except whoosh_index.LockError as lock_err:
@@ -111,9 +131,11 @@ class WhooshBM25Retriever:
 
         try:
             writer = self.ix.writer(timeout=DEFAULT_WRITER_TIMEOUT)
+            logger.debug("BM25: Attempting writer.delete_by_term...")
             num_deleted = 0
             with writer: # Context manager handles commit/cancel and locking
                 num_deleted = writer.delete_by_term("chunk_id", doc_id)
+            logger.debug("BM25: writer.delete_by_term successful.")
             logger.debug(f"Attempted removal of document chunk_id '{doc_id}' from Whoosh index (deleted {num_deleted} segment docs).")
             return True # Return true even if 0 were deleted
         except whoosh_index.LockError as lock_err:
@@ -137,7 +159,9 @@ class WhooshBM25Retriever:
             query_obj = self.parser.parse(query_text)
 
             with self.ix.searcher(weighting=BM25F()) as searcher:
+                logger.debug("BM25: Attempting searcher.search...")
                 results = searcher.search(query_obj, limit=n_results)
+                logger.debug("BM25: searcher.search successful.")
                 top_ids: List[str] = []
                 top_scores: List[float] = []
                 top_docs: List[None] = [] # Documents are not stored
@@ -172,7 +196,10 @@ class WhooshBM25Retriever:
             return 0 # Fixed E701
         try:
             # Use the main index doc count for a quick estimate
-            return self.ix.doc_count()
+            logger.debug("BM25: Attempting ix.doc_count...")
+            doc_count = self.ix.doc_count()
+            logger.debug("BM25: ix.doc_count successful.")
+            return doc_count
         except Exception as e:
             logger.error(f"Failed to get Whoosh doc count: {e}")
             return 0
@@ -187,7 +214,9 @@ class WhooshBM25Retriever:
         logger.info("Closing Whoosh index...")
         if self.ix is not None:
             try:
+                logger.debug("BM25: Attempting ix.close...")
                 self.ix.close()
+                logger.debug("BM25: ix.close successful.")
                 self.ix = None
                 self.parser = None
                 logger.info("Whoosh index closed.")

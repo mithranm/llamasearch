@@ -1,5 +1,4 @@
 import unittest
-import os
 import json
 import tarfile
 import tempfile

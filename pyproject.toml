@@ -14,7 +14,7 @@ authors = [
 ]
 dependencies = [
     "torch",
-    "transformers",
+    "transformers==4.51.3",
     "sentence-transformers",
     "markdown",
     "beautifulsoup4",
@@ -34,8 +34,9 @@ dependencies = [
     "PyJWT>=2.8.0",
     "sentencepiece>=0.2.0",
     "crawl4ai",
-    "optimum[onnxruntime]",
-    "py-cpuinfo",
+    "optimum[onnxruntime]>=1.21.0",
+    "py-cpuinfo>=9.0.0",
+    "onnxruntime>=1.18.0",
     "filelock>=3.12.0",
     "langchain-text-splitters",
     "Whoosh",
