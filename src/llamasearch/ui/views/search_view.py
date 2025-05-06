@@ -5,10 +5,11 @@ import shlex
 import time
 from pathlib import Path
 
-# --- Import QDesktopServices and QUrl ---
+# --- Remove unused QUrl and QDesktopServices ---
 from PySide6.QtCore import QTimer, Qt, Slot
 
-# --- End Import ---
+# from PySide6.QtGui import QDesktopServices # Removed
+# --- End Remove ---
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFileDialog,
@@ -51,7 +52,7 @@ class SearchAndIndexView(QWidget):
         self.backend.signals.actions_should_reenable.connect(
             lambda: self._disable_actions(False)
         )
-        QTimer.singleShot(100, self.update_data_display)
+        QTimer.singleShot(150, self.update_data_display)
 
     def init_ui(self):
         main_layout = QVBoxLayout(self)
@@ -68,9 +69,11 @@ class SearchAndIndexView(QWidget):
         query_layout.addWidget(self.search_btn)
         search_group_layout.addLayout(query_layout)
         self.search_results = QTextEdit()
-        self.search_results.setReadOnly(True)
+        self.search_results.setReadOnly(True)  # Ensure it's read-only for links to work
         self.search_results.setPlaceholderText("Search results...")
-        # QTextEdit does not support setOpenExternalLinks; links will be clickable if setHtml is used and QTextEdit is read-only.
+        # --- Removed incorrect setOpenExternalLinks call ---
+        # self.search_results.setOpenExternalLinks(True) # REMOVED - AttributeError
+        # --- End Removal ---
         search_group_layout.addWidget(self.search_results, 1)
         main_layout.addLayout(search_group_layout)
 
@@ -131,34 +134,30 @@ class SearchAndIndexView(QWidget):
         # Indexed Sources Table
         main_layout.addWidget(QLabel("<b>Indexed Sources:</b>"))
         self.data_table = QTableWidget()
-        # --- Adjust Columns for URL ---
-        self.data_table.setColumnCount(5)  # Added column for URL
+        self.data_table.setColumnCount(5)
         self.data_table.setHorizontalHeaderLabels(
             ["Source URL / Path", "Filename", "Chunks", "Modified", "Actions"]
         )
-        # --- End Adjust Columns ---
         self.data_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.data_table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
         )
         self.data_table.verticalHeader().setVisible(False)
-        # --- Adjust Column Resizing ---
         self.data_table.horizontalHeader().setSectionResizeMode(
             0, QHeaderView.ResizeMode.Stretch
-        )  # URL/Path
+        )
         self.data_table.horizontalHeader().setSectionResizeMode(
             1, QHeaderView.ResizeMode.ResizeToContents
-        )  # Filename
+        )
         self.data_table.horizontalHeader().setSectionResizeMode(
             2, QHeaderView.ResizeMode.ResizeToContents
-        )  # Chunks
+        )
         self.data_table.horizontalHeader().setSectionResizeMode(
             3, QHeaderView.ResizeMode.ResizeToContents
-        )  # Modified
+        )
         self.data_table.horizontalHeader().setSectionResizeMode(
             4, QHeaderView.ResizeMode.ResizeToContents
-        )  # Actions
-        # --- End Adjust Resizing ---
+        )
         self.data_table.setAlternatingRowColors(True)
         main_layout.addWidget(self.data_table, 2)
 
@@ -196,9 +195,7 @@ class SearchAndIndexView(QWidget):
             return
         self._set_status(f"Searching '{query[:30]}...'")
         self._disable_actions(True)
-        self.search_results.setHtml(
-            "<i>Submitting search...</i>"
-        )  # Use setHtml for potential links later
+        self.search_results.setHtml("<i>Submitting search...</i>")
         self.backend.submit_search(query)
 
     @Slot(str, bool)
@@ -206,16 +203,10 @@ class SearchAndIndexView(QWidget):
         logger.debug(f"_on_search_complete called. Success: {success}")
         display_message = result_message
         if success:
-            # If backend provides HTML, use setHtml, otherwise setPlainText
-            if "<" in result_message and ">" in result_message:  # Basic HTML check
-                self.search_results.setHtml(display_message)
-            else:
-                self.search_results.setPlainText(
-                    display_message
-                )  # Fallback for plain text
+            # Assume backend provides HTML, set it. Links should work if read-only.
+            self.search_results.setHtml(display_message)
             status_msg = "Search complete."
         else:
-            # Display errors as plain text
             if not result_message or result_message.isspace():
                 display_message = "Search failed. See logs."
             self.search_results.setPlainText(display_message)
@@ -236,7 +227,10 @@ class SearchAndIndexView(QWidget):
         start_dir = str(Path.home())
         try:
             index_path = self.backend.data_paths.get("index")
+            crawl_path = self.backend.data_paths.get("crawl_data")
             base_path = self.backend.data_paths.get("base")
+            if crawl_path and Path(crawl_path).exists():
+                return str(Path(crawl_path))
             if index_path and Path(index_path).exists():
                 return str(Path(index_path))
             if base_path and Path(base_path).exists():
@@ -248,14 +242,12 @@ class SearchAndIndexView(QWidget):
     @Slot()
     def do_index_file(self):
         if self._actions_disabled:
-            logger.warning("Index File action ignored.")
+            logger.warning("Index File action ignored: Actions disabled.")
             return
         start_dir = self._get_start_dir()
-        # --- Adjusted filter to include more common document types ---
         file_filter = (
             "Supported Files (*.md *.markdown *.txt *.html *.htm);;All Files (*)"
         )
-        # --- End Filter Adjustment ---
         fp, _ = QFileDialog.getOpenFileName(
             self, "Select File to Index", start_dir, file_filter
         )
@@ -267,7 +259,7 @@ class SearchAndIndexView(QWidget):
     @Slot()
     def do_index_dir(self):
         if self._actions_disabled:
-            logger.warning("Index Directory action ignored.")
+            logger.warning("Index Directory action ignored: Actions disabled.")
             return
         start_dir = self._get_start_dir()
         dp = QFileDialog.getExistingDirectory(
@@ -287,28 +279,43 @@ class SearchAndIndexView(QWidget):
         # Re-enabling handled by signal
 
     @Slot()
-    def remove_item(self, source_id: str):  # Use source_id (URL or path)
+    def remove_item(self, source_identifier: str):
         if self._actions_disabled:
-            logger.warning("Remove item action ignored.")
+            logger.warning("Remove item action ignored: Actions disabled.")
             return
+        if not isinstance(source_identifier, str) or not source_identifier:
+            logger.error(
+                f"Invalid source identifier received for removal: {source_identifier}"
+            )
+            self._set_status(
+                "Error: Invalid source identifier for removal.", level="error"
+            )
+            return
+
         try:
+            display_name = source_identifier
+            if not source_identifier.startswith("http"):
+                try:
+                    display_name = Path(source_identifier).name
+                except Exception:
+                    pass
             display_name = (
-                Path(source_id).name if not source_id.startswith("http") else source_id
+                (display_name[:70] + "...") if len(display_name) > 70 else display_name
             )
         except Exception:
-            display_name = source_id[:40] + "..."
+            display_name = str(source_identifier)[:70] + "..."
 
         reply = QMessageBox.question(
             self,
             "Confirm Removal",
-            f"Remove all chunks for:\n\n'{display_name}'?",
+            f"Remove all indexed content for:\n\n'{display_name}'?\n\n(This cannot be undone)",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
             self._set_status(f"Removing source '{display_name}'...")
             self._disable_actions(True)
-            self.backend.submit_removal(source_id)  # Pass the ID (URL or path)
+            self.backend.submit_removal(source_identifier)
         else:
             self._set_status("Removal cancelled.", level="info")
 
@@ -342,29 +349,33 @@ class SearchAndIndexView(QWidget):
         self._set_table_buttons_enabled(not disable)
 
     def _set_table_buttons_enabled(self, enabled: bool):
+        """Enables or disables buttons within the data table."""
         if not hasattr(self, "data_table"):
             return
-        # --- Update column index for actions ---
-        action_col_index = 4  # Actions are now in column 4
-        # --- End Update ---
+        action_col_index = 4
         for row in range(self.data_table.rowCount()):
-            widget = self.data_table.cellWidget(row, action_col_index)
-            if isinstance(widget, QPushButton):
-                widget.setEnabled(enabled)
+            cell_widget = self.data_table.cellWidget(row, action_col_index)
+            if isinstance(cell_widget, QWidget):
+                button = cell_widget.findChild(QPushButton)
+                if button:
+                    button.setEnabled(enabled)
+                else:
+                    cell_widget.setEnabled(enabled)
 
     @Slot()
     def update_data_display(self):
+        """Updates the table with indexed sources, prioritizing URL display."""
         logger.debug("Updating data display table...")
+        self._disable_actions(True)
         try:
             items = self.backend.get_indexed_sources()
             self.data_table.setRowCount(0)
             self.data_table.setRowCount(len(items))
-            # --- Define action column index ---
             action_col_index = 4
-            # --- End Define ---
+
             for i, item_data in enumerate(items):
                 source_path = item_data.get("source_path", "N/A")
-                original_url = item_data.get("original_url")  # Get the URL
+                original_url = item_data.get("original_url")
                 filename = item_data.get("filename", "N/A")
                 chunk_count = item_data.get("chunk_count", "N/A")
                 mtime_val = item_data.get("mtime")
@@ -374,22 +385,27 @@ class SearchAndIndexView(QWidget):
                     else "N/A"
                 )
 
-                # --- Determine primary display and tooltip ---
-                display_source = original_url if original_url else source_path
-                tooltip = (
-                    f"URL: {original_url}\nLocal Path: {source_path}\nModified: {mtime_str}"
-                    if original_url
-                    else f"Path: {source_path}\nModified: {mtime_str}"
-                )
-                source_item_id = (
-                    original_url if original_url else source_path
-                )  # ID for removal action
-                # --- End Determine ---
+                display_source = "N/A"
+                source_identifier_for_action = None
+                base_tooltip = f"Modified: {mtime_str}"
+                tooltip_text = base_tooltip
 
-                # --- Create table items ---
+                if isinstance(original_url, str) and original_url.strip():
+                    display_source = original_url.strip()
+                    source_identifier_for_action = display_source
+                    tooltip_text = f"URL: {display_source}\nLocal Path: {source_path}\n{base_tooltip}"
+                elif isinstance(source_path, str) and source_path != "N/A":
+                    display_source = source_path
+                    source_identifier_for_action = source_path
+                    tooltip_text = f"Path: {display_source}\n{base_tooltip}"
+                else:
+                    display_source = item_data.get("identifier", "(Unknown Source)")
+                    source_identifier_for_action = display_source
+                    tooltip_text = f"Identifier: {display_source}\n{base_tooltip}"
+
                 source_item = QTableWidgetItem(display_source)
                 source_item.setFlags(source_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                source_item.setToolTip(tooltip)
+                source_item.setToolTip(tooltip_text)
 
                 name_item = QTableWidgetItem(filename)
                 name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -404,36 +420,44 @@ class SearchAndIndexView(QWidget):
                 mtime_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 mtime_item.setFlags(mtime_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 mtime_item.setToolTip(f"Last Modified: {mtime_str}")
-                # --- End Create ---
 
-                # --- Set table items ---
                 self.data_table.setItem(i, 0, source_item)
                 self.data_table.setItem(i, 1, name_item)
                 self.data_table.setItem(i, 2, chunk_item)
-                self.data_table.setItem(i, 3, mtime_item)  # Add mtime item
-                # --- End Set ---
+                self.data_table.setItem(i, 3, mtime_item)
 
                 remove_btn = QPushButton("Remove")
                 remove_btn.setStyleSheet("QPushButton { padding: 2px 5px; }")
                 remove_btn.setToolTip(f"Remove all chunks for source: {display_source}")
                 remove_btn.setEnabled(not self._actions_disabled)
 
-                try:
-                    remove_btn.clicked.disconnect()
-                except (TypeError, RuntimeError):
-                    pass
-                # --- Pass source_item_id (URL or path) to remove_item ---
-                remove_btn.clicked.connect(
-                    lambda checked=False, sp=source_item_id: self.remove_item(sp)
-                )
-                # --- End Pass ---
-                self.data_table.setCellWidget(i, action_col_index, remove_btn)
+                if source_identifier_for_action:
+                    try:
+                        remove_btn.clicked.disconnect()
+                    except (TypeError, RuntimeError):
+                        pass
+                    remove_btn.clicked.connect(
+                        lambda checked=False,
+                        sid=source_identifier_for_action: self.remove_item(sid)
+                    )
+                else:
+                    remove_btn.setDisabled(True)
+                    remove_btn.setToolTip("Cannot remove: Missing source identifier.")
 
-            # self.data_table.resizeColumnsToContents() # Maybe adjust manually or keep stretch
+                container_widget = QWidget()
+                btn_layout = QHBoxLayout(container_widget)
+                btn_layout.addWidget(remove_btn)
+                btn_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                btn_layout.setContentsMargins(0, 0, 0, 0)
+                container_widget.setLayout(btn_layout)
+                self.data_table.setCellWidget(i, action_col_index, container_widget)
+
             logger.debug(f"Updated indexed sources table with {len(items)} items.")
         except Exception as e:
             logger.error(f"Failed to update data display table: {e}", exc_info=True)
             self._set_status("Error updating indexed sources list.", level="error")
+        finally:
+            self._disable_actions(False)
 
     @Slot()
     def do_crawl_and_index(self):
@@ -441,7 +465,7 @@ class SearchAndIndexView(QWidget):
             logger.error("Backend not initialized.")
             return
         if self._actions_disabled:
-            logger.warning("Crawl and Index action ignored.")
+            logger.warning("Crawl and Index action ignored: Actions disabled.")
             return
 
         urls_text_content = self.urls_text.toPlainText().strip()
@@ -455,6 +479,20 @@ class SearchAndIndexView(QWidget):
         if not target_urls:
             QMessageBox.warning(
                 self, "Input Error", "Please enter at least one target URL."
+            )
+            return
+
+        invalid_urls = [
+            url
+            for url in target_urls
+            if not (url.startswith("http://") or url.startswith("https://"))
+        ]
+        if invalid_urls:
+            QMessageBox.warning(
+                self,
+                "Input Error",
+                "Invalid URL format (must start with http:// or https://):\n- "
+                + "\n- ".join(invalid_urls),
             )
             return
 
@@ -472,10 +510,9 @@ class SearchAndIndexView(QWidget):
             f"Starting crawl and index: URLs={target_urls}, Depth={crawl_depth}, Target Pages={target_links}, Keywords={keywords}"
         )
         self._set_status(
-            f"Starting crawl: {len(target_urls)} URLs, Depth={crawl_depth}, Keywords={keywords}"
+            f"Starting crawl: {len(target_urls)} URLs, Depth={crawl_depth}..."
         )
         self._disable_actions(True)
-        # Use UI values for target_links and max_depth
         self.backend.submit_crawl_and_index(
             root_urls=target_urls,
             target_links=target_links,

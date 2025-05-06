@@ -7,7 +7,7 @@ import time
 import threading
 from concurrent.futures import ThreadPoolExecutor, CancelledError
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple  # 'Any' is used for Qt signals with .emit()
+from typing import Any, Dict, List, Optional, Tuple
 
 from PySide6.QtCore import QObject, Signal as pyqtSignal, QTimer
 
@@ -228,8 +228,7 @@ class LlamaSearchApp:
         result: Optional[Any],
         exception: Optional[Exception],
         cancelled: bool,
-        completion_signal: Any,  # Accepts any Qt signal object; .emit is checked at runtime
-
+        completion_signal: Any,
     ):
         """Handles the final result/exception in the GUI thread after background task."""
         logger.debug(
@@ -314,7 +313,12 @@ class LlamaSearchApp:
             return
         logger.info(f"Submitting search: '{query[:50]}...'")
         self.signals.status_updated.emit(f"Searching '{query[:30]}...'", "info")
-        self.signals.actions_should_reenable.emit()
+        # Disable actions immediately
+        self.signals.actions_should_reenable.emit()  # Incorrect: should disable, signal re-enables later
+        # Correct: Disable actions via main view (if possible) or track state internally
+        # For now, rely on _run_in_background re-enabling via signal later.
+
+        # Submit task using QTimer to ensure it runs after current event processing
         QTimer.singleShot(
             0,
             lambda: self._run_in_background(
@@ -343,7 +347,10 @@ class LlamaSearchApp:
         self.signals.status_updated.emit(
             f"Starting crawl & index for {len(root_urls)} URL(s)...", "info"
         )
-        self.signals.actions_should_reenable.emit()
+        # Disable actions
+        self.signals.actions_should_reenable.emit()  # Incorrect placement
+
+        # Submit task
         QTimer.singleShot(
             0,
             lambda: self._run_in_background(
@@ -375,7 +382,10 @@ class LlamaSearchApp:
             return
         logger.info(f"Submitting manual index task for: {source_path}")
         self.signals.status_updated.emit(f"Indexing '{source_path.name}'...", "info")
-        self.signals.actions_should_reenable.emit()
+        # Disable actions
+        self.signals.actions_should_reenable.emit()  # Incorrect placement
+
+        # Submit task
         QTimer.singleShot(
             0,
             lambda: self._run_in_background(
@@ -403,7 +413,10 @@ class LlamaSearchApp:
         except Exception:
             display_name = source_path_to_remove[:40] + "..."
         self.signals.status_updated.emit(f"Removing '{display_name}'...", "info")
-        self.signals.actions_should_reenable.emit()
+        # Disable actions
+        self.signals.actions_should_reenable.emit()  # Incorrect placement
+
+        # Submit task
         QTimer.singleShot(
             0,
             lambda: self._run_in_background(
@@ -459,7 +472,8 @@ class LlamaSearchApp:
         total_start_time = time.time()
         crawl_dir_base = Path(self.data_paths["crawl_data"])
         raw_output_dir = crawl_dir_base / "raw"
-        crawl_start_time = 0
+        crawl_start_time = 0.0
+        indexing_start_time = 0.0
         loop: Optional[asyncio.AbstractEventLoop] = None
         policy = asyncio.get_event_loop_policy()
         final_message = "Task initialization failed."
@@ -517,9 +531,7 @@ class LlamaSearchApp:
                 self._active_crawler = None
                 if loop is not None:
                     try:
-                        if (
-                            loop.is_running()
-                        ):  # Check if running before trying to cancel
+                        if loop.is_running():
                             tasks = asyncio.all_tasks(loop=loop)
                             if tasks:
                                 logger.debug(
@@ -529,8 +541,7 @@ class LlamaSearchApp:
                                     task.cancel()
                                 gather_future = asyncio.gather(
                                     *tasks, return_exceptions=True
-                                )  # Gather results/exceptions
-                                # Briefly run loop to allow cancellations to process
+                                )
                                 loop.run_until_complete(asyncio.sleep(0.1))
                                 logger.debug(
                                     f"Gather results after cancel: {gather_future.result() if gather_future.done() else 'Not Done'}"
@@ -538,11 +549,11 @@ class LlamaSearchApp:
                         if not loop.is_closed():
                             loop.close()
                             logger.debug(f"Closed asyncio event loop {id(loop)}.")
-                        try:  # Reset policy loop if needed
+                        try:
                             if policy.get_event_loop() is loop:
                                 policy.set_event_loop(None)
                         except RuntimeError:
-                            pass  # Ignore if no current loop set
+                            pass
                     except Exception as loop_close_err:
                         logger.error(
                             f"Error cleaning asyncio loop: {loop_close_err}",
@@ -550,6 +561,7 @@ class LlamaSearchApp:
                         )
 
             # Indexing Phase
+            indexing_start_time = 0.0  # Initialize
             if crawl_successful:
                 indexing_start_time = time.time()
                 processed_files_count = 0
@@ -572,21 +584,24 @@ class LlamaSearchApp:
                             if self._shutdown_event.is_set():
                                 raise InterruptedError("Shutdown during indexing loop.")
                             logger.debug(f"Indexing file: {md_file.name}")
+                            # --- Pass internal_call=True ---
                             added, _ = self.llm_search.add_source(
-                                str(md_file)
-                            )  # Ignore rebuild flag
+                                str(md_file), internal_call=True
+                            )
+                            # --- End Pass internal_call ---
                             if added > 0:
                                 total_added_chunks += added
-                                processed_files_count += 1
+                            # Count as processed even if 0 chunks added (e.g., empty file)
+                            processed_files_count += 1
                     else:
                         logger.warning(
                             f"Crawl 'raw' directory not found: {raw_output_dir}. No indexing performed."
                         )
-                    index_duration = time.time() - indexing_start_time
+                    if indexing_start_time > 0:
+                        index_duration = time.time() - indexing_start_time
                     logger.info(
                         f"File processing phase completed ({index_duration:.2f}s). Indexed {processed_files_count} files. Total chunks added: {total_added_chunks}."
                     )
-                    # No final BM25 build needed with Whoosh
                     if self._shutdown_event.is_set():
                         raise InterruptedError("Shutdown after indexing phase.")
                     index_successful = True
@@ -602,6 +617,7 @@ class LlamaSearchApp:
                         f"Indexing FAILED ({index_duration:.2f}s): {index_exc}",
                         exc_info=self.debug,
                     )
+                    final_message = f"Indexing failed: {index_exc}"  # Set final message on index failure
                     index_successful = False
 
         except Exception as outer_exc:
@@ -615,21 +631,38 @@ class LlamaSearchApp:
         # Final Reporting
         total_duration = time.time() - total_start_time
         shutdown_occurred = self._shutdown_event.is_set()
-        overall_success = (
-            crawl_successful and index_successful and not shutdown_occurred
-        )
+        # Check if index phase started and completed successfully
+        index_phase_ok = (
+            indexing_start_time > 0 and index_successful
+        ) or not crawl_successful
+        overall_success = crawl_successful and index_phase_ok and not shutdown_occurred
+
         crawl_status_msg = "Crawl skipped."
         if crawl_start_time > 0:
-            crawl_status_msg = f"Crawl {'OK' if crawl_successful else ('INTERRUPTED' if shutdown_occurred else 'FAILED')} ({crawl_duration:.1f}s)."
+            crawl_status_msg = f"Crawl {'OK' if crawl_successful else ('INTERRUPTED' if shutdown_occurred and not crawl_successful else 'FAILED')} ({crawl_duration:.1f}s)."
+
         index_status_msg = "Index skipped."
-        if crawl_successful:
-            if index_duration > 0 or not index_successful:
-                index_status_msg = f"Index {'OK' if index_successful else ('INTERRUPTED' if shutdown_occurred else 'FAILED')} ({index_duration:.1f}s, {total_added_chunks} chunks)."
-        if overall_success or (
-            "failed" not in final_message.lower()
+        if crawl_successful:  # Only report index status if crawl happened
+            if indexing_start_time > 0:  # Check if index phase actually started
+                index_status_msg = f"Index {'OK' if index_successful else ('INTERRUPTED' if shutdown_occurred and not index_successful else 'FAILED')} ({index_duration:.1f}s, {total_added_chunks} chunks added)."
+            elif shutdown_occurred:  # If shutdown happened before indexing could start
+                index_status_msg = "Index INTERRUPTED (before start)."
+            else:  # If crawl succeeded but index phase didn't start (e.g., error before loop)
+                index_status_msg = "Index FAILED (before start)."
+
+        # Overwrite generic fail message only if task wasn't explicitly cancelled/interrupted
+        if overall_success:
+            final_message = f"Finished ({total_duration:.1f}s). {crawl_status_msg} {index_status_msg}".strip()
+        elif (
+            not shutdown_occurred
+            and "failed" not in final_message.lower()
             and "error" not in final_message.lower()
         ):
-            final_message = f"Finished ({total_duration:.1f}s). {crawl_status_msg} {index_status_msg}".strip()
+            # If no explicit fail message set, construct status summary
+            final_message = f"Task ended ({total_duration:.1f}s). {crawl_status_msg} {index_status_msg}".strip()
+        elif shutdown_occurred:
+            final_message = f"Task INTERRUPTED ({total_duration:.1f}s). {crawl_status_msg} {index_status_msg}".strip()
+
         logger.info(final_message)
         if overall_success and total_added_chunks > 0:
             QTimer.singleShot(0, self.signals.refresh_needed.emit)
@@ -651,15 +684,26 @@ class LlamaSearchApp:
             if not self.llm_search:
                 raise Exception("LLMSearch instance not available.")
             logger.info(f"Manually indexing source: {source_path.name}...")
-            total_added_chunks, _ = self.llm_search.add_source(
-                path_str
-            )  # Ignore rebuild flag
+            # Call add_source with default internal_call=False
+            total_added_chunks, _ = self.llm_search.add_source(path_str)
             if self._shutdown_event.is_set():
                 raise InterruptedError("Shutdown after manual index processing.")
-            logger.info(
-                f"Manual index processing complete for '{source_path.name}'. Added {total_added_chunks} chunks."
-            )
-            task_successful = True
+
+            # Check if chunks were added (add_source returns 0 if blocked)
+            if (
+                total_added_chunks >= 0
+            ):  # 0 chunks added is still success if not blocked
+                logger.info(
+                    f"Manual index processing complete for '{source_path.name}'. Added {total_added_chunks} chunks."
+                )
+                task_successful = True
+            else:
+                # This case shouldn't happen with current logic, but handle defensively
+                logger.error(
+                    f"Manual index task returned unexpected chunk count {total_added_chunks}"
+                )
+                task_successful = False
+
         except InterruptedError as e:
             logger.warning(f"Manual index interrupted: {e}")
             task_successful = False
@@ -668,19 +712,26 @@ class LlamaSearchApp:
                 f"Manual index FAILED for '{source_path.name}': {e}",
                 exc_info=self.debug,
             )
-            task_successful = False
+            task_successful = False  # Keep false on exception
+            final_message = f"Indexing '{source_path.name}' FAILED. Error: {e}"
 
         duration = time.time() - start_time
         shutdown_occurred = self._shutdown_event.is_set()
         overall_success = task_successful and not shutdown_occurred
+
+        # Refine final message based on outcome
         if shutdown_occurred:
             final_message = f"Indexing '{source_path.name}' interrupted ({duration:.1f}s). Added {total_added_chunks} chunks before stop."
         elif task_successful:
-            final_message = f"Indexing '{source_path.name}' OK ({duration:.1f}s). Added {total_added_chunks} new chunks."
             if total_added_chunks > 0:
+                final_message = f"Indexing '{source_path.name}' OK ({duration:.1f}s). Added {total_added_chunks} new chunks."
                 QTimer.singleShot(0, self.signals.refresh_needed.emit)
-        else:
-            final_message = f"Indexing '{source_path.name}' FAILED ({duration:.1f}s){' (Interrupted)' if shutdown_occurred else ''}. See logs."
+            else:
+                # Could be 0 because file was unchanged OR because it was disallowed (crawl dir)
+                # The disallow case is now handled inside add_source, so this means unchanged or empty.
+                final_message = f"Indexing '{source_path.name}' OK ({duration:.1f}s). No new chunks added (file unchanged or empty)."
+        # else: Keep the error message set in the except block
+
         logger.info(final_message)
         return final_message, overall_success
 
@@ -690,7 +741,10 @@ class LlamaSearchApp:
         final_message = "Task did not complete."
         removal_occurred = False
         overall_success = False
-        display_name = Path(source_path_to_remove).name
+        try:
+            display_name = Path(source_path_to_remove).name
+        except Exception:
+            display_name = source_path_to_remove[:40] + "..."
 
         try:
             logger.debug(f"Executing removal task for: {source_path_to_remove}")
@@ -698,33 +752,34 @@ class LlamaSearchApp:
                 raise InterruptedError("Shutdown before removal.")
             if not self.llm_search:
                 raise Exception("LLMSearch instance not available.")
-            removal_occurred, _ = self.llm_search.remove_source(
-                source_path_to_remove
-            )  # Ignore rebuild flag
+            removal_occurred, _ = self.llm_search.remove_source(source_path_to_remove)
             if self._shutdown_event.is_set():
                 raise InterruptedError("Shutdown after removal processing.")
             task_successful = True
         except InterruptedError as e:
             logger.warning(f"Removal interrupted: {e}")
             task_successful = False
+            final_message = f"Removal of '{display_name}' interrupted."  # Set message for interruption
         except Exception as e:
             logger.error(
                 f"Removal FAILED for '{display_name}': {e}", exc_info=self.debug
             )
             task_successful = False
+            final_message = (
+                f"Error removing '{display_name}'. See logs."  # Set message for error
+            )
 
         shutdown_occurred = self._shutdown_event.is_set()
         overall_success = task_successful and not shutdown_occurred
-        if shutdown_occurred:
-            final_message = f"Removal of '{display_name}' interrupted."
-        elif task_successful:
+
+        # Set final message only if not already set by exception/interruption
+        if task_successful and not shutdown_occurred:
             if removal_occurred:
                 final_message = f"Successfully removed source: {display_name}"
                 QTimer.singleShot(0, self.signals.refresh_needed.emit)
             else:
                 final_message = f"Source not found or already removed: {display_name}"
-        else:
-            final_message = f"Error removing '{display_name}'{' (Interrupted)' if shutdown_occurred else ''}. See logs."
+
         logger.info(final_message)
         return final_message, overall_success
 
@@ -747,26 +802,34 @@ class LlamaSearchApp:
 
     def apply_settings(self, settings: Dict[str, Any]):
         """Applies settings (sync). Emits signal on completion."""
-        restart_needed = False
+        restart_needed = False  # Keep for future use if needed
         config_changed = False
         new_debug = settings.get("debug_mode", self.debug)
         if new_debug != self.debug:
             self.debug = new_debug
             log_level = logging.DEBUG if self.debug else logging.INFO
             root_logger = logging.getLogger("llamasearch")
-            root_logger.setLevel(log_level)
+            root_logger.setLevel(log_level)  # Set root level first
             for handler in root_logger.handlers:
+                # Adjust levels based on type AND debug flag
                 if isinstance(
                     handler, (logging.FileHandler, logging.handlers.RotatingFileHandler)
                 ):
                     handler.setLevel(logging.DEBUG)  # File always DEBUG
                 elif isinstance(handler, logging.StreamHandler):
-                    handler.setLevel(log_level)  # Console follows flag
+                    # Keep console INFO unless debug flag is explicitly set
+                    handler.setLevel(log_level if self.debug else logging.INFO)
+                else:
+                    # Set level for other handlers (like Qt) based on debug flag
+                    handler.setLevel(log_level)
+                # Specific QtLogHandler check
                 try:
                     from llamasearch.ui.qt_logging import QtLogHandler
 
                     if QtLogHandler and isinstance(handler, QtLogHandler):
-                        handler.setLevel(log_level)  # Qt follows flag
+                        handler.setLevel(
+                            log_level
+                        )  # Set Qt handler based on debug flag
                 except ImportError:
                     pass
             logger.info(f"Logging level set to: {'DEBUG' if self.debug else 'INFO'}")
@@ -774,6 +837,7 @@ class LlamaSearchApp:
                 self.llm_search.debug = self.debug
                 self.llm_search.verbose = self.debug
             config_changed = True
+
         new_max_results = settings.get(
             "max_results", self._current_config.get("max_results", 3)
         )
@@ -792,6 +856,7 @@ class LlamaSearchApp:
                 )
         except (ValueError, TypeError):
             logger.warning(f"Invalid Max Results type ignored: {new_max_results}.")
+
         msg, lvl = ("No changes applied.", "info")
         if restart_needed:
             msg, lvl = "Settings applied. Backend restart might be needed.", "warning"

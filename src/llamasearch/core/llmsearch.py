@@ -4,24 +4,22 @@ import json
 import threading
 import time
 import hashlib
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 import difflib
-import gc  # Import gc for explicit calls
-import html # Import html for escaping
+import gc
+import html
 
 import chromadb
-from chromadb.api.types import (
-    GetResult,
-    QueryResult,
-    Metadata,
-)
+from chromadb.api.types import GetResult, QueryResult, Metadata, Where
 from chromadb.config import Settings as ChromaSettings
+from whoosh import index as whoosh_index
 
 from llamasearch.core.bm25 import WhooshBM25Retriever
 from llamasearch.core.chunker import chunk_markdown_text, DEFAULT_MIN_CHUNK_LENGTH
 from llamasearch.core.embedder import DEFAULT_MODEL_NAME as DEFAULT_EMBEDDER_NAME
-from llamasearch.core.embedder import EnhancedEmbedder  # Uses CPU-Only embedder
+from llamasearch.core.embedder import EnhancedEmbedder
 from llamasearch.core.teapot import TeapotONNXLLM, load_teapot_onnx_llm
 
 from llamasearch.data_manager import data_manager
@@ -38,7 +36,9 @@ DEFAULT_MAX_CHUNK_SIZE = 800
 DEFAULT_CHUNK_OVERLAP = 100
 DEFAULT_MIN_CHUNK_SIZE_FILTER = DEFAULT_MIN_CHUNK_LENGTH
 CHUNK_SIMILARITY_THRESHOLD = 0.85
+ChromaWhereClause = Where
 ChromaMetadataValue = Union[str, int, float, bool]
+ChromaMetadataDict = Dict[str, ChromaMetadataValue]
 ALLOWED_EXTENSIONS = {".md", ".markdown", ".txt", ".html", ".htm"}
 
 
@@ -52,11 +52,7 @@ def _are_chunks_too_similar(text1: str, text2: str, threshold: float) -> bool:
 
 
 class LLMSearch:
-    """
-    RAG-based search using Teapot ONNX (CPU), ChromaDB, Whoosh BM25,
-    and mxbai-embed-large-v1 (CPU-only).
-    """
-
+    # __init__ remains the same
     def __init__(
         self,
         storage_dir: Path,
@@ -84,18 +80,15 @@ class LLMSearch:
         self._shutdown_event = shutdown_event
         self.bm25_weight = bm25_weight
         self.vector_weight = vector_weight
-
         self.model: Optional[LLM] = None
         self.embedder: Optional[EnhancedEmbedder] = None
         self.chroma_client = None
         self.chroma_collection: Optional[chromadb.Collection] = None
         self.bm25: Optional[WhooshBM25Retriever] = None
         self._reverse_lookup: Dict[str, str] = {}
-
         self.context_length: int = 0
         self.llm_device_type: str = "cpu"
 
-        # Chunking param validation
         if min_chunk_size_filter < 0:
             logger.warning(
                 f"Invalid min_chunk_size_filter ({min_chunk_size_filter}). Setting to 0."
@@ -117,8 +110,6 @@ class LLMSearch:
 
         try:
             self._load_reverse_lookup()
-
-            # 1. Load LLM (Teapot ONNX - CPU)
             self.logger.info("Initializing Teapot ONNX LLM (CPU-only)...")
             self.model = load_teapot_onnx_llm(
                 onnx_quantization=teapot_onnx_quant,
@@ -128,14 +119,12 @@ class LLMSearch:
             if not self.model:
                 raise RuntimeError("load_teapot_onnx_llm returned None")
             model_info = self.model.model_info
-            # Use the context length reported by the model info protocol
             self.context_length = model_info.context_length
             self.llm_device_type = "cpu"
             self.logger.info(
                 f"LLM: {model_info.model_id} on CPU. Context: {self.context_length}"
             )
 
-            # 2. Initialize Embedder (CPU-Only, mxbai)
             self.logger.info(
                 f"Initializing Embedder '{embedder_model or DEFAULT_EMBEDDER_NAME}' (CPU-only)..."
             )
@@ -154,7 +143,6 @@ class LLMSearch:
                     f"Embedder initialized (CPU). Effective Dim: {embedding_dim}"
                 )
 
-            # 3. Initialize ChromaDB
             self.logger.info(
                 f"Initializing ChromaDB Client (storage: {self.storage_dir})"
             )
@@ -163,11 +151,12 @@ class LLMSearch:
                 ChromaSettings(anonymized_telemetry=False, allow_reset=True),
             )
             if self.chroma_client is not None:
-                chroma_meta: Metadata = {"hnsw:space": "cosine"}
+                chroma_meta: ChromaMetadataDict = {"hnsw:space": "cosine"}
                 if embedding_dim:
                     chroma_meta["embedding_dimension"] = str(int(embedding_dim))
                 self.chroma_collection = self.chroma_client.get_or_create_collection(
-                    CHROMA_COLLECTION_NAME, metadata=chroma_meta
+                    CHROMA_COLLECTION_NAME,
+                    metadata=chroma_meta,  # type: ignore
                 )
             else:
                 raise RuntimeError("Chroma client not initialized!")
@@ -178,7 +167,6 @@ class LLMSearch:
                 f"ChromaDB Collection '{CHROMA_COLLECTION_NAME}' ready. Count: {self.chroma_collection.count()}"
             )
 
-            # 4. Initialize WhooshBM25Retriever
             bm25_path = self.storage_dir / BM25_SUBDIR
             self.logger.info(
                 f"Initializing Whoosh BM25 Retriever (storage: {bm25_path})"
@@ -209,10 +197,17 @@ class LLMSearch:
             self.close()
             raise RuntimeError("LLMSearch init failed.") from e
 
+    # _load_reverse_lookup remains the same
     def _load_reverse_lookup(self):
-        """Loads the URL reverse lookup from the crawl data directory."""
         try:
-            crawl_data_path = Path(data_manager.get_data_paths()["crawl_data"])
+            crawl_data_path_str = data_manager.get_data_paths().get("crawl_data")
+            if not crawl_data_path_str:
+                logger.warning(
+                    "Crawl data path not configured, cannot load reverse lookup."
+                )
+                self._reverse_lookup = {}
+                return
+            crawl_data_path = Path(crawl_data_path_str)
             lookup_file = crawl_data_path / "reverse_lookup.json"
             if lookup_file.exists():
                 with open(lookup_file, "r", encoding="utf-8") as f:
@@ -227,8 +222,13 @@ class LLMSearch:
             self._reverse_lookup = {}
             logger.error(f"Error loading reverse lookup: {e}", exc_info=self.debug)
 
-    def add_source(self, source_path_str: str) -> Tuple[int, bool]:
-        """Adds source(s). Uses CPU embedder with input_type='document'."""
+    # --- Updated add_source with internal_call flag ---
+    def add_source(
+        self, source_path_str: str, internal_call: bool = False
+    ) -> Tuple[int, bool]:
+        """
+        Adds source(s). Disallows adding files from within crawl_data/raw unless internal_call is True.
+        """
         assert self.embedder is not None, "Embedder not initialized"
         assert self.chroma_collection is not None, "Chroma collection not initialized"
         assert self.bm25 is not None, "BM25 retriever not initialized"
@@ -239,6 +239,30 @@ class LLMSearch:
 
         source_path = Path(source_path_str).resolve()
         total_chunks_added = 0
+
+        # --- Check if adding from managed crawl directory (only if NOT an internal call) ---
+        if not internal_call:
+            try:
+                crawl_data_path_str = data_manager.get_data_paths().get("crawl_data")
+                if crawl_data_path_str:
+                    crawl_raw_dir = Path(crawl_data_path_str).resolve() / "raw"
+                    # Check if source_path exists before checking parents
+                    if (
+                        source_path.exists()
+                        and crawl_raw_dir.exists()
+                        and crawl_raw_dir in source_path.parents
+                    ):
+                        logger.warning(
+                            f"Cannot manually add source from managed crawl directory: {source_path}. Use crawl feature or move the file."
+                        )
+                        return 0, False  # Disallow adding from crawl_data/raw
+            except Exception as path_check_err:
+                logger.error(
+                    f"Error checking source path location: {path_check_err}",
+                    exc_info=self.debug,
+                )
+                # Proceed with caution if check fails? Or disallow? Let's proceed but log error.
+        # --- End Check ---
 
         if not source_path.exists():
             logger.error(f"Source path not found: {source_path}")
@@ -252,22 +276,35 @@ class LLMSearch:
                 )
                 return 0, False
 
-            logger.info(f"Processing file: {source_path}")
+            logger.info(
+                f"Processing file: {source_path}{' (internal call)' if internal_call else ''}"
+            )
             if self._is_source_unchanged(source_path_str):
                 logger.info(f"File '{source_path.name}' is unchanged. Skipping.")
                 return 0, False
 
-            removed_ok, _ = self.remove_source(source_path_str)
+            # Determine identifier for removal (URL if available, else path)
+            identifier_for_removal = source_path_str
+            url_from_lookup = None
+            if source_path.suffix.lower() == ".md" and len(source_path.stem) == 16:
+                url_from_lookup = self._reverse_lookup.get(source_path.stem)
+                if url_from_lookup:
+                    identifier_for_removal = url_from_lookup
+                    logger.debug(
+                        f"Using URL '{url_from_lookup}' as identifier for potential prior removal."
+                    )
+
+            removed_ok, _ = self.remove_source(identifier_for_removal)
             if removed_ok:
                 logger.debug(
-                    f"Removed existing chunks for changed file: {source_path.name}"
+                    f"Removed existing chunks for changed/re-added source: {identifier_for_removal}"
                 )
 
-            # Read file content with encoding fallback
+            # Read file content
             file_content: Optional[str] = None
             try:
                 file_content = source_path.read_text(encoding="utf-8", errors="ignore")
-                if "�" in file_content[:1000]:
+                if file_content and "�" in file_content[:1000]:
                     content_latin1, content_cp1252 = None, None
                     try:
                         content_latin1 = source_path.read_text(
@@ -281,7 +318,6 @@ class LLMSearch:
                         )
                     except Exception:
                         pass
-
                     if content_latin1 and "�" not in content_latin1[:1000]:
                         file_content = content_latin1
                         logger.info(f"Using latin-1 encoding for {source_path.name}.")
@@ -297,7 +333,6 @@ class LLMSearch:
                     f"Error reading file {source_path}: {e}", exc_info=self.debug
                 )
                 return 0, False
-
             if file_content is None or not file_content.strip():
                 logger.info(
                     f"Skipping file {source_path.name}: Content empty or read failed."
@@ -320,9 +355,9 @@ class LLMSearch:
                     )
                     return 0, False
 
-                # Prepare data for embedding and storage
+                # Prepare data
                 chunk_texts: List[str] = []
-                chunk_metadatas: List[Metadata] = []
+                chunk_metadatas: List[ChromaMetadataDict] = []
                 chunk_ids: List[str] = []
                 try:
                     mtime_val: Optional[float] = source_path.stat().st_mtime
@@ -331,16 +366,17 @@ class LLMSearch:
                     mtime_val = time.time()
 
                 file_hash = hashlib.sha1(source_path_str.encode()).hexdigest()[:8]
-                original_url: Optional[str] = self._reverse_lookup.get(source_path.stem)
+                # Use the URL looked up earlier if available
+                original_url = url_from_lookup
                 if original_url:
                     logger.debug(
-                        f"Found original URL for {source_path.name}: {original_url}"
+                        f"Using previously found original URL for metadata: {original_url}"
                     )
 
-                base_meta: Metadata = {
+                base_meta: ChromaMetadataDict = {
                     "source_path": source_path_str,
                     "filename": source_path.name,
-                    "mtime": mtime_val,
+                    "mtime": float(mtime_val) if mtime_val is not None else 0.0,
                 }
                 if original_url:
                     base_meta["original_url"] = original_url
@@ -358,34 +394,30 @@ class LLMSearch:
                     chunk_ids.append(chunk_id)
                     valid_chunk_counter += 1
 
-                    meta: Metadata = base_meta.copy()
+                    meta: ChromaMetadataDict = base_meta.copy()
                     chunker_meta = c.get("metadata", {})
                     if isinstance(chunker_meta, dict):
-                        if chunker_meta.get("chunk_index_in_doc") is not None:
-                            meta["original_chunk_index"] = chunker_meta[
-                                "chunk_index_in_doc"
-                            ]
-                        if chunker_meta.get("length") is not None:
-                            meta["chunk_char_length"] = chunker_meta["length"]
-                        if chunker_meta.get("effective_length") is not None:
-                            meta["effective_length"] = chunker_meta["effective_length"]
-                        if chunker_meta.get("processing_mode") is not None:
-                            meta["processing_mode"] = chunker_meta["processing_mode"]
+                        original_chunk_index = chunker_meta.get("chunk_index_in_doc")
+                        length = chunker_meta.get("length")
+                        eff_length = chunker_meta.get("effective_length")
+                        proc_mode = chunker_meta.get("processing_mode")
+                        if original_chunk_index is not None:
+                            meta["original_chunk_index"] = int(original_chunk_index)
+                        if length is not None:
+                            meta["chunk_char_length"] = int(length)
+                        if eff_length is not None:
+                            meta["effective_length"] = int(eff_length)
+                        if proc_mode is not None:
+                            meta["processing_mode"] = str(proc_mode)
 
                     meta["filtered_chunk_index"] = valid_chunk_counter - 1
                     meta["chunk_id"] = chunk_id
 
-                    cleaned_meta: Metadata = {}
-                    for k, v in meta.items():
-                        if isinstance(v, (str, int, float, bool)):
-                            cleaned_meta[k] = v
-                        elif v is not None:
-                            try:
-                                cleaned_meta[k] = str(v)
-                            except Exception:
-                                logger.warning(
-                                    f"Skipping non-serializable metadata key '{k}' type {type(v)}"
-                                )
+                    cleaned_meta: ChromaMetadataDict = {
+                        k: v
+                        for k, v in meta.items()
+                        if isinstance(v, (str, int, float, bool))
+                    }
                     chunk_metadatas.append(cleaned_meta)
                     chunk_texts.append(chunk_text)
 
@@ -413,10 +445,26 @@ class LLMSearch:
                 # Add to ChromaDB
                 logger.info(f"Adding {len(chunk_ids)} chunks to ChromaDB...")
                 try:
+                    valid_metadatas = [
+                        m for m in chunk_metadatas if isinstance(m, dict)
+                    ]
+                    if len(valid_metadatas) != len(chunk_ids):
+                        logger.error(
+                            f"Metadata count mismatch after validation ({len(valid_metadatas)} vs {len(chunk_ids)} IDs). Aborting add for {source_path.name}."
+                        )
+                        invalid_indices = [
+                            i
+                            for i, m in enumerate(chunk_metadatas)
+                            if not isinstance(m, dict)
+                        ]
+                        logger.error(
+                            f"Indices with invalid metadata: {invalid_indices}"
+                        )
+                        return 0, False
                     self.chroma_collection.upsert(
                         ids=chunk_ids,
                         embeddings=embeddings.tolist(),
-                        metadatas=[dict(m) for m in chunk_metadatas],
+                        metadatas=valid_metadatas,  # type: ignore
                         documents=[str(doc) for doc in chunk_texts],
                     )
                 except Exception as chroma_e:
@@ -424,19 +472,23 @@ class LLMSearch:
                         f"ChromaDB upsert failed for {source_path.name}: {chroma_e}",
                         exc_info=self.debug,
                     )
+                    return 0, False
 
                 # Add to Whoosh
                 logger.info(f"Adding {len(chunk_texts)} chunks to Whoosh BM25 index...")
                 bm25_success_count = 0
+                bm25_failed_ids = []
                 for text, chunk_id in zip(chunk_texts, chunk_ids):
                     if self.bm25.add_document(text, chunk_id):
                         bm25_success_count += 1
+                    else:
+                        bm25_failed_ids.append(chunk_id)
                 logger.debug(
                     f"Added {bm25_success_count}/{len(chunk_texts)} chunks successfully to Whoosh."
                 )
                 if bm25_success_count != len(chunk_texts):
                     logger.warning(
-                        f"Mismatch in Whoosh add count for {source_path.name}"
+                        f"Mismatch in Whoosh add count for {source_path.name}. Failed IDs: {bm25_failed_ids}"
                     )
 
                 total_chunks_added = len(chunk_ids)
@@ -450,7 +502,6 @@ class LLMSearch:
                 total_chunks_added = 0
 
         elif source_path.is_dir():
-            # Directory processing
             logger.info(f"Processing directory recursively: {source_path}")
             files_processed, files_skipped, files_failed = 0, 0, 0
             try:
@@ -462,7 +513,6 @@ class LLMSearch:
                 )
                 return 0, False
             logger.info(f"Found {len(all_items)} items in directory tree. Filtering...")
-
             for item in all_items:
                 if self._shutdown_event and self._shutdown_event.is_set():
                     logger.warning("Directory processing cancelled.")
@@ -475,10 +525,10 @@ class LLMSearch:
                     if is_hidden:
                         files_skipped += 1
                         continue
-
                     if item.suffix.lower() in ALLOWED_EXTENSIONS:
                         try:
-                            added, _ = self.add_source(str(item))
+                            # Pass internal_call=False for recursive calls as they originate from user action
+                            added, _ = self.add_source(str(item), internal_call=False)
                         except Exception as e:
                             logger.error(
                                 f"Error processing file {item} during dir scan: {e}",
@@ -486,22 +536,20 @@ class LLMSearch:
                             )
                             files_failed += 1
                             continue
-
                         if added > 0:
                             total_chunks_added += added
                             files_processed += 1
                         elif self._is_source_unchanged(str(item)):
                             files_skipped += 1
                         else:
-                            files_failed += 1
+                            files_processed += 1
                     else:
                         files_skipped += 1
                 elif item.is_dir() and item.name.startswith("."):
-                    pass  # Implicitly skip hidden dirs
+                    pass
 
             logger.info(
-                f"Directory scan for '{source_path.name}' complete. "
-                f"Added {total_chunks_added} new chunks from {files_processed} processed files. "
+                f"Directory scan for '{source_path.name}' complete. Added {total_chunks_added} new chunks from {files_processed} processed files. "
                 f"{files_skipped} files skipped. {files_failed} files failed."
             )
             if files_failed > 0:
@@ -513,16 +561,26 @@ class LLMSearch:
 
         return total_chunks_added, False
 
+    # _is_source_unchanged remains the same
     def _is_source_unchanged(self, source_path_str: str) -> bool:
-        """Checks if a source file's mtime matches stored mtime in ChromaDB."""
         assert self.chroma_collection is not None
         source_path = Path(source_path_str)
         if not source_path.is_file():
             return False
+        identifier_key = "source_path"
+        identifier_value: ChromaMetadataValue = source_path_str
+        if source_path.suffix.lower() == ".md" and len(source_path.stem) == 16:
+            url = self._reverse_lookup.get(source_path.stem)
+            if url:
+                identifier_key = "original_url"
+                identifier_value = url
+        where_filter: ChromaWhereClause = {identifier_key: identifier_value}
         try:
             current_mtime = source_path.stat().st_mtime
             results: Optional[GetResult] = self.chroma_collection.get(
-                where={"source_path": source_path_str}, limit=1, include=["metadatas"]
+                where=where_filter,  # type: ignore
+                limit=1,
+                include=["metadatas"],
             )
             if (
                 results
@@ -542,124 +600,287 @@ class LLMSearch:
         except FileNotFoundError:
             return False
         except Exception as e:
-            logger.warning(f"Error checking source status '{source_path_str}': {e}.")
+            logger.warning(
+                f"Error checking source status '{source_path_str}' (using '{identifier_value}'): {e}."
+            )
             return False
 
-    def remove_source(self, source_path_str: str) -> Tuple[bool, bool]:
-        """Removes all chunks associated with a given source path string."""
+    # remove_source remains the same (already handles file deletion logic correctly)
+    def remove_source(self, source_identifier: str) -> Tuple[bool, bool]:
         assert self.chroma_collection is not None
         assert self.bm25 is not None
-        logger.info(f"Attempting to remove all chunks for source: {source_path_str}")
+        logger.info(
+            f"Attempting to remove all chunks and data for source identifier: '{source_identifier}'"
+        )
         removal_occurred = False
+        is_url_identifier = source_identifier.startswith(
+            "http://"
+        ) or source_identifier.startswith("https://")
+        where_filter: ChromaWhereClause
+        if is_url_identifier:
+            where_filter = {"original_url": source_identifier}
+            logger.debug("Removing based on 'original_url' metadata.")
+        else:
+            where_filter = {"source_path": source_identifier}
+            logger.debug("Removing based on 'source_path' metadata.")
+        target_file_path_from_meta: Optional[Path] = None
+        original_url_from_meta: Optional[str] = None
         try:
-            # Find IDs in Chroma
             ids_to_remove: List[str] = []
             limit = 5000
             offset = 0
+            first_meta_found = False
             while True:
                 if self._shutdown_event and self._shutdown_event.is_set():
                     logger.warning("Shutdown during remove (get).")
                     break
-                results: Optional[GetResult] = self.chroma_collection.get(
-                    where={"source_path": source_path_str},
-                    include=["metadatas"],
-                    limit=limit,
-                    offset=offset,
-                )
+                try:
+                    results: Optional[GetResult] = self.chroma_collection.get(
+                        where=where_filter,  # type: ignore
+                        include=["metadatas"] if not first_meta_found else [],
+                        limit=limit,
+                        offset=offset,
+                    )
+                except Exception as get_err:
+                    logger.error(
+                        f"Error querying ChromaDB for removal: {get_err}",
+                        exc_info=self.debug,
+                    )
+                    break
                 if results and results.get("ids"):
                     batch_ids = results["ids"]
                     ids_to_remove.extend(batch_ids)
+                    if not first_meta_found:
+                        batch_metas = results.get("metadatas")
+                        if batch_metas and isinstance(batch_metas[0], dict):
+                            meta = batch_metas[0]
+                            path_str = meta.get("source_path")
+                            url_str = meta.get("original_url")
+                            if isinstance(path_str, str):
+                                target_file_path_from_meta = Path(path_str)
+                            if isinstance(url_str, str):
+                                original_url_from_meta = url_str
+                            first_meta_found = True
                     if len(batch_ids) < limit:
                         break
                     offset += limit
                 else:
                     break
-
             if not ids_to_remove:
-                logger.info(f"No chunks found for '{source_path_str}'.")
+                logger.info(f"No chunks found for identifier '{source_identifier}'.")
                 return False, False
-
-            ids_to_remove = list(set(ids_to_remove))  # Deduplicate
-            if self._shutdown_event and self._shutdown_event.is_set():
-                logger.warning("Shutdown before remove (delete).")
-                return False, False
-
-            # Remove from Chroma
-            logger.info(f"Removing {len(ids_to_remove)} chunks from ChromaDB...")
-            batch_size = 500
-            chroma_delete_errors = 0
-            for i in range(0, len(ids_to_remove), batch_size):
-                if self._shutdown_event and self._shutdown_event.is_set():
-                    logger.warning("Shutdown during Chroma delete.")
-                    break
-                batch_ids = ids_to_remove[i : i + batch_size]
-                if batch_ids:
-                    try:
-                        self.chroma_collection.delete(ids=batch_ids)
-                    except Exception as chroma_del_err:
-                        logger.error(
-                            f"Chroma delete err batch {i}: {chroma_del_err}",
-                            exc_info=self.debug,
+            ids_to_remove = list(set(ids_to_remove))
+            logger.info(
+                f"Found {len(ids_to_remove)} chunk IDs to remove for '{source_identifier}'."
+            )
+            file_to_delete: Optional[Path] = None
+            crawl_data_path_str = data_manager.get_data_paths().get("crawl_data")
+            if crawl_data_path_str and target_file_path_from_meta:
+                try:
+                    crawl_raw_dir = Path(crawl_data_path_str).resolve() / "raw"
+                    resolved_target_file = target_file_path_from_meta.resolve()
+                    if (
+                        crawl_raw_dir.exists()
+                        and crawl_raw_dir in resolved_target_file.parents
+                    ):
+                        file_to_delete = resolved_target_file
+                        logger.debug(
+                            f"Identified managed crawl file for deletion: {file_to_delete}"
                         )
-                        chroma_delete_errors += 1
+                    else:
+                        logger.debug(
+                            f"File path '{target_file_path_from_meta}' is outside managed crawl area. Will not delete."
+                        )
+                except Exception as path_err:
+                    logger.error(
+                        f"Error resolving or checking file path for deletion: {path_err}",
+                        exc_info=self.debug,
+                    )
+            elif not crawl_data_path_str:
+                logger.warning(
+                    "Crawl data path not configured, cannot check file location for deletion."
+                )
+            elif not target_file_path_from_meta:
+                logger.debug(
+                    "No source_path found in metadata, cannot identify file for deletion."
+                )
             if self._shutdown_event and self._shutdown_event.is_set():
+                logger.warning("Shutdown before actual delete operations.")
                 return False, False
-            removal_occurred = True
-
-            # Remove from Whoosh
+            logger.info(f"Removing {len(ids_to_remove)} chunks from ChromaDB...")
+            chroma_delete_errors = 0
+            try:
+                if ids_to_remove:
+                    self.chroma_collection.delete(ids=ids_to_remove)
+                    logger.info("ChromaDB delete call successful.")
+                    removal_occurred = True
+            except Exception as chroma_del_err:
+                logger.error(
+                    f"ChromaDB delete operation failed: {chroma_del_err}",
+                    exc_info=self.debug,
+                )
+                chroma_delete_errors += 1
+                return False, False
             logger.info(f"Removing {len(ids_to_remove)} chunks from Whoosh...")
             bm25_removed_count = 0
             bm25_remove_errors = 0
-            for chunk_id in ids_to_remove:
-                if self._shutdown_event and self._shutdown_event.is_set():
-                    logger.warning("Shutdown during Whoosh delete.")
-                    break
-                try:
-                    if self.bm25.remove_document(chunk_id):
-                        bm25_removed_count += 1
-                except Exception as bm25_del_err:
-                    logger.error(
-                        f"Whoosh remove err {chunk_id}: {bm25_del_err}",
-                        exc_info=self.debug,
+            writer = None
+            try:
+                if self.bm25.ix is None:
+                    raise RuntimeError("Whoosh index is None.")
+                writer = self.bm25.ix.writer(timeout=60.0)
+                with writer:
+                    for chunk_id in ids_to_remove:
+                        if self._shutdown_event and self._shutdown_event.is_set():
+                            logger.warning("Shutdown during Whoosh delete loop.")
+                            break
+                        try:
+                            num_deleted = writer.delete_by_term("chunk_id", chunk_id)
+                            if num_deleted > 0:
+                                bm25_removed_count += 1
+                        except Exception as bm25_del_err:
+                            logger.error(
+                                f"Whoosh remove error for chunk_id '{chunk_id}': {bm25_del_err}",
+                                exc_info=self.debug,
+                            )
+                            bm25_remove_errors += 1
+                logger.info("Whoosh writer committed removals.")
+            except whoosh_index.LockError as lock_err:
+                logger.error(
+                    f"Failed to acquire Whoosh writer lock for removal: {lock_err}"
+                )
+                bm25_remove_errors = len(ids_to_remove)
+                logger.critical(
+                    f"INCONSISTENCY: Chroma delete OK but Whoosh FAILED for '{source_identifier}'."
+                )
+            except Exception as writer_err:
+                logger.error(
+                    f"Error during Whoosh removal process: {writer_err}",
+                    exc_info=self.debug,
+                )
+                bm25_remove_errors = len(ids_to_remove)
+                logger.critical(
+                    f"INCONSISTENCY: Chroma delete OK but Whoosh FAILED for '{source_identifier}'."
+                )
+            file_deleted_successfully = False
+            hash_key_to_remove_from_lookup = None
+            if file_to_delete:
+                if file_to_delete.exists():
+                    if not (self._shutdown_event and self._shutdown_event.is_set()):
+                        logger.info(
+                            f"Attempting to delete managed crawl file: {file_to_delete}"
+                        )
+                        try:
+                            os.remove(file_to_delete)
+                            logger.info(
+                                f"Successfully deleted file: {file_to_delete.name}"
+                            )
+                            file_deleted_successfully = True
+                            if len(file_to_delete.stem) == 16:
+                                hash_key_to_remove_from_lookup = file_to_delete.stem
+                        except FileNotFoundError:
+                            logger.warning(
+                                f"File not found during deletion attempt: {file_to_delete}"
+                            )
+                            file_deleted_successfully = True
+                        except PermissionError:
+                            logger.error(
+                                f"Permission denied trying to delete file: {file_to_delete}"
+                            )
+                        except Exception as del_err:
+                            logger.error(
+                                f"Error deleting file {file_to_delete}: {del_err}",
+                                exc_info=self.debug,
+                            )
+                    else:
+                        logger.warning(
+                            f"Skipping file deletion due to shutdown: {file_to_delete}"
+                        )
+                else:
+                    logger.debug(
+                        f"Managed crawl file already deleted or never existed: {file_to_delete}"
                     )
-                    bm25_remove_errors += 1
+                    file_deleted_successfully = True
+            else:
+                logger.debug(
+                    f"No managed crawl file identified or targeted for deletion for identifier '{source_identifier}'."
+                )
+                file_deleted_successfully = True
+            url_to_remove = (
+                original_url_from_meta
+                if isinstance(original_url_from_meta, str)
+                else None
+            )
+            key_to_remove = None
+            if url_to_remove:
+                for k, v in self._reverse_lookup.items():
+                    if v == url_to_remove:
+                        key_to_remove = k
+                        break
+            elif hash_key_to_remove_from_lookup:
+                key_to_remove = hash_key_to_remove_from_lookup
+            if key_to_remove and key_to_remove in self._reverse_lookup:
+                if not (self._shutdown_event and self._shutdown_event.is_set()):
+                    try:
+                        del self._reverse_lookup[key_to_remove]
+                        logger.info(
+                            f"Removed entry for key '{key_to_remove}' (URL: {url_to_remove or 'N/A'}) from reverse lookup cache."
+                        )
+                    except Exception as lookup_err:
+                        logger.error(
+                            f"Failed to remove key '{key_to_remove}' from reverse lookup: {lookup_err}"
+                        )
+                else:
+                    logger.warning("Skipping reverse lookup removal due to shutdown.")
             if self._shutdown_event and self._shutdown_event.is_set():
                 return False, False
-
             log_msg = (
-                f"Removal '{source_path_str}': Chroma Att={len(ids_to_remove)} Err={chroma_delete_errors}. "
-                f"Whoosh Att={len(ids_to_remove)} Rem={bm25_removed_count} Err={bm25_remove_errors}."
+                f"Removal '{source_identifier}': Chunks Found={len(ids_to_remove)}. "
+                f"Chroma OK/Err: {len(ids_to_remove) - chroma_delete_errors}/{chroma_delete_errors}. "
+                f"Whoosh OK/Err: {bm25_removed_count}/{bm25_remove_errors}. "
+                f"File Deleted: {file_deleted_successfully}."
             )
             logger.info(log_msg)
             return removal_occurred, False
         except Exception as e:
             logger.error(
-                f"Error removing source '{source_path_str}': {e}", exc_info=True
+                f"Unexpected error during remove_source for '{source_identifier}': {e}",
+                exc_info=True,
             )
             return False, False
 
+    # get_indexed_sources remains the same
     def get_indexed_sources(self) -> List[Dict[str, Any]]:
-        """Aggregates chunk metadata to list unique indexed sources."""
         assert self.chroma_collection is not None
         try:
             total_count = self.chroma_collection.count()
             if total_count == 0:
                 return []
-
-            logger.debug(f"Fetching {total_count} metadata items...")
+            logger.debug(f"Fetching metadata for {total_count} total chunks...")
             batch_size = 5000
             all_metadata_list: List[Metadata] = []
             fetched_ids = set()
             offset = 0
-            while True:  # Fetch metadata
-                batch_results: Optional[GetResult] = self.chroma_collection.get(
-                    limit=batch_size, offset=offset, include=["metadatas"]
+            while True:
+                logger.debug(
+                    f"Fetching metadata batch: offset={offset}, limit={batch_size}"
                 )
+                try:
+                    batch_results: Optional[GetResult] = self.chroma_collection.get(
+                        limit=batch_size, offset=offset, include=["metadatas"]
+                    )
+                except Exception as get_err:
+                    logger.error(
+                        f"Error fetching metadata batch offset {offset}: {get_err}",
+                        exc_info=self.debug,
+                    )
+                    break
                 if not batch_results or not batch_results.get("ids"):
+                    logger.debug(f"No more metadata results found at offset {offset}.")
                     break
                 ids_in_batch = batch_results["ids"]
                 metadatas_in_batch = batch_results.get("metadatas")
-                new_items_found = False
+                new_items_found_in_batch = False
                 if (
                     ids_in_batch
                     and metadatas_in_batch
@@ -670,50 +891,75 @@ class LLMSearch:
                             meta = metadatas_in_batch[i]
                             if isinstance(meta, dict):
                                 all_metadata_list.append(meta)
-                            fetched_ids.add(doc_id)
-                            new_items_found = True
+                                fetched_ids.add(doc_id)
+                                new_items_found_in_batch = True
+                            else:
+                                logger.warning(
+                                    f"Invalid metadata type found for id {doc_id}: {type(meta)}"
+                                )
                 else:
-                    logger.warning(f"Mismatched batch at offset {offset}.")
+                    logger.warning(
+                        f"Mismatched IDs/Metadata or empty batch at offset {offset}."
+                    )
                     break
-                if not new_items_found and len(ids_in_batch) > 0:
-                    logger.warning(f"No new IDs at offset {offset}.")
+                if len(ids_in_batch) < batch_size:
+                    logger.debug("Fetched last batch of metadata.")
+                    break
+                if not new_items_found_in_batch and len(ids_in_batch) == batch_size:
+                    logger.warning(
+                        f"No new unique metadata IDs found in full batch at offset {offset}. Stopping fetch."
+                    )
                     break
                 offset += len(ids_in_batch)
-                if len(ids_in_batch) < batch_size:
-                    break
-
+            logger.debug(
+                f"Total unique metadata items fetched: {len(all_metadata_list)}"
+            )
             if not all_metadata_list:
-                logger.warning("Chroma get() no metadata.")
+                logger.warning("Chroma get() returned no valid metadata.")
                 return []
-
-            source_info: Dict[str, Dict[str, Any]] = {}  # Aggregate
-            missing_source_path_count = 0
+            source_info: Dict[str, Dict[str, Any]] = {}
+            missing_identifier_count = 0
             for meta in all_metadata_list:
                 if not isinstance(meta, dict):
                     continue
-                src_path_any = meta.get("source_path")
-                src_path = str(src_path_any).strip() if src_path_any else ""
-                primary_key = str(meta.get("original_url", src_path))
+                original_url = meta.get("original_url")
+                source_path = meta.get("source_path")
+                primary_key: Optional[str] = None
+                if isinstance(original_url, str) and original_url.strip():
+                    primary_key = original_url.strip()
+                elif isinstance(source_path, str) and source_path.strip():
+                    primary_key = source_path.strip()
                 if not primary_key:
-                    missing_source_path_count += 1
-                    primary_key = f"unknown_{missing_source_path_count}"
-                    src_path = primary_key
+                    missing_identifier_count += 1
+                    primary_key = f"unknown_source_{missing_identifier_count}"
+                    source_path_display = meta.get("filename", primary_key)
+                else:
+                    source_path_display = (
+                        source_path
+                        if isinstance(source_path, str)
+                        else "(Path Missing)"
+                    )
                 if primary_key not in source_info:
-                    filename = "(Unknown)"
+                    current_filename = meta.get("filename")
+                    if (
+                        not isinstance(current_filename, str)
+                        or current_filename == "(N/A)"
+                    ):
+                        if isinstance(source_path, str) and source_path != primary_key:
+                            try:
+                                current_filename = Path(source_path).name
+                            except Exception:
+                                current_filename = "(Derive Failed)"
+                        else:
+                            current_filename = "(N/A)"
                     mtime_val = meta.get("mtime")
-                    try:
-                        if src_path and not src_path.startswith("unknown_"):
-                            filename = Path(src_path).name
-                        elif primary_key.startswith("http"):
-                            filename = "(Web Content)"
-                    except Exception:
-                        pass
                     source_info[primary_key] = {
-                        "source_path": src_path
-                        if not src_path.startswith("unknown_")
-                        else "(Missing)",
-                        "original_url": meta.get("original_url"),
-                        "filename": meta.get("filename", filename),
+                        "identifier": primary_key,
+                        "source_path": source_path_display,
+                        "original_url": original_url
+                        if isinstance(original_url, str)
+                        else None,
+                        "filename": current_filename,
                         "chunk_count": 0,
                         "mtime": float(mtime_val)
                         if isinstance(mtime_val, (int, float))
@@ -728,26 +974,26 @@ class LLMSearch:
                     and (current_mtime is None or float(meta_mtime) > current_mtime)
                 ):
                     source_info[primary_key]["mtime"] = float(meta_mtime)
-            if missing_source_path_count > 0:
+            if missing_identifier_count > 0:
                 logger.warning(
-                    f"{missing_source_path_count} metadata missing source identifier."
+                    f"{missing_identifier_count} metadata entries lacked a usable 'original_url' or 'source_path'."
                 )
             logger.debug(f"Aggregated {len(source_info)} unique sources.")
             source_list = list(source_info.values())
             source_list.sort(
-                key=lambda x: str(
-                    x.get("original_url")
-                    or x.get("filename", "")
-                    or x.get("source_path", "")
-                ).lower()
+                key=lambda x: (
+                    x.get("original_url") or "",
+                    x.get("filename", "").lower(),
+                    x.get("source_path", "").lower(),
+                )
             )
             return source_list
         except Exception as e:
-            logger.error(f"Error retrieving sources: {e}", exc_info=True)
+            logger.error(f"Error retrieving indexed sources: {e}", exc_info=True)
             return []
 
+    # _get_token_count remains the same
     def _get_token_count(self, text: str) -> int:
-        """Estimate token count."""
         if not text:
             return 0
         if (
@@ -759,18 +1005,19 @@ class LLMSearch:
             try:
                 tokenizer = getattr(self.model, "_tokenizer", None)
                 if tokenizer and hasattr(tokenizer, "__call__"):
-                    # Call tokenizer without padding and special tokens for length check
                     ids = tokenizer(text, add_special_tokens=False).get("input_ids")
                     if isinstance(ids, list):
                         return len(ids)
             except Exception as tok_err:
-                 logger.warning(f"Tokenizer failed to get token count: {tok_err}", exc_info=self.debug)
-                 # Fallback if tokenizer fails
-                 pass
-        return max(1, len(text) // 4)  # Fallback
+                logger.warning(
+                    f"Tokenizer failed to get token count: {tok_err}",
+                    exc_info=self.debug,
+                )
+                pass
+        return max(1, len(text) // 4)
 
+    # llm_query remains the same
     def llm_query(self, query_text: str, debug_mode: bool = False) -> Dict[str, Any]:
-        """RAG query using CPU embedder with input_type='query'."""
         start_time_total = time.time()
         assert self.model is not None, "LLM not initialized"
         assert self.embedder is not None, "Embedder not initialized"
@@ -779,12 +1026,14 @@ class LLMSearch:
 
         system_instruction = "Answer the query using *only* the provided Context. If the answer isn't in the Context, state that clearly."
         debug_info: Dict[str, Any] = {}
-        retrieval_time, gen_time = -1.0, -1.0
-        query_embedding_time = 0.0
-        final_context = ""
-        retrieved_display_html = "<p><i>No relevant chunks retrieved.</i></p>" # Default HTML
-        response = "Error: Query processing failed."
-        vec_results_count, bm25_results_count = 0, 0
+        retrieval_time: float = -1.0
+        gen_time: float = -1.0
+        query_embedding_time: float = 0.0
+        final_context: str = ""
+        retrieved_display_html: str = "<p><i>No relevant chunks retrieved.</i></p>"
+        response: str = "Error: Query processing failed."
+        vec_results_count: int = 0
+        bm25_results_count: int = 0
 
         try:
             # 1. Query Embedding
@@ -798,8 +1047,6 @@ class LLMSearch:
             # 2. Retrieval Phase
             retrieval_start = time.time()
             num_to_fetch = max(self.max_results * 5, 25)
-
-            # Vector Search (ChromaDB)
             vector_results: Optional[QueryResult] = None
             try:
                 logger.debug(f"Querying ChromaDB with {num_to_fetch} results...")
@@ -818,7 +1065,6 @@ class LLMSearch:
             except Exception as e:
                 logger.error(f"ChromaDB query failed: {e}", exc_info=debug_mode)
 
-            # Keyword Search (Whoosh BM25)
             bm25_results: Dict[str, Any] = {}
             logger.debug(f"Querying Whoosh BM25 with {num_to_fetch} results...")
             try:
@@ -836,30 +1082,27 @@ class LLMSearch:
             # 3. RRF Fusion & Ranking
             k_rrf = 60.0
             combined_scores: Dict[str, float] = {}
-            doc_lookup: Dict[
-                str, Dict[str, Any]
-            ] = {}  # Store doc text and metadata by chunk ID
-
-            # Process Vector Results
+            doc_lookup: Dict[str, Dict[str, Any]] = {}
             if vector_results and vector_results.get("ids") and vector_results["ids"]:
                 ids_list = vector_results["ids"][0]
+                min_len = len(ids_list)
                 distances_list = (vector_results.get("distances") or [[]])[0]
                 metadatas_list = (vector_results.get("metadatas") or [[]])[0]
                 documents_list = (vector_results.get("documents") or [[]])[0]
-                # Pad lists if lengths mismatch (should not happen with valid results)
-                if len(distances_list) != len(ids_list):
-                    distances_list = [2.0] * len(ids_list)
-                if len(metadatas_list) != len(ids_list):
-                    metadatas_list = [{}] * len(ids_list)
-                if len(documents_list) != len(ids_list):
-                    documents_list = [""] * len(ids_list)
-
+                if len(distances_list) != min_len:
+                    distances_list = [2.0] * min_len
+                if len(metadatas_list) != min_len:
+                    metadatas_list = [{}] * min_len
+                if len(documents_list) != min_len:
+                    documents_list = [""] * min_len
                 for i, chunk_id in enumerate(ids_list):
-                    rank = i + 1
-                    rrf_score = 1.0 / (k_rrf + rank)
+                    if i >= min_len:
+                        break
+                    rank_vec = i + 1
+                    rrf_score_vec = 1.0 / (k_rrf + rank_vec)
                     combined_scores[chunk_id] = (
                         combined_scores.get(chunk_id, 0.0)
-                        + rrf_score * self.vector_weight
+                        + rrf_score_vec * self.vector_weight
                     )
                     if chunk_id not in doc_lookup:
                         doc_lookup[chunk_id] = {
@@ -874,45 +1117,42 @@ class LLMSearch:
                             if isinstance(distances_list[i], (float, int))
                             else 2.0
                         )
-                        vector_score = max(
-                            0.0, 1.0 - (distance / 2.0)
-                        )  # Cosine similarity score heuristic
+                        vector_score = max(0.0, 1.0 - (distance / 2.0))
+                        # Use dict union '|' (Python 3.9+) or update() for compatibility
                         if chunk_id not in debug_info.setdefault("chunk_details", {}):
                             debug_info["chunk_details"][chunk_id] = {}
                         debug_info["chunk_details"][chunk_id].update(
                             {
-                                "vector_rank": rank,
+                                "vector_rank": rank_vec,
                                 "vector_dist": f"{distance:.4f}",
                                 "vector_score": f"{vector_score:.4f}",
-                                "vector_rrf": f"{rrf_score * self.vector_weight:.4f}",
+                                "vector_rrf": f"{rrf_score_vec * self.vector_weight:.4f}",
                             }
                         )
 
-            # Process Whoosh BM25 Results
             bm25_ids = bm25_results.get("ids", [])
             bm25_scores = bm25_results.get("scores", [])
             if len(bm25_scores) != len(bm25_ids):
                 bm25_scores = [0.0] * len(bm25_ids)
             for i, chunk_id in enumerate(bm25_ids):
-                rank = i + 1
+                rank_bm25 = i + 1
                 score_val = (
                     bm25_scores[i] if isinstance(bm25_scores[i], (float, int)) else 0.0
                 )
-                rrf_score = 1.0 / (k_rrf + rank)
+                rrf_score_bm25 = 1.0 / (k_rrf + rank_bm25)
                 combined_scores[chunk_id] = (
-                    combined_scores.get(chunk_id, 0.0) + rrf_score * self.bm25_weight
+                    combined_scores.get(chunk_id, 0.0)
+                    + rrf_score_bm25 * self.bm25_weight
                 )
-                doc_lookup.setdefault(
-                    chunk_id, {"document": "", "metadata": {}}
-                )  # Ensure entry exists
+                doc_lookup.setdefault(chunk_id, {"document": "", "metadata": {}})
                 if debug_mode:
                     if chunk_id not in debug_info.setdefault("chunk_details", {}):
                         debug_info["chunk_details"][chunk_id] = {}
                     debug_info["chunk_details"][chunk_id].update(
                         {
-                            "bm25_rank": rank,
+                            "bm25_rank": rank_bm25,
                             "bm25_raw_score": f"{score_val:.4f}",
-                            "bm25_rrf": f"{rrf_score * self.bm25_weight:.4f}",
+                            "bm25_rrf": f"{rrf_score_bm25 * self.bm25_weight:.4f}",
                         }
                     )
 
@@ -921,19 +1161,28 @@ class LLMSearch:
                 combined_scores.items(), key=lambda item: item[1], reverse=True
             )
 
-            # 4. Duplicate Filtering
+            # 4. Duplicate Filtering & Context Building Prep
             num_candidates = min(len(sorted_chunks), self.max_results * 3)
             top_candidates_with_scores = sorted_chunks[:num_candidates]
             filtered_top_chunks_with_scores = []
             added_chunk_texts = []
             skipped_due_similarity = 0
+            logger.debug(
+                f"Processing {len(top_candidates_with_scores)} candidates for final context (Max Results: {self.max_results})..."
+            )
             for chunk_id, score in top_candidates_with_scores:
                 if len(filtered_top_chunks_with_scores) >= self.max_results:
+                    logger.debug(
+                        f"Reached max results ({self.max_results}), stopping candidate processing."
+                    )
                     break
-
                 if chunk_id not in doc_lookup or not doc_lookup[chunk_id].get(
                     "document"
                 ):
+                    logger.debug(
+                        f"Document for chunk {chunk_id} missing in lookup, fetching from ChromaDB..."
+                    )
+                    # Use try-except for fetching doc
                     try:
                         chroma_get = self.chroma_collection.get(
                             ids=[chunk_id], include=["documents", "metadatas"]
@@ -950,17 +1199,24 @@ class LLMSearch:
                                 "document": docs[0] if docs else "",
                                 "metadata": metas[0] if metas else {},
                             }
+                            logger.debug(
+                                f"Successfully fetched document for chunk {chunk_id}."
+                            )
                         else:
-                            logger.warning(f"Could not fetch document for chunk {chunk_id} from ChromaDB.")
-                            continue  # Skip if fetch fails
+                            logger.warning(
+                                f"Could not fetch document for chunk {chunk_id} from ChromaDB."
+                            )
+                            continue  # Skip chunk
                     except Exception as fetch_err:
-                        logger.warning(f"Error fetching chunk {chunk_id} from ChromaDB: {fetch_err}")
-                        continue
+                        logger.warning(
+                            f"Error fetching chunk {chunk_id} from ChromaDB: {fetch_err}"
+                        )
+                        continue  # Skip chunk
 
                 current_text = doc_lookup[chunk_id].get("document", "")
                 if not current_text.strip():
+                    logger.debug(f"Skipping chunk {chunk_id}: Empty document text.")
                     continue
-
                 is_duplicate = any(
                     _are_chunks_too_similar(
                         current_text, et, CHUNK_SIMILARITY_THRESHOLD
@@ -969,17 +1225,24 @@ class LLMSearch:
                 )
                 if is_duplicate:
                     skipped_due_similarity += 1
+                    logger.debug(
+                        f"Skipping chunk {chunk_id}: Too similar to existing context."
+                    )
                 else:
                     filtered_top_chunks_with_scores.append((chunk_id, score))
                     added_chunk_texts.append(current_text)
+                    logger.debug(
+                        f"Adding chunk {chunk_id} to final context list (current count: {len(filtered_top_chunks_with_scores)})."
+                    )
 
             top_chunk_ids_with_scores = filtered_top_chunks_with_scores
-            top_chunk_ids = [cid for cid, score in top_chunk_ids_with_scores]
+            top_chunk_ids = [cid for cid, _ in top_chunk_ids_with_scores]
             debug_info["skipped_similar_chunk_count"] = skipped_due_similarity
             debug_info["final_selected_chunk_count"] = len(top_chunk_ids)
-
             if top_chunk_ids:
-                self.logger.info(f"Top {len(top_chunk_ids)} UNIQUE chunks selected.")
+                self.logger.info(
+                    f"Selected {len(top_chunk_ids)} final unique chunks for context."
+                )
             else:
                 self.logger.warning("No unique chunks selected after filtering.")
 
@@ -992,14 +1255,14 @@ class LLMSearch:
                 return {
                     "response": response,
                     "debug_info": debug_info if debug_mode else {},
-                    "retrieved_context": retrieved_display_html, # Return HTML
+                    "retrieved_context": retrieved_display_html,
                     "formatted_response": f"<h2>AI Answer</h2><p>{html.escape(response)}</p><h2>Retrieved Context</h2>{retrieved_display_html}",
                     "query_time_seconds": query_time,
                     "generation_time_seconds": 0,
                 }
 
             temp_context_parts = []
-            temp_display_parts_html = [] # For HTML display
+            temp_display_parts_html = []
             prompt_base = (
                 f"{system_instruction}\n\nContext:\n\n\nQuery: {query_text}\n\nAnswer:"
             )
@@ -1010,64 +1273,57 @@ class LLMSearch:
             )
             current_context_len = 0
             context_chunks_details = []
-
             for i, (chunk_id, score) in enumerate(top_chunk_ids_with_scores):
                 if chunk_id not in doc_lookup:
+                    logger.warning(
+                        f"Chunk ID {chunk_id} missing from lookup during context build. Skipping."
+                    )
                     continue
                 doc_data = doc_lookup[chunk_id]
                 doc_text = doc_data.get("document", "")
                 metadata = doc_data.get("metadata", {})
                 if not doc_text.strip():
+                    logger.warning(
+                        f"Chunk {chunk_id} has empty document text in context build. Skipping."
+                    )
                     continue
-
-                # --- Prepare source display ---
                 source_path = metadata.get("source_path", "N/A")
-                filename = metadata.get("filename", "N/A")
                 original_url = metadata.get("original_url")
-                chunk_index = metadata.get("original_chunk_index", "N/A") # Get original index
-
+                chunk_index = metadata.get("original_chunk_index", "N/A")
                 display_source_text = "N/A"
                 source_display_html = "<i>Source N/A</i>"
-                if original_url:
+                if isinstance(original_url, str) and original_url:
                     display_source_text = original_url
                     safe_url = html.escape(original_url)
-                    source_display_html = f'<a href="{safe_url}" style="color: #0066cc;">{safe_url}</a>'
-                elif filename != "N/A":
-                    display_source_text = filename
-                    source_display_html = f"<b>{html.escape(filename)}</b> (Path: {html.escape(source_path)})"
-                elif source_path != "N/A":
+                    source_display_html = (
+                        f'<a href="{safe_url}" style="color: #0066cc;">{safe_url}</a>'
+                    )
+                elif isinstance(source_path, str) and source_path != "N/A":
                     try:
-                         display_source_text = Path(source_path).name
-                         source_display_html = f"<b>{html.escape(display_source_text)}</b> (Path: {html.escape(source_path)})"
+                        fname = Path(source_path).name
+                        display_source_text = fname
                     except Exception:
-                         display_source_text = source_path
-                         source_display_html = html.escape(source_path)
-
-                # Log context details if debug mode is on
+                        display_source_text = source_path
+                    source_display_html = f"<b>{html.escape(display_source_text)}</b> (Path: {html.escape(source_path)})"
                 if debug_mode:
-                    logger.debug(f"Adding Context Chunk Rank {i+1}: ID={chunk_id}, Score={score:.4f}, Source={display_source_text}, Index={chunk_index}, Text='{doc_text[:80]}...'")
-
-                # --- Build strings for LLM and HTML display ---
-                header_for_llm = (
-                    f"[Source: {display_source_text} | Rank: {i + 1}]\n" # Simpler for LLM
-                )
-                # Use CSS for better styling control
+                    logger.debug(
+                        f"Adding Context Chunk Rank {i + 1}: ID={chunk_id}, Score={score:.4f}, Source={display_source_text}, Index={chunk_index}, Text='{doc_text[:80]}...'"
+                    )
+                header_for_llm = f"[Source: {display_source_text} | Rank: {i + 1}]\n"
                 header_for_display_html = (
-                     f'<div style="border-top: 1px solid #eee; margin-top: 10px; padding-top: 5px; font-size: 0.9em; color: #333;">'
-                     f'<b>Rank {i + 1}</b> (Score: {score:.4f}) | '
-                     f'Source: {source_display_html} | Chunk Index: {chunk_index}'
-                     f'</div>'
-                 )
-
+                    f'<div style="border-top: 1px solid #eee; margin-top: 10px; padding-top: 5px; font-size: 0.9em; color: #333;">'
+                    f"<b>Rank {i + 1}</b> (Score: {score:.4f}) | Source: {source_display_html} | Chunk Index: {chunk_index}</div>"
+                )
                 doc_chunk_full_text_llm = f"{header_for_llm}{doc_text}\n\n"
-                # Escape HTML in doc_text and replace newlines for display
-                doc_chunk_display_html = f"<p>{html.escape(doc_text).replace(chr(10), '<br>')}</p>"
-
+                doc_chunk_display_html = (
+                    f"<p>{html.escape(doc_text).replace(chr(10), '<br>')}</p>"
+                )
                 doc_chunk_len = self._get_token_count(doc_chunk_full_text_llm)
-
                 if current_context_len + doc_chunk_len <= available_context_tokens:
                     temp_context_parts.append(doc_chunk_full_text_llm)
-                    temp_display_parts_html.append(f"{header_for_display_html}{doc_chunk_display_html}")
+                    temp_display_parts_html.append(
+                        f"{header_for_display_html}{doc_chunk_display_html}"
+                    )
                     current_context_len += doc_chunk_len
                     context_chunks_details.append(
                         {
@@ -1075,13 +1331,15 @@ class LLMSearch:
                             "rank": i + 1,
                             "score": score,
                             "token_count": doc_chunk_len,
-                            "source": display_source_text, # Use the plain text version for logs
+                            "source": display_source_text,
                             "original_chunk_index": chunk_index,
+                            "original_url": original_url,
+                            "source_path": source_path,
                         }
                     )
                 else:
                     logger.warning(
-                        f"Stopping context build rank {i + 1}. Limit reached ({current_context_len + doc_chunk_len} > {available_context_tokens} tokens)."
+                        f"Stopping context build at rank {i + 1}. Context limit reached ({current_context_len + doc_chunk_len} > {available_context_tokens} available tokens)."
                     )
                     debug_info["context_truncated_at_chunk_rank"] = i + 1
                     break
@@ -1094,8 +1352,7 @@ class LLMSearch:
             )
             debug_info["final_context_token_count"] = current_context_len
             debug_info["final_context_chars"] = len(final_context)
-            debug_info["final_context_chunks_details"] = context_chunks_details # Contains simplified info
-
+            debug_info["final_context_chunks_details"] = context_chunks_details
             if not final_context:
                 response = (
                     "Error: Could not build context from selected chunks."
@@ -1114,7 +1371,7 @@ class LLMSearch:
                     "generation_time_seconds": 0,
                 }
 
-        except Exception as e:  # Catch retrieval/context errors
+        except Exception as e:
             logger.error(
                 f"Error during retrieval/context build: {e}", exc_info=debug_mode
             )
@@ -1123,7 +1380,7 @@ class LLMSearch:
             return {
                 "response": response,
                 "debug_info": debug_info if debug_mode else {},
-                "retrieved_context": retrieved_display_html, # Return default/empty HTML
+                "retrieved_context": retrieved_display_html,
                 "formatted_response": f"<h2>AI Answer</h2><p>{html.escape(response)}</p><h2>Retrieved Context</h2>{retrieved_display_html}",
                 "query_time_seconds": query_time,
                 "generation_time_seconds": 0,
@@ -1136,14 +1393,11 @@ class LLMSearch:
         debug_info["final_prompt_tokens_estimated"] = prompt_token_count
         if debug_mode:
             logger.debug(
-                f"--- LLM Prompt ({prompt_token_count} tokens / {self.context_length} limit) ---" # Show limit
+                f"--- LLM Prompt ({prompt_token_count} tokens / {self.context_length} limit) ---"
             )
-            # Avoid logging excessively long prompts fully even in debug
             log_prompt = (prompt[:1000] + "...") if len(prompt) > 1000 else prompt
             logger.debug(log_prompt)
             logger.debug("--- LLM Prompt End ---")
-
-
         if prompt_token_count >= self.context_length:
             response = f"Error: Prompt too long for model context limit ({prompt_token_count} >= {self.context_length}). Context may need to be reduced."
             logger.error(response)
@@ -1162,7 +1416,6 @@ class LLMSearch:
         text_response = "LLM Error."
         raw_llm_output = None
         assert self.model is not None
-
         try:
             if self._shutdown_event and self._shutdown_event.is_set():
                 raise InterruptedError("Shutdown before LLM.")
@@ -1199,12 +1452,11 @@ class LLMSearch:
         # 7. Final Result
         total_time = time.time() - start_time_total
         debug_info["total_query_processing_time"] = f"{total_time:.3f}s"
-        # Escape the final AI response for HTML safety
         formatted_response_html = f"<h2>AI Answer</h2><p>{html.escape(response)}</p><h2>Retrieved Context</h2>{retrieved_display_html}"
         try:
             log_query(
                 query_text,
-                debug_info.get("final_context_chunks_details", []),
+                context_chunks_details,
                 response,
                 debug_info,
                 full_logging=debug_mode,
@@ -1216,26 +1468,25 @@ class LLMSearch:
         )
         self.logger.info(f"Search Result:\n{response}")
         return {
-            "response": response, # Plain text response
+            "response": response,
             "debug_info": debug_info if debug_mode else {},
-            "retrieved_context": retrieved_display_html, # HTML context for GUI
-            "formatted_response": formatted_response_html, # Full combined HTML
+            "retrieved_context": retrieved_display_html,
+            "formatted_response": formatted_response_html,
             "query_time_seconds": query_time_final,
             "generation_time_seconds": gen_time if gen_time > 0 else 0,
         }
 
+    # _safe_unload_llm remains the same
     def _safe_unload_llm(self, timeout: float = 3.0) -> None:
-        """Safely unload LLM (CPU-only version)."""
         if self.model is None or not hasattr(self.model, "unload"):
             logger.debug("No LLM model or unload method.")
             return
         logger.info("Skip explicit Teapot unload on CPU.")
         self.model = None
         gc.collect()
-        return
 
+    # close remains the same
     def close(self) -> None:
-        """Unload models and release resources (CPU-Only)."""
         logger.info("Closing LLMSearch components (CPU-Only)...")
         if self._shutdown_event and not self._shutdown_event.is_set():
             self._shutdown_event.set()
@@ -1252,9 +1503,9 @@ class LLMSearch:
             finally:
                 self.bm25 = None
         if self.chroma_client:
-            # No explicit close for PersistentClient, rely on GC
             self.chroma_client = None
         logger.info("LLMSearch closed.")
+        gc.collect()
 
     def __enter__(self):
         return self
