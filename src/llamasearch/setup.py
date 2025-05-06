@@ -35,21 +35,27 @@ from llamasearch.core.onnx_model import (
     ONNX_SUBFOLDER,
     ONNX_MODEL_REPO_ID,
     load_onnx_llm,
-    LLM, # Import LLM protocol
-    GenericONNXLLM # Import concrete class for verify_setup isinstance check
+    LLM,
+    GenericONNXLLM
 )
+# <<< REMOVED import of ONNX_REQUIRED_LOAD_FILES from onnx_model >>>
 from llamasearch.data_manager import data_manager
 from llamasearch.exceptions import ModelNotFoundError, SetupError
 from llamasearch.utils import setup_logging
 
 logger = setup_logging("llamasearch.setup")
 
-# --- Define allowed root files explicitly ---
-# These are the files expected/needed at the root of the active_model directory
-root_files_allow = [
-    "config.json", "generation_config.json", "special_tokens_map.json",
-    "tokenizer.json", "tokenizer_config.json"
+# <<< FIX: Define the list of root files required for setup here >>>
+# These files are typically needed for AutoTokenizer and model loading config
+REQUIRED_ROOT_FILES = [
+    "config.json",
+    "generation_config.json",
+    "special_tokens_map.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    # "quantize_config.json", # Optional, include if needed by specific workflows
 ]
+
 
 # Helper: Download with Retries
 def download_file_with_retry(
@@ -112,6 +118,7 @@ def download_file_with_retry(
             )
             last_error = e
             raise SetupError(f"Failed DL unexpected: {filename}") from last_error
+    # Should not be reachable
     raise SetupError(f"Download logic error for {filename}.")
 
 
@@ -197,23 +204,29 @@ def check_or_download_onnx_llm(
     cache_location = models_dir
     repo_id = ONNX_MODEL_REPO_ID
 
-    # 1. Download all root-level config/tokenizer files etc. into active_model_dir
-    logger.info(f"Downloading/Verifying root files from {repo_id} into {active_model_dir}...")
+    # <<< FIX: Use REQUIRED_ROOT_FILES defined in this module >>>
+    # 1. Download/Verify required root files
+    logger.info(f"Downloading/Verifying root files from {repo_id}...")
     try:
-        snapshot_download(
-            repo_id=repo_id,
-            cache_dir=cache_location,
-            local_dir=active_model_dir,
-            local_dir_use_symlinks=False,
-            allow_patterns=root_files_allow, # Use defined list
-            ignore_patterns=["*", "*/*"],
-            force_download=force,
-            resume_download=not force,
-            repo_type="model",
-        )
-        logger.info(f"Root config/tokenizer files downloaded/verified in {active_model_dir}")
+        for filename in REQUIRED_ROOT_FILES: # <<< Use the correct list >>>
+            logger.debug(f"Processing root file: {filename}")
+            cached_path_str = download_file_with_retry(
+                repo_id=repo_id,
+                filename=filename,
+                cache_dir=cache_location,
+                force=force,
+                repo_type="model",
+            )
+            target_path = active_model_dir / filename
+            logger.debug(f"Copying {cached_path_str} to {target_path}")
+            shutil.copyfile(cached_path_str, target_path)
+        logger.info(f"Root config/tokenizer files processed into {active_model_dir}")
+    except EntryNotFoundError as e:
+         # Handle if one of the *required* root files is missing in the repo
+         logger.error(f"A required configuration file is missing from the repository: {e}")
+         raise SetupError(f"Required config file missing from repo: {e.filename}") from e
     except Exception as e:
-        raise SetupError(f"Failed to download/verify root files from {repo_id}: {e}") from e
+        raise SetupError(f"Failed to process root files from {repo_id}: {e}") from e
 
     # 2. Download Specific ONNX Model File based on suffix (to cache) and copy
     onnx_model_rel_path = f"{ONNX_SUBFOLDER}/{MODEL_ONNX_BASENAME}{quant_suffix}.onnx"
@@ -315,10 +328,8 @@ def verify_setup(quant_suffix_to_verify: str):
     # Verify Generic ONNX LLM (CPU)
     logger.info("Verifying Generic ONNX LLM (CPU in active_model)...")
     try:
-        # <<< Pass "auto" to force detection based on active_model >>>
         llm = load_onnx_llm(onnx_quantization="auto")
-        if llm and isinstance(llm, GenericONNXLLM): # Check specific type
-            # Accessing protected member _quant_suffix is necessary here for verification
+        if llm and isinstance(llm, GenericONNXLLM):
             loaded_suffix = getattr(llm, "_quant_suffix", "unknown")
             logger.info(
                 f"ONNX LLM OK ({llm.model_info.model_id} - suffix '{loaded_suffix}' loaded from active_model on CPU)."
@@ -364,9 +375,7 @@ def main():
     parser.add_argument(
         "--force", action="store_true", help="Force redownload/reassembly"
     )
-    # Use mutually exclusive group for quantization flags
-    # <<< Make the group implicitly required by checking its value later >>>
-    quant_group = parser.add_mutually_exclusive_group()
+    quant_group = parser.add_mutually_exclusive_group(required=True)
     quant_group.add_argument(
         "--fp32",
         action="store_const",
@@ -424,24 +433,13 @@ def main():
         help="Download BNB 4-bit ONNX model.",
     )
 
-    # <<< Remove the default setting >>>
-    # parser.set_defaults(quant_suffix="")
-
     args = parser.parse_args()
-
-    # <<< Add check: Ensure a quantization flag was provided >>>
-    if args.quant_suffix is None:
-        parser.error(
-            "A quantization flag (e.g., --fp16, --int8, --q4, --fp32) is required."
-        )
-        # parser.error automatically calls sys.exit(2)
 
     logger.info("--- Starting LlamaSearch Model Setup (CPU-Only) ---")
     if args.force:
         logger.info("Force mode enabled: Active directory will be recreated.")
 
-    # Determine the chosen quantization suffix
-    chosen_suffix = args.quant_suffix # Will not be None here
+    chosen_suffix = args.quant_suffix
     chosen_quant_name = chosen_suffix.lstrip("_") if chosen_suffix else "fp32"
     logger.info(
         f"User selected quantization: {chosen_quant_name} (suffix: '{chosen_suffix}')"
