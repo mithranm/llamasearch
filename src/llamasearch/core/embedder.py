@@ -1,7 +1,7 @@
 # src/llamasearch/core/embedder.py
 """
 Embedder using SentenceTransformer strictly on CPU, configured for
-mixedbread-ai/mxbai-embed-large-v1 or other models. Includes optional dimension truncation.
+all-mini-lm or other models. Includes optional dimension truncation.
 Conditionally uses prompt_name based on model type.
 """
 
@@ -9,26 +9,23 @@ import gc
 import os
 import threading
 from pathlib import Path
-from typing import List, Optional, Dict, Any, Literal
+from typing import Any, Dict, List, Literal, Optional
 
 import numpy as np
 import torch
 from huggingface_hub import snapshot_download
 from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
-# <<< Updated import for V2 validator >>>
-from pydantic import BaseModel, Field, field_validator
+from pydantic import (BaseModel, Field,
+                      field_validator)
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 
 # Try importing transformers config for type checking, but don't fail if not installed
-try:
-    from transformers.configuration_utils import PretrainedConfig
-except ImportError:
-    PretrainedConfig = None # type: ignore
+from transformers.configuration_utils import PretrainedConfig
 
 from llamasearch.data_manager import data_manager
 from llamasearch.exceptions import ModelNotFoundError
-from llamasearch.hardware import HardwareInfo, detect_hardware_info  # CPU/Mem only
+# Hardware import removed
 from llamasearch.utils import setup_logging
 
 logger = setup_logging(__name__, use_qt_handler=True)
@@ -36,10 +33,11 @@ logger = setup_logging(__name__, use_qt_handler=True)
 # --- Default Model (can be overridden) ---
 DEFAULT_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 # --- End Default ---
+DEFAULT_CPU_BATCH_SIZE = 16 # Default batch size if hardware detection fails or is removed
 
 DEVICE_TYPE = "cpu"  # Hardcode to CPU
 InputType = Literal["query", "document"]
-MXBAI_QUERY_PROMPT_NAME = "query"  # Standard prompt name for mxbai queries
+# MXBAI_QUERY_PROMPT_NAME = "query"  # Standard prompt name for mxbai queries
 
 
 class EmbedderConfig(BaseModel):
@@ -49,7 +47,7 @@ class EmbedderConfig(BaseModel):
     device: str = Field(default=DEVICE_TYPE, description="Device (always 'cpu')")
     max_length: int = Field(default=512, gt=0, description="Max sequence length")
     batch_size: int = Field(
-        default=32, gt=0, description="Batch size for encoding (CPU optimized)"
+        default=DEFAULT_CPU_BATCH_SIZE, gt=0, description="Batch size for encoding (CPU optimized)"
     )
     truncate_dim: Optional[int] = Field(
         default=None,
@@ -65,32 +63,11 @@ class EmbedderConfig(BaseModel):
             raise ValueError("truncate_dim must be a positive integer if set")
         return v
 
-    @classmethod
-    def from_hardware(cls, model_name: str = DEFAULT_MODEL_NAME) -> "EmbedderConfig":
-        hw: HardwareInfo = detect_hardware_info()
-        config_data: Dict[str, Any] = {
-            "model_name": model_name,
-            "device": DEVICE_TYPE,
-        }
-        ram_gb = hw.memory.available_gb
-        if ram_gb > 30:
-            config_data["batch_size"] = 64
-        elif ram_gb > 15:
-            config_data["batch_size"] = 32
-        elif ram_gb > 7:
-            config_data["batch_size"] = 16
-        else:
-            config_data["batch_size"] = 8
-        logger.info(
-            f"Available RAM: {ram_gb:.1f} GB. Auto CPU batch size: {config_data['batch_size']}."
-        )
-        final_config = cls(**config_data)
-        logger.info(f"CPU-Optimized EmbedderConfig: {final_config.dict()}")
-        return final_config
+    # Removed from_hardware method, using default batch size
 
 
 class EnhancedEmbedder:
-    """Embedder optimized for CPU, conditionally uses prompt_name."""
+    """Embedder optimized for CPU."""
 
     def embed_documents(self, docs: list, show_progress: bool = True):
         """Alias for embed_strings with input_type='document'."""
@@ -105,35 +82,44 @@ class EnhancedEmbedder:
         batch_size: int = 0,
         truncate_dim: Optional[int] = None,
     ):
-        base_config = EmbedderConfig.from_hardware(model_name)
-        config_data: Dict[str, Any] = base_config.dict()
+        # Use EmbedderConfig defaults directly
+        config_data: Dict[str, Any] = {
+            "model_name": model_name,
+            "device": DEVICE_TYPE,
+            "max_length": max_length if max_length > 0 else 512,
+            "batch_size": batch_size if batch_size > 0 else DEFAULT_CPU_BATCH_SIZE,
+            "truncate_dim": truncate_dim if truncate_dim is not None and truncate_dim > 0 else None,
+        }
 
-        if model_name != DEFAULT_MODEL_NAME:
-            config_data["model_name"] = model_name
-        if max_length > 0:
-            config_data["max_length"] = max_length
         if batch_size > 0:
             logger.info(
-                f"Overriding auto batch size ({config_data['batch_size']}) with user value: {batch_size}"
+                f"Using user-provided batch size: {batch_size}"
             )
-            config_data["batch_size"] = batch_size
+        else:
+            logger.info(
+                f"Using default CPU batch size: {DEFAULT_CPU_BATCH_SIZE}"
+            )
+
         if truncate_dim is not None:
             if truncate_dim > 0:
                 logger.info(
                     f"Setting embedding truncation dimension to: {truncate_dim}"
                 )
-                config_data["truncate_dim"] = truncate_dim
             else:
                 logger.warning(
                     f"Ignoring invalid truncate_dim value: {truncate_dim}. Using model default."
                 )
-                config_data["truncate_dim"] = None
+                config_data["truncate_dim"] = None # Ensure it's None if invalid
 
         self.config = EmbedderConfig(**config_data)
-        logger.info(f"Final Embedder Config (CPU-Only): {self.config.dict()}")
+        logger.info(f"Final Embedder Config (CPU-Only): {self.config.model_dump()}")
 
         try:
-            self.models_dir = Path(data_manager.get_data_paths()["models"])
+            paths = data_manager.get_data_paths()
+            models_dir_str = paths.get("models")
+            if not models_dir_str:
+                 raise ValueError("Models directory path not found in data manager settings.")
+            self.models_dir = Path(models_dir_str)
             logger.info(f"Embedder using models directory: {self.models_dir}")
         except Exception as e:
             logger.error(
@@ -184,18 +170,14 @@ class EnhancedEmbedder:
             raise ModelNotFoundError(f"Error accessing embedder model cache: {e}")
 
         try:
-            hw = detect_hardware_info()
-            physical_cores = (
-                hw.cpu.physical_cores
-                if hw.cpu.physical_cores
-                else (os.cpu_count() or 2)
-            )
+            # Set CPU threads based on available cores (simple approach)
+            physical_cores = os.cpu_count() or 2 # Fallback to 2 cores
             num_threads = max(1, physical_cores // 2)
             current_threads = torch.get_num_threads()
             if current_threads != num_threads:
                 torch.set_num_threads(num_threads)
                 logger.info(
-                    f"Set torch global CPU threads from {current_threads} to {torch.get_num_threads()}"
+                    f"Set torch global CPU threads from {current_threads} to {torch.get_num_threads()} (based on {physical_cores} logical cores)"
                 )
 
             model_kwargs: Dict[str, Any] = {
@@ -232,9 +214,8 @@ class EnhancedEmbedder:
 
     def _should_use_prompt_name(self, input_type: InputType) -> bool:
         """Check if prompt_name should be used based on model name and input type."""
-        # Only use prompt_name for query types AND if the model is likely mxbai
-        # (This is a heuristic; a more robust solution might involve model config inspection)
-        return input_type == "query" and "mxbai" in self.config.model_name.lower()
+        # mxbai-specific logic removed; always return False
+        return False
 
     def embed_strings(
         self,
@@ -242,7 +223,7 @@ class EnhancedEmbedder:
         input_type: InputType = "document",
         show_progress: bool = True,
     ) -> np.ndarray:
-        """Generate embeddings on CPU, conditionally using prompt_name."""
+        """Generate embeddings on CPU."""
         if self.model is None:
             raise RuntimeError("Cannot embed strings, model is not loaded.")
         if not strings:
@@ -284,14 +265,7 @@ class EnhancedEmbedder:
             "convert_to_numpy": True,
         }
 
-        # *** Conditionally add prompt_name ***
-        use_prompt = self._should_use_prompt_name(input_type)
-        if use_prompt:
-            logger.debug(f"Using query prompt_name: '{MXBAI_QUERY_PROMPT_NAME}' for model {self.config.model_name}")
-            base_encode_kwargs["prompt_name"] = MXBAI_QUERY_PROMPT_NAME
-        else:
-             logger.debug(f"Not using prompt_name for model {self.config.model_name} and input type {input_type}")
-        # *** End Conditional Logic ***
+        # mxbai prompt_name logic removed
 
         try:
             for i in range(0, len(input_texts), self.config.batch_size):
@@ -374,7 +348,7 @@ class EnhancedEmbedder:
     def embed_string(
         self, text: str, input_type: InputType = "document"
     ) -> Optional[np.ndarray]:
-        """Embed a single string on CPU, conditionally using prompt_name."""
+        """Embed a single string on CPU."""
         if self.model is None:
             logger.error("Cannot embed string, model not loaded.")
             return None
@@ -397,14 +371,7 @@ class EnhancedEmbedder:
             "convert_to_numpy": True,
         }
 
-        # *** Conditionally add prompt_name ***
-        use_prompt = self._should_use_prompt_name(input_type)
-        if use_prompt:
-            logger.debug(f"Using query prompt_name: '{MXBAI_QUERY_PROMPT_NAME}' for model {self.config.model_name}")
-            encode_kwargs["prompt_name"] = MXBAI_QUERY_PROMPT_NAME
-        else:
-             logger.debug(f"Not using prompt_name for model {self.config.model_name} and input type {input_type}")
-        # *** End Conditional Logic ***
+        # mxbai prompt_name logic removed
 
         try:
             input_text = text

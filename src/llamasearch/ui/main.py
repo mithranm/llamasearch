@@ -1,15 +1,15 @@
 # src/llamasearch/ui/main.py
 
 #!/usr/bin/env python3
-import sys
+import asyncio  # Import asyncio
+import logging  # Import logging
 import signal
+import sys
 from concurrent.futures import ThreadPoolExecutor
-import asyncio # Import asyncio
-import logging # Import logging
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import (QApplication, QMainWindow, QTabWidget,
-                               QVBoxLayout, QWidget, QMessageBox)
+from PySide6.QtWidgets import (QApplication, QMainWindow, QMessageBox,
+                               QTabWidget, QVBoxLayout, QWidget)
 
 # Ensure the import path is correct relative to the project structure
 from llamasearch.ui.app_logic import LlamaSearchApp

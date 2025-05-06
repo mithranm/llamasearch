@@ -9,18 +9,17 @@ import asyncio
 import json
 import logging
 import logging.handlers
+import signal
 import sys
 import tarfile
 import threading
 import time
 from pathlib import Path
-import signal
 from typing import Optional
 
 # Core components
 from llamasearch.core.crawler import Crawl4AICrawler
 from llamasearch.core.search_engine import LLMSearch  # Updated import
-
 # Utilities and Data Management
 from llamasearch.data_manager import data_manager
 from llamasearch.exceptions import ModelNotFoundError, SetupError

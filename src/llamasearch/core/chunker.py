@@ -1,16 +1,18 @@
 # src/llamasearch/core/chunker.py
 
 import re
-from typing import Any, Dict, Generator, List, Optional
 from pathlib import Path  # Added for path operations
+from typing import Any, Dict, Generator, List, Optional
 
 # --- Add BeautifulSoup import ---
 from bs4 import BeautifulSoup
-# ------------------------------
-
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from llamasearch.utils import setup_logging
+
+# ------------------------------
+
+
 
 logger = setup_logging(__name__, use_qt_handler=True)
 

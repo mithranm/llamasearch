@@ -1,60 +1,41 @@
-# src/llamasearch/setup.py
-
 #!/usr/bin/env python3
 """
-setup.py - Downloads and verifies LlamaSearch models (CPU-Only).
+setup.py - Downloads and verifies LlamaSearch models (CPU-Only, FP32).
 
-Configured for a generic ONNX Causal LM (Llama 3.2 1B) and embedder.
-Requires user to specify a quantization flag. Downloads necessary files
-based on the chosen flag and assembles the active model directory.
+Configured for the generic ONNX Causal LM (Llama 3.2 1B - FP32) and embedder.
+Downloads necessary files and assembles the active model directory.
 """
 
 import argparse
+import gc
 import shutil
 import sys
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple
-import gc
+from typing import List, Optional
 
-from huggingface_hub import (
-    hf_hub_download,
-    snapshot_download,
-)
-from huggingface_hub.errors import (
-    EntryNotFoundError,
-    LocalEntryNotFoundError,
-    HfHubHTTPError,
-)
+from huggingface_hub import hf_hub_download, snapshot_download
+from huggingface_hub.errors import (EntryNotFoundError, HfHubHTTPError,
+                                    LocalEntryNotFoundError)
 from huggingface_hub.utils._hf_folder import HfFolder
 
-from llamasearch.core.embedder import DEFAULT_MODEL_NAME as DEFAULT_EMBEDDER_MODEL
+from llamasearch.core.embedder import \
+    DEFAULT_MODEL_NAME as DEFAULT_EMBEDDER_MODEL
 from llamasearch.core.embedder import EnhancedEmbedder
-from llamasearch.core.onnx_model import (
-    MODEL_ONNX_BASENAME,
-    ONNX_SUBFOLDER,
-    ONNX_MODEL_REPO_ID,
-    load_onnx_llm,
-    LLM,
-    GenericONNXLLM
-)
-# <<< REMOVED import of ONNX_REQUIRED_LOAD_FILES from onnx_model >>>
+from llamasearch.core.onnx_model import \
+    _ONNX_ORIGINAL_BASE_FILES_  # Import the correct list
+from llamasearch.core.onnx_model import (MODEL_ONNX_BASENAME,
+                                         ONNX_MODEL_REPO_ID, ONNX_SUBFOLDER,
+                                         GenericONNXLLM, load_onnx_llm)
 from llamasearch.data_manager import data_manager
 from llamasearch.exceptions import ModelNotFoundError, SetupError
 from llamasearch.utils import setup_logging
 
 logger = setup_logging("llamasearch.setup")
 
-# <<< FIX: Define the list of root files required for setup here >>>
 # These files are typically needed for AutoTokenizer and model loading config
-REQUIRED_ROOT_FILES = [
-    "config.json",
-    "generation_config.json",
-    "special_tokens_map.json",
-    "tokenizer.json",
-    "tokenizer_config.json",
-    # "quantize_config.json", # Optional, include if needed by specific workflows
-]
+# Use the list defined in onnx_model.py
+REQUIRED_ROOT_FILES = _ONNX_ORIGINAL_BASE_FILES_
 
 
 # Helper: Download with Retries
@@ -164,32 +145,28 @@ def check_or_download_embedder(models_dir: Path, force: bool = False) -> None:
 
 
 # --- Generic ONNX LLM Check/Download ---
-def check_or_download_onnx_llm(
-    models_dir: Path, quant_suffix: str, force: bool = False
-) -> None:
-    """Downloads required generic ONNX LLM files based on the chosen suffix."""
-    quant_name = quant_suffix.lstrip("_") if quant_suffix else "fp32"
-    logger.info(f"Checking/Downloading Generic ONNX LLM (Quantization: {quant_name})")
-    logger.info(f"Targeting ONNX suffix: '{quant_suffix}' for assembly")
+def check_or_download_onnx_llm(models_dir: Path, force: bool = False) -> None:
+    """Downloads required generic ONNX LLM files (FP32 only)."""
+    logger.info("Checking/Downloading Generic ONNX LLM (FP32)")
 
     active_model_dir = models_dir / "active_model"
     active_onnx_dir = active_model_dir / ONNX_SUBFOLDER
     needs_clean = force
 
     if not needs_clean and active_model_dir.exists():
-        target_onnx_file = active_onnx_dir / f"{MODEL_ONNX_BASENAME}{quant_suffix}.onnx"
+        target_onnx_file = active_onnx_dir / f"{MODEL_ONNX_BASENAME}.onnx"
+        target_data_file = active_onnx_dir / f"{MODEL_ONNX_BASENAME}.onnx_data"
+
         if not target_onnx_file.is_file():
             needs_clean = True
             logger.warning(
                 f"Target ONNX file '{target_onnx_file.name}' missing in {active_onnx_dir}. Forcing clean assembly."
             )
-        elif quant_suffix == "":
-            target_data_file = active_onnx_dir / f"{MODEL_ONNX_BASENAME}.onnx_data"
-            if not target_data_file.is_file():
-                needs_clean = True
-                logger.warning(
-                    f"Target ONNX data file '{target_data_file.name}' missing for fp32 in {active_onnx_dir}. Forcing clean assembly."
-                )
+        elif not target_data_file.is_file():
+            needs_clean = True
+            logger.warning(
+                f"Target ONNX data file '{target_data_file.name}' missing in {active_onnx_dir}. Forcing clean assembly."
+            )
 
     if needs_clean and active_model_dir.exists():
         logger.info(f"Cleaning existing active model directory: {active_model_dir}")
@@ -204,11 +181,10 @@ def check_or_download_onnx_llm(
     cache_location = models_dir
     repo_id = ONNX_MODEL_REPO_ID
 
-    # <<< FIX: Use REQUIRED_ROOT_FILES defined in this module >>>
     # 1. Download/Verify required root files
     logger.info(f"Downloading/Verifying root files from {repo_id}...")
     try:
-        for filename in REQUIRED_ROOT_FILES: # <<< Use the correct list >>>
+        for filename in REQUIRED_ROOT_FILES:
             logger.debug(f"Processing root file: {filename}")
             cached_path_str = download_file_with_retry(
                 repo_id=repo_id,
@@ -222,14 +198,13 @@ def check_or_download_onnx_llm(
             shutil.copyfile(cached_path_str, target_path)
         logger.info(f"Root config/tokenizer files processed into {active_model_dir}")
     except EntryNotFoundError as e:
-         # Handle if one of the *required* root files is missing in the repo
          logger.error(f"A required configuration file is missing from the repository: {e}")
          raise SetupError(f"Required config file missing from repo: {e.filename}") from e
     except Exception as e:
         raise SetupError(f"Failed to process root files from {repo_id}: {e}") from e
 
-    # 2. Download Specific ONNX Model File based on suffix (to cache) and copy
-    onnx_model_rel_path = f"{ONNX_SUBFOLDER}/{MODEL_ONNX_BASENAME}{quant_suffix}.onnx"
+    # 2. Download FP32 ONNX Model File (to cache) and copy
+    onnx_model_rel_path = f"{ONNX_SUBFOLDER}/{MODEL_ONNX_BASENAME}.onnx"
     logger.info(f"Downloading/Verifying ONNX model file: '{onnx_model_rel_path}'...")
     try:
         source_path_str = download_file_with_retry(
@@ -253,49 +228,45 @@ def check_or_download_onnx_llm(
     except Exception as e:
         raise SetupError(f"Unexpected error processing ONNX file {onnx_model_rel_path}: {e}") from e
 
+    # 3. Download the common ONNX Data File (to cache) and copy
+    onnx_data_rel_path = f"{ONNX_SUBFOLDER}/{MODEL_ONNX_BASENAME}.onnx_data"
+    logger.info(f"Downloading/Verifying ONNX data file: '{onnx_data_rel_path}'...")
+    try:
+        cached_data_file_str = download_file_with_retry(
+            repo_id=repo_id,
+            filename=onnx_data_rel_path,
+            cache_dir=cache_location,
+            force=force,
+            repo_type="model",
+        )
+        target_data_path = active_onnx_dir / Path(onnx_data_rel_path).name
+        logger.debug(f"Copying {cached_data_file_str} to {target_data_path}")
+        shutil.copyfile(cached_data_file_str, target_data_path)
+        logger.info(f"Processed ONNX data file: copied to {target_data_path.name}")
 
-    # 3. Download Corresponding .onnx_data File (ONLY if suffix is "" for fp32)
-    if quant_suffix == "":
-        onnx_data_rel_path = f"{ONNX_SUBFOLDER}/{MODEL_ONNX_BASENAME}.onnx_data"
-        logger.info(f"Checking/Downloading ONNX data file: '{onnx_data_rel_path}' (fp32)...")
-        try:
-            source_path_str = download_file_with_retry(
-                repo_id=repo_id,
-                filename=onnx_data_rel_path,
-                cache_dir=cache_location,
-                force=force,
-                repo_type="model",
-            )
-            target_data_path = active_onnx_dir / Path(onnx_data_rel_path).name
-            logger.debug(f"Copying {source_path_str} to {target_data_path}")
-            shutil.copyfile(source_path_str, target_data_path)
-            logger.debug(f"Copied {onnx_data_rel_path} to {target_data_path}")
-            logger.info(f"Found and processed ONNX data file: {onnx_data_rel_path}")
-        except EntryNotFoundError:
-            logger.error(
-                f"Required ONNX data file '{onnx_data_rel_path}' not found for fp32 model in repo {repo_id}."
-            )
-            raise SetupError(
-                f"Required ONNX data file missing for fp32: {onnx_data_rel_path}"
-            )
-        except (SetupError, IOError, OSError) as e:
-            raise SetupError(
-                f"Error getting/copying ONNX data file {onnx_data_rel_path}: {e}"
-            ) from e
-        except Exception as e:
-            raise SetupError(
-                f"Unexpected error processing ONNX data file {onnx_data_rel_path}: {e}"
-            ) from e
-    else:
-        logger.info(f"Skipping .onnx_data check (quantization: {quant_name})")
+    except EntryNotFoundError:
+        logger.error(
+            f"Required ONNX data file '{onnx_data_rel_path}' not found in repo {repo_id}."
+        )
+        raise SetupError(
+            f"Required ONNX data file '{onnx_data_rel_path}' missing from repository."
+        )
+    except (SetupError, IOError, OSError) as e:
+        raise SetupError(
+            f"Error getting/copying ONNX data file {onnx_data_rel_path}: {e}"
+        ) from e
+    except Exception as e:
+        raise SetupError(
+            f"Unexpected error processing ONNX data file {onnx_data_rel_path}: {e}"
+        ) from e
 
-    logger.info(f"Assembly of {active_model_dir} complete for {quant_name}.")
+    logger.info(f"Assembly of {active_model_dir} complete for FP32.")
 
 
 # --- Verification Function ---
-def verify_setup(quant_suffix_to_verify: str):
-    """Attempts to load models based on the *installed* suffix in active_model."""
-    logger.info("--- Verifying Model Setup (CPU-Only) ---")
+def verify_setup():
+    """Attempts to load models based on the installed files in active_model."""
+    logger.info("--- Verifying Model Setup (CPU-Only, FP32) ---")
     all_verified = True
     embedder = None
     llm = None
@@ -303,7 +274,8 @@ def verify_setup(quant_suffix_to_verify: str):
     # Verify Embedder
     logger.info(f"Verifying Embedder '{DEFAULT_EMBEDDER_MODEL}' (CPU)...")
     try:
-        embedder = EnhancedEmbedder()
+        # Pass default batch size, let embedder handle config
+        embedder = EnhancedEmbedder(batch_size=0)
         dim = embedder.get_embedding_dimension()
         if not (dim and isinstance(dim, int) and dim > 0 and embedder.model is not None):
              raise SetupError(f"Embedder invalid state (Model:{embedder.model is not None}, Dim:{dim}). Check logs.")
@@ -325,23 +297,17 @@ def verify_setup(quant_suffix_to_verify: str):
             del embedder
             gc.collect()
 
-    # Verify Generic ONNX LLM (CPU)
-    logger.info("Verifying Generic ONNX LLM (CPU in active_model)...")
+    # Verify Generic ONNX LLM (CPU, FP32)
+    logger.info("Verifying Generic ONNX LLM (CPU, FP32 in active_model)...")
     try:
-        llm = load_onnx_llm(onnx_quantization="auto")
+        # Load without specifying quantization, it will check for base files
+        llm = load_onnx_llm()
         if llm and isinstance(llm, GenericONNXLLM):
-            loaded_suffix = getattr(llm, "_quant_suffix", "unknown")
             logger.info(
-                f"ONNX LLM OK ({llm.model_info.model_id} - suffix '{loaded_suffix}' loaded from active_model on CPU)."
+                f"ONNX LLM OK ({llm.model_info.model_id} loaded from active_model on CPU)."
             )
-            if loaded_suffix != quant_suffix_to_verify:
-                logger.error(
-                    f"FAIL: Verification loaded suffix '{loaded_suffix}' but setup intended to install '{quant_suffix_to_verify}'."
-                )
-                all_verified = False
-                raise SetupError("Loaded ONNX model quantization does not match setup intent.")
         else:
-            raise SetupError("ONNX LLM loader returned None or unexpected type.")
+            raise SetupError("ONNX LLM loader returned None or unexpected type during verification.")
     except ModelNotFoundError as e:
         logger.error(f"FAIL: ONNX LLM files missing or incomplete in active_model. {e}")
         all_verified = False
@@ -364,89 +330,27 @@ def verify_setup(quant_suffix_to_verify: str):
     if not all_verified:
         raise SetupError("One or more models failed CPU verification.")
     else:
-        logger.info("--- Model Verification Successful (CPU-Only) ---")
+        logger.info("--- Model Verification Successful (CPU-Only, FP32) ---")
 
 
 # --- Main Setup Function ---
 def main():
     parser = argparse.ArgumentParser(
-        description="Download/verify models for LlamaSearch (CPU-Only)."
+        description="Download/verify models for LlamaSearch (CPU-Only, FP32)."
     )
     parser.add_argument(
         "--force", action="store_true", help="Force redownload/reassembly"
     )
-    quant_group = parser.add_mutually_exclusive_group(required=True)
-    quant_group.add_argument(
-        "--fp32",
-        action="store_const",
-        dest="quant_suffix",
-        const="",
-        help="Download FP32 ONNX model.",
-    )
-    quant_group.add_argument(
-        "--fp16",
-        action="store_const",
-        dest="quant_suffix",
-        const="_fp16",
-        help="Download FP16 ONNX model.",
-    )
-    quant_group.add_argument(
-        "--int8",
-        action="store_const",
-        dest="quant_suffix",
-        const="_int8",
-        help="Download INT8 ONNX model.",
-    )
-    quant_group.add_argument(
-        "--quantized",
-        action="store_const",
-        dest="quant_suffix",
-        const="_quantized",
-        help="Download generic 'quantized' ONNX model.",
-    )
-    quant_group.add_argument(
-        "--q4",
-        action="store_const",
-        dest="quant_suffix",
-        const="_q4",
-        help="Download Q4 ONNX model.",
-    )
-    quant_group.add_argument(
-        "--q4f16",
-        action="store_const",
-        dest="quant_suffix",
-        const="_q4f16",
-        help="Download Q4_f16 ONNX model.",
-    )
-    quant_group.add_argument(
-        "--uint8",
-        action="store_const",
-        dest="quant_suffix",
-        const="_uint8",
-        help="Download UINT8 ONNX model.",
-    )
-    quant_group.add_argument(
-        "--bnb4",
-        action="store_const",
-        dest="quant_suffix",
-        const="_bnb4",
-        help="Download BNB 4-bit ONNX model.",
-    )
+    # Removed quantization flags
 
     args = parser.parse_args()
 
-    logger.info("--- Starting LlamaSearch Model Setup (CPU-Only) ---")
+    logger.info("--- Starting LlamaSearch Model Setup (CPU-Only, FP32) ---")
     if args.force:
         logger.info("Force mode enabled: Active directory will be recreated.")
 
-    chosen_suffix = args.quant_suffix
-    chosen_quant_name = chosen_suffix.lstrip("_") if chosen_suffix else "fp32"
-    logger.info(
-        f"User selected quantization: {chosen_quant_name} (suffix: '{chosen_suffix}')"
-    )
-
     try:
-        logger.info("Setup configured for CPU-only operation.")
+        logger.info("Setup configured for CPU-only operation (FP32 ONNX).")
         models_dir_str = data_manager.get_data_paths().get("models")
         if not models_dir_str:
             raise SetupError("Models directory path not configured.")
@@ -464,12 +368,12 @@ def main():
 
         # Download/Verify components
         check_or_download_embedder(models_dir, args.force)
-        check_or_download_onnx_llm(models_dir, chosen_suffix, args.force)
+        check_or_download_onnx_llm(models_dir, args.force) # No suffix needed
 
         # Final Verification (CPU)
-        verify_setup(chosen_suffix)
+        verify_setup() # No suffix needed
         logger.info(
-            f"--- LlamaSearch Model Setup Completed Successfully (Quant: {chosen_quant_name}) ---"
+            "--- LlamaSearch Model Setup Completed Successfully (FP32) ---"
         )
         sys.exit(0)
 

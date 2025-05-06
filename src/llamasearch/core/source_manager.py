@@ -3,8 +3,8 @@ import hashlib
 import json
 import logging
 import os
-import time
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -14,8 +14,9 @@ from whoosh import index as whoosh_index
 
 from llamasearch.data_manager import data_manager
 from llamasearch.utils import NumpyEncoder
+
 from .bm25 import WhooshBM25Retriever
-from .chunker import chunk_markdown_text, DEFAULT_MIN_CHUNK_LENGTH
+from .chunker import DEFAULT_MIN_CHUNK_LENGTH, chunk_markdown_text
 from .embedder import EnhancedEmbedder
 
 # Type Aliases consistent with search_engine.py

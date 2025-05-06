@@ -3,22 +3,11 @@ import logging
 from pathlib import Path
 from typing import Dict
 
-from PySide6.QtCore import QTimer, Qt, QUrl, Slot
+from PySide6.QtCore import Qt, QTimer, QUrl, Slot
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import (
-    QCheckBox,
-    QFormLayout,
-    QGroupBox,
-    QHBoxLayout,
-    QLabel,
-    QMessageBox,
-    QPushButton,
-    QScrollArea,
-    QSpinBox,
-    QTabWidget,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtWidgets import (QCheckBox, QFormLayout, QGroupBox, QHBoxLayout,
+                               QLabel, QMessageBox, QPushButton, QScrollArea,
+                               QSpinBox, QTabWidget, QVBoxLayout, QWidget)
 
 logger = logging.getLogger(__name__)
 

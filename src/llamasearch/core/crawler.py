@@ -13,25 +13,22 @@ import json
 import logging
 import os
 import re
-import time
 import threading
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import unquote, urljoin, urlparse
 
-# Removed aiohttp import
-
-from crawl4ai import (
-    AsyncWebCrawler,
-    BrowserConfig,
-    CacheMode,
-    CrawlerRunConfig,
-    CrawlResult,
-)
+from crawl4ai import (AsyncWebCrawler, BrowserConfig, CacheMode,
+                      CrawlerRunConfig, CrawlResult)
 from crawl4ai.async_crawler_strategy import AsyncPlaywrightCrawlerStrategy
 from crawl4ai.models import CrawlResultContainer
 
 from llamasearch.utils import setup_logging
+
+# Removed aiohttp import
+
+
 
 # Use the global logger setup, potentially with Qt handler if running GUI
 logger = setup_logging(__name__, use_qt_handler=True)

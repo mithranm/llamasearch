@@ -1,4 +1,4 @@
-# src/llamasearch/core/bm25.py (REPLACEMENT using Whoosh - Corrected)
+# src/llamasearch/core/bm25.py
 
 import shutil
 from pathlib import Path
@@ -6,13 +6,15 @@ from typing import Any, Dict, List, Optional
 
 # --- Whoosh Imports ---
 from whoosh import index as whoosh_index
-from whoosh.fields import ID, TEXT, SchemaClass
-from whoosh.qparser import QueryParser # Using simple QueryParser
 from whoosh.analysis import StandardAnalyzer
-from whoosh.scoring import BM25F # BM25 Scoring algorithm
-# Removed AsyncWriter and FileLock imports
+from whoosh.fields import ID, TEXT, SchemaClass
+from whoosh.qparser import QueryParser  # Using simple QueryParser
+from whoosh.scoring import BM25F  # BM25 Scoring algorithm
 
 from llamasearch.utils import setup_logging
+
+# Removed AsyncWriter and FileLock imports
+
 
 # Use the global logger setup
 logger = setup_logging(__name__, use_qt_handler=True)
@@ -84,7 +86,7 @@ class WhooshBM25Retriever:
                 logger.debug("BM25: whoosh_index.create_in successful.")
 
             logger.debug("BM25: Initializing QueryParser...")
-            self.parser = QueryParser("content", schema=self.ix.schema)
+            self.parser = QueryParser("content", schema=self.ix.schema) # type: ignore
             logger.debug("BM25: QueryParser initialized.")
             logger.info(f"Whoosh index ready. Doc count: {self.get_doc_count()}")
 
@@ -193,7 +195,7 @@ class WhooshBM25Retriever:
     def get_doc_count(self) -> int:
         """Returns the number of documents currently in the Whoosh index."""
         if self.ix is None:
-            return 0 # Fixed E701
+            return 0 
         try:
             # Use the main index doc count for a quick estimate
             logger.debug("BM25: Attempting ix.doc_count...")
@@ -217,8 +219,11 @@ class WhooshBM25Retriever:
                 logger.debug("BM25: Attempting ix.close...")
                 self.ix.close()
                 logger.debug("BM25: ix.close successful.")
-                self.ix = None
-                self.parser = None
-                logger.info("Whoosh index closed.")
             except Exception as e:
                 logger.error(f"Error closing Whoosh index: {e}")
+            finally: # Ensure these are set to None even if close() fails or succeeds
+                self.ix = None
+                self.parser = None
+                logger.info("Whoosh index resources released/nulled.")
+        else:
+            logger.info("Whoosh index was already None or closed.")

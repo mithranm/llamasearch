@@ -2,9 +2,8 @@
 
 import json
 import logging
-import logging.handlers  # Import handlers submodule
-import os
-import sys  # <<< Added sys import >>>
+import logging.handlers
+import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -22,31 +21,20 @@ try:
     QtLogHandler = llamasearch.ui.qt_logging.QtLogHandler
     qt_log_emitter = llamasearch.ui.qt_logging.qt_log_emitter
     _qt_logging_available = True
-except (ImportError, AttributeError):
+except (ImportError, AttributeError, ModuleNotFoundError): # Catch ModuleNotFoundError too
     QtLogHandler = None  # Assign None if not available
     qt_log_emitter = None
     _qt_logging_available = False
 
-
-def is_dev_mode() -> bool:
-    """Determine if running in development mode."""
-    return os.environ.get("LLAMASEARCH_DEV_MODE", "").lower() in ("1", "true", "yes")
-
+# Removed is_dev_mode function
 
 def get_llamasearch_dir() -> Path:
-    """Return the base directory for LlamaSearch data."""
-    from .data_manager import data_manager  # Local import
-
-    base_path_str = data_manager.get_data_paths().get("base")
-    if base_path_str:
-        path = Path(base_path_str)
-        path.mkdir(parents=True, exist_ok=True)  # Ensure exists
-        return path
-    else:
-        # Fallback if data_manager somehow doesn't have 'base'
-        fallback_path = Path.home() / ".llamasearch"
-        fallback_path.mkdir(parents=True, exist_ok=True)
-        return fallback_path
+    """Return the base directory for LlamaSearch data (~/.llamasearch)."""
+    # Simplified: Always return the default base path used by DataManager
+    # This avoids potential inconsistencies if DataManager were somehow bypassed.
+    path = Path.home() / ".llamasearch"
+    path.mkdir(parents=True, exist_ok=True) # Ensure it exists
+    return path
 
 
 def setup_logging(
@@ -55,123 +43,100 @@ def setup_logging(
     """
     Set up logging to console, file, and optionally Qt signal emitter.
     Uses a root logger 'llamasearch' and returns child loggers.
-    Manages a single QtLogHandler instance.
+    Manages a single QtLogHandler instance and updates existing handler levels.
     """
     global _qt_log_handler_instance
-    from .data_manager import data_manager  # Local import
 
     root_logger_name = "llamasearch"
-    logger = logging.getLogger(name)  # Get the specific logger requested
+    logger_to_return = logging.getLogger(name)  # Get the specific logger requested
 
     root_logger = logging.getLogger(root_logger_name)
-    # Configure root logger only once
-    if not root_logger.handlers:  # Check if handlers are already configured
-        root_logger.setLevel(
-            logging.DEBUG
-        )  # Set root logger to DEBUG to capture everything
+    root_logger.setLevel(logging.DEBUG)  # Root logger always captures DEBUG and up
 
-        try:
-            log_path_str = data_manager.get_data_paths().get("logs")
-            logs_dir = (
-                Path(log_path_str) if log_path_str else get_llamasearch_dir() / "logs"
-            )
-            logs_dir.mkdir(parents=True, exist_ok=True)
-            log_file = logs_dir / "llamasearch.log"
+    # --- Formatters ---
+    file_formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    simple_formatter = logging.Formatter(
+        "%(asctime)s [%(levelname)-7s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
 
-            file_formatter = logging.Formatter(
-                "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-            )
-            # Use a simpler format for console/Qt for better readability
-            simple_formatter = logging.Formatter(
-                "%(asctime)s [%(levelname)-7s] %(name)s: %(message)s",
-                datefmt="%H:%M:%S",
-            )
+    # --- Configure Handlers (add if not present, otherwise update) ---
+    try:
+        base_dir = get_llamasearch_dir()
+        logs_dir = base_dir / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        log_file = logs_dir / "llamasearch.log"
 
-            # File Handler - Level set by overall 'level' initially, but logger level controls final output
+        # --- File Handler ---
+        # Check if a file handler for our log file already exists
+        file_handler_exists = any(
+            isinstance(h, logging.handlers.RotatingFileHandler) and
+            getattr(h, 'baseFilename', '') == str(log_file)
+            for h in root_logger.handlers
+        )
+        if not file_handler_exists:
             file_handler = logging.handlers.RotatingFileHandler(
                 log_file, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
             )
             file_handler.setFormatter(file_formatter)
-            file_handler.setLevel(logging.DEBUG)  # File handler captures DEBUG and up
+            file_handler.setLevel(logging.DEBUG)  # File handler always DEBUG
             root_logger.addHandler(file_handler)
 
-            # Console Handler - Fixed DEBUG level unless debug mode explicitly sets child logger lower
-            console_handler = logging.StreamHandler(
-                sys.stdout
-            )  # Use stdout for console
+        # --- Console Handler ---
+        # Try to find an existing stream handler for stdout
+        console_handler: Optional[logging.StreamHandler] = None
+        for h in root_logger.handlers:
+            if isinstance(h, logging.StreamHandler) and getattr(h, 'stream', None) == sys.stdout:
+                console_handler = h
+                break
+        
+        if console_handler is None:
+            console_handler = logging.StreamHandler(sys.stdout)
             console_handler.setFormatter(simple_formatter)
-            # Set console level based on the requested level for this logger instance
-            console_handler.setLevel(level)
             root_logger.addHandler(console_handler)
+        console_handler.setLevel(level) # Set/Update console handler level
 
-            # Qt Handler
-            # <<< FIX: Check QtLogHandler type correctly before isinstance >>>
-            if (
-                use_qt_handler
-                and _qt_logging_available
-                and qt_log_emitter is not None
-                and QtLogHandler is not None
-            ):
-                if _qt_log_handler_instance is None:
-                    _qt_log_handler_instance = QtLogHandler(
-                        qt_log_emitter
-                    )  # Pass emitter
-                    _qt_log_handler_instance.setFormatter(simple_formatter)
-                    _qt_log_handler_instance.setLevel(
-                        level # Qt handler follows requested level
-                    )
-                    root_logger.addHandler(_qt_log_handler_instance)
-                    logging.info("Attached QtLogHandler to root logger.")
-                else:
-                    # Ensure existing handler's level is appropriate
-                    _qt_log_handler_instance.setLevel(level)
+        # --- Qt Handler ---
+        if use_qt_handler and _qt_logging_available and qt_log_emitter and QtLogHandler:
+            if _qt_log_handler_instance is None:
+                _qt_log_handler_instance = QtLogHandler(qt_log_emitter)
+                _qt_log_handler_instance.setFormatter(simple_formatter)
+                root_logger.addHandler(_qt_log_handler_instance)
+                logging.info("Attached QtLogHandler to root logger.")
+            # Always set/update Qt handler level if use_qt_handler is true
+            if _qt_log_handler_instance: # Ensure it was created successfully
+                 _qt_log_handler_instance.setLevel(level)
+        elif use_qt_handler and not _qt_logging_available:
+            logging.warning("Qt logging requested but Qt components not found.")
 
-            elif use_qt_handler and not _qt_logging_available:
-                logging.warning(
-                    "Qt logging requested but Qt components not found or failed to import."
-                )
-
-            # Prevent messages logged to child loggers from propagating to the root logger's handlers
-            # if the child logger also has handlers (avoids duplicate messages).
-            # Set propagate=False on the root logger if you *only* want handlers attached directly to it.
-            # Set propagate=True (default) if you want messages to flow up to root handlers.
-            # Let's keep propagation for flexibility unless issues arise.
-            # root_logger.propagate = False
-
-            # Silence noisy libraries by setting their log level higher
+        # --- Silence Noisy Libraries (only once) ---
+        if not getattr(root_logger, '_noisy_libs_silenced', False):
             noisy_libs = [
-                "urllib3",
-                "matplotlib",
-                "PIL",
-                "asyncio",
-                "markdown_it",
-                "sentence_transformers",
-                "huggingface_hub",
-                "onnxruntime",
-                "chromadb",
-                "hpack",
-                "httpx",
-                "watchfiles",
-                "uvicorn",
-                "spacy",
-                "py_cpuinfo",
-                "filelock",
-                "multiprocessing",
-            ]  # Added more
+                "urllib3", "matplotlib", "PIL", "asyncio", "markdown_it",
+                "sentence_transformers", "huggingface_hub", "onnxruntime",
+                "chromadb", "hpack", "httpx", "watchfiles", "uvicorn", "spacy",
+                "py_cpuinfo", "filelock", "multiprocessing", "whoosh",
+            ]
             for lib_name in noisy_libs:
                 logging.getLogger(lib_name).setLevel(logging.WARNING)
+            root_logger._noisy_libs_silenced = True # Mark as done
 
-        except Exception as e:
-            # Fallback logging if setup fails
-            logging.basicConfig(level=logging.INFO)
-            logging.error(
-                f"Failed custom logging setup: {e}. Using basic config.", exc_info=True
-            )
+    except Exception as e:
+        # Fallback logging if setup fails
+        logging.basicConfig(level=logging.INFO) # This resets handlers
+        logging.error(
+            f"Failed custom logging setup: {e}. Using basic config.", exc_info=True
+        )
+        # After basicConfig, the specific logger also needs its level set
+        logger_to_return.setLevel(level)
+        return logger_to_return
+
 
     # Set the level for the specific logger instance being requested/returned
-    logger.setLevel(level)
-
-    return logger
+    logger_to_return.setLevel(level)
+    return logger_to_return
 
 
 class NumpyEncoder(json.JSONEncoder):
@@ -185,11 +150,11 @@ class NumpyEncoder(json.JSONEncoder):
         if isinstance(o, np.ndarray):
             return o.tolist()
         if isinstance(o, (set, frozenset)):
-            return list(o)  # Handle sets
+            return list(o)
         if isinstance(o, Path):
-            return str(o)  # Handle Path objects
+            return o.as_posix() # Use as_posix() for consistent serialization
         if isinstance(o, bytes):
-            return o.decode("utf-8", errors="ignore")  # Handle bytes
+            return o.decode("utf-8", errors="ignore")
         # Let the base class default method raise the TypeError
         return super().default(o)
 
@@ -202,15 +167,10 @@ def log_query(
     full_logging: bool = False,
 ) -> str:
     """Logs the query, optimized chunks, and response to a JSON Lines file."""
-    from .data_manager import data_manager  # Local import
-
     # Use specific logger instance, disable Qt handler for this specific log action
     query_logger = setup_logging("llamasearch.query_log", use_qt_handler=False)
     try:
-        log_path_str = data_manager.get_data_paths().get("logs")
-        logs_dir = (
-            Path(log_path_str) if log_path_str else get_llamasearch_dir() / "logs"
-        )
+        logs_dir = get_llamasearch_dir() / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
     except Exception as e:
         query_logger.error(
@@ -225,11 +185,10 @@ def log_query(
         simplified_chunks = []
         for chunk in chunks:
             if isinstance(chunk, dict):
-                # <<< FIX: Include original_chunk_index >>>
                 sc = {
                     k: chunk.get(k)
-                    for k in ["id", "score", "source_path", "filename", "original_chunk_index"] # Added index
-                    if k in chunk and chunk.get(k) is not None # Ensure value exists
+                    for k in ["id", "score", "source_path", "filename", "original_chunk_index"]
+                    if k in chunk and chunk.get(k) is not None
                 }
                 # Add preview only if chunk wasn't simplified earlier
                 if "document" in chunk and isinstance(chunk["document"], str):
@@ -243,46 +202,40 @@ def log_query(
 
                 simplified_chunks.append(sc)
             else: # Handle non-dict chunks if they occur
-                simplified_chunks.append(str(chunk)[:200])
+                # Ensure string conversion and preview
+                str_chunk = str(chunk)
+                simplified_chunks.append(
+                    (str_chunk[:200] + "...") if len(str_chunk) > 200 else str_chunk
+                )
         chunks_to_log = simplified_chunks
-    # <<< END FIX >>>
 
     # Log essential debug info, add more if full_logging
     optimized_debug_info = {}
     if isinstance(debug_info, dict):
-        # Define keys we always want if available
         essential_keys = [
-            "retrieval_time",
-            "llm_generation_time",
-            "total_query_processing_time", # Added missing key
-            "vector_initial_results", # Renamed from count
-            "bm25_initial_results", # Renamed from count
-            "final_selected_chunk_count", # Renamed from tokens
-            "query_embedding_time",
-            "final_context_token_count",
-            "final_prompt_tokens_estimated"
+            "retrieval_time", "llm_generation_time", "total_query_processing_time",
+            "vector_initial_results", "bm25_initial_results",
+            "final_selected_chunk_count", "query_embedding_time",
+            "final_context_content_token_count", "estimated_full_prompt_tokens" 
         ]
         for key in essential_keys:
             if key in debug_info:
                 optimized_debug_info[key] = debug_info[key]
 
         if full_logging:
-            # Add more details in full logging mode, avoid very large raw data if possible
             optimized_debug_info.update(
                 {
                     k: v
                     for k, v in debug_info.items()
-                    if k not in optimized_debug_info and k not in ["raw_llm_output", "final_selected_chunk_details"] # Exclude raw output and full details
+                    if k not in optimized_debug_info and k not in ["raw_llm_output", "final_selected_chunk_details"] # Explicitly exclude these even in full
                 }
             )
-            # Optionally add summary of selected chunks if needed
-            # if "final_selected_chunk_details" in debug_info:
-            #      optimized_debug_info["selected_chunks_summary"] = [...] # Summarize details if needed
+
 
     log_data = {
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "query": query,
-        "chunks_retrieved_details": chunks_to_log,  # Log simplified or full chunks
+        "chunks_retrieved_details": chunks_to_log,
         "response": response,
         "debug_info": optimized_debug_info,
     }
@@ -290,7 +243,6 @@ def log_query(
     log_file = logs_dir / "query_log.jsonl"
     try:
         with open(log_file, "a", encoding="utf-8") as f:
-            # <<< Use NumpyEncoder here >>>
             json.dump(log_data, f, ensure_ascii=False, cls=NumpyEncoder)
             f.write("\n")
         return str(log_file)

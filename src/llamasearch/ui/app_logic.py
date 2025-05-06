@@ -3,17 +3,17 @@
 import asyncio
 import logging
 import logging.handlers
-import time
 import threading
-from concurrent.futures import ThreadPoolExecutor, CancelledError
+import time
+from concurrent.futures import CancelledError, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 # Import necessary Qt components
-from PySide6.QtCore import QObject, Signal, Slot, QTimer
+from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
 from llamasearch.core.crawler import Crawl4AICrawler
-from llamasearch.core.search_engine import LLMSearch # Corrected import
+from llamasearch.core.search_engine import LLMSearch  # Corrected import
 from llamasearch.data_manager import data_manager
 from llamasearch.exceptions import ModelNotFoundError, SetupError
 from llamasearch.utils import setup_logging

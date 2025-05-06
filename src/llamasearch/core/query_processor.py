@@ -8,16 +8,14 @@ from typing import Any, Dict, List, Optional, cast
 
 import chromadb
 import numpy as np
-from chromadb.api.types import QueryResult, Metadata, Document
-
-from .bm25 import WhooshBM25Retriever
-from .embedder import EnhancedEmbedder
-
-# --- Import GenericONNXLLM ---
-from .onnx_model import GenericONNXLLM
+from chromadb.api.types import Document, Metadata, QueryResult
 
 from ..protocols import LLM
 from ..utils import log_query
+from .bm25 import WhooshBM25Retriever
+from .embedder import EnhancedEmbedder
+# --- Import GenericONNXLLM ---
+from .onnx_model import GenericONNXLLM
 
 logger = logging.getLogger(__name__)
 

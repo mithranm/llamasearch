@@ -5,25 +5,12 @@ import shlex
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, Qt, Slot
-from PySide6.QtWidgets import (
-    QAbstractItemView,
-    QFileDialog,
-    QFormLayout,
-    QHBoxLayout,
-    QHeaderView,
-    QLabel,
-    QLineEdit,
-    QMessageBox,
-    QPushButton,
-    QSpinBox,
-    QTableWidget,
-    QTableWidgetItem,
-    QTextEdit,
-    QTextBrowser,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtCore import Qt, QTimer, Slot
+from PySide6.QtWidgets import (QAbstractItemView, QFileDialog, QFormLayout,
+                               QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+                               QMessageBox, QPushButton, QSpinBox,
+                               QTableWidget, QTableWidgetItem, QTextBrowser,
+                               QTextEdit, QVBoxLayout, QWidget)
 
 # Use module-level logger
 logger = logging.getLogger(__name__)

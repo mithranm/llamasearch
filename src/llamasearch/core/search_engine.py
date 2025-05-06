@@ -1,28 +1,29 @@
+# src/llamasearch/core/search_engine.py
 # src/llamasearch/core/search_engine.py (CPU-Only, Syntax Fixes)
 
 import gc
 import threading
 from pathlib import Path
-from typing import Dict, Optional, Union, List, cast
+from typing import Dict, List, Optional, Union, cast
 
 import chromadb
 from chromadb.api import ClientAPI
-from chromadb.api.types import EmbeddingFunction, Embeddings, Embeddable
+from chromadb.api.types import Embeddable, EmbeddingFunction, Embeddings
 from chromadb.config import Settings as ChromaSettings
+from sentence_transformers import \
+    SentenceTransformer  # Import needed for isinstance check
 
+from ..exceptions import ModelNotFoundError, SetupError
+from ..protocols import LLM
+from ..utils import setup_logging
 from .bm25 import WhooshBM25Retriever
 from .embedder import DEFAULT_MODEL_NAME as DEFAULT_EMBEDDER_NAME
 from .embedder import EnhancedEmbedder
 from .onnx_model import load_onnx_llm
-from .source_manager import (
-    _SourceManagementMixin, DEFAULT_MAX_CHUNK_SIZE, DEFAULT_CHUNK_OVERLAP,
-    DEFAULT_MIN_CHUNK_SIZE_FILTER,
-)
 from .query_processor import _QueryProcessingMixin
-from ..exceptions import ModelNotFoundError, SetupError
-from ..protocols import LLM
-from ..utils import setup_logging
-from sentence_transformers import SentenceTransformer # Import needed for isinstance check
+from .source_manager import (DEFAULT_CHUNK_OVERLAP, DEFAULT_MAX_CHUNK_SIZE,
+                             DEFAULT_MIN_CHUNK_SIZE_FILTER,
+                             _SourceManagementMixin)
 
 logger = setup_logging(__name__, use_qt_handler=True)
 
@@ -53,7 +54,7 @@ class LLMSearch(_SourceManagementMixin, _QueryProcessingMixin):
         self,
         storage_dir: Path,
         shutdown_event: Optional[threading.Event] = None,
-        llm_onnx_quant: str = "auto",
+        # llm_onnx_quant removed - no longer used
         # llm_provider_opts removed - CPU only
         verbose: bool = True,
         max_results: int = 3,
@@ -71,7 +72,7 @@ class LLMSearch(_SourceManagementMixin, _QueryProcessingMixin):
         self.max_results = max_results
         self.debug = debug
         self.storage_dir = Path(storage_dir)
-        self.storage_dir.mkdir(parents=True, exist_ok=True) # Fixed E701
+        self.storage_dir.mkdir(parents=True, exist_ok=True)
         self._shutdown_event = shutdown_event
         self.bm25_weight, self.vector_weight = bm25_weight, vector_weight
         self.model: Optional[LLM] = None
@@ -95,11 +96,8 @@ class LLMSearch(_SourceManagementMixin, _QueryProcessingMixin):
 
             # 2. Initialize LLM (CPU-Only ONNX)
             logger.info("Initializing Generic ONNX LLM (CPU-Only)...")
-            self.model = load_onnx_llm(
-                onnx_quantization=llm_onnx_quant,
-                preferred_provider="CPUExecutionProvider", # Explicitly force CPU
-                preferred_options=None, # No options needed/used for CPU
-            )
+            # Call load_onnx_llm without the removed parameters
+            self.model = load_onnx_llm()
             if not self.model:
                 raise RuntimeError("load_onnx_llm returned None.")
             model_info = self.model.model_info
@@ -150,13 +148,13 @@ class LLMSearch(_SourceManagementMixin, _QueryProcessingMixin):
 
         except (ModelNotFoundError, SetupError) as e:
             logger.error(f"LLMSearch init failed (setup): {e}. Run setup.")
-            self.close() # Fixed E702
-            raise # Fixed E702
+            self.close()
+            raise
         except ImportError as e:
             raise SetupError(f"Missing dependency: {e}") from e
         except Exception as e:
-            logger.error(f"Unexpected LLMSearch init error: {e}", exc_info=True) # Fixed E702
-            self.close() # Fixed E702
+            logger.error(f"Unexpected LLMSearch init error: {e}", exc_info=True)
+            self.close()
             raise RuntimeError("LLMSearch init failed.") from e
 
     # --- Lifecycle Methods (CPU-Only) ---
@@ -166,47 +164,46 @@ class LLMSearch(_SourceManagementMixin, _QueryProcessingMixin):
         logger.info("Unloading LLM model...")
         try:
             unload = getattr(self.model, "unload", None)
-            if callable(unload): # Fixed E701
+            if callable(unload):
                 unload()
-            # Fixed E701 (implicit else)
             del self.model
         except Exception as e:
             logger.error(f"Error during LLM unload: {e}", exc_info=True)
         finally:
-            self.model = None # Fixed E701
-            gc.collect() # Fixed E701
+            self.model = None
+            gc.collect()
 
     def close(self) -> None:
         logger.info("Closing LLMSearch engine components (CPU-Only)...")
-        if self._shutdown_event and not self._shutdown_event.is_set(): # Fixed E701
+        if self._shutdown_event and not self._shutdown_event.is_set():
             self._shutdown_event.set()
-        if self.model: # Fixed E701
+        if self.model:
             self._safe_unload_llm()
         if self.embedder:
-            try: # Fixed E701
+            try:
                 self.embedder.close()
-            except Exception as e: # Fixed E701
+            except Exception as e:
                 logger.warning(f"Err closing embedder: {e}")
-            finally: # Fixed E701
+            finally:
                 self.embedder = None
         if self.bm25:
-            try: # Fixed E701
+            try:
                 self.bm25.close()
-            except Exception as e: # Fixed E701
+            except Exception as e:
                 logger.warning(f"Err closing BM25: {e}")
-            finally: # Fixed E701, moved statements to new lines
+            finally:
                 self.bm25 = None
         if self.chroma_client:
-            try: # Fixed E701
+            try:
                 pass # No explicit close needed, release refs
-            finally: # Fixed E701, moved statements to new lines
+            finally:
                 self.chroma_client = None
                 self.chroma_collection = None
                 logger.debug("Chroma refs released.")
         logger.info("LLMSearch engine closed (CPU-Only).")
-        gc.collect() # Fixed E701
+        gc.collect()
 
     def __enter__(self):
-        return self # Fixed E701
+        return self
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close() # Fixed E701
+        self.close()
