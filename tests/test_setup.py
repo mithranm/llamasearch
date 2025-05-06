@@ -1,7 +1,6 @@
 # tests/test_setup.py
 import unittest
 import sys
-import logging
 from pathlib import Path
 import tempfile
 import shutil # For cleaning active_model_dir if necessary
@@ -278,25 +277,29 @@ class TestSetupScript(unittest.TestCase):
     @patch("llamasearch.setup.logger")
     @patch("llamasearch.setup.download_file_with_retry")
     @patch("llamasearch.setup.shutil.copyfile")
-    @patch("llamasearch.setup.shutil.rmtree")
-    # Removed Path.exists and Path.is_file mocks
+    # Removed patch for shutil.rmtree to test its actual effect
     def test_check_or_download_onnx_llm_force_cleans_dir(
-        self, mock_rmtree, mock_copy, mock_dl_helper, mock_sut_logger
+        self, mock_copy, mock_dl_helper, mock_sut_logger
     ):
         """Test --force correctly cleans the active_model directory."""
         mock_dl_helper.side_effect = lambda repo_id, filename, **kwargs: self._create_dummy_cached_file(self.models_dir/repo_id, filename)
-
+    
         self.active_model_dir.mkdir(parents=True, exist_ok=True)
         (self.active_model_dir / "old_file.txt").touch()
         self.assertTrue((self.active_model_dir / "old_file.txt").exists())
-
-
+    
+    
         check_or_download_onnx_llm(self.models_dir, force=True)
-
-        mock_rmtree.assert_called_once_with(self.active_model_dir)
+    
+        # Assert that the directory was cleaned (old_file.txt should not exist)
+        # The active_model_dir itself will be recreated by the function.
         self.assertTrue(self.active_model_dir.exists()) 
         self.assertFalse((self.active_model_dir / "old_file.txt").exists()) 
         self.assertEqual(mock_copy.call_count, len(REQUIRED_ROOT_FILES) + 2)
+        mock_sut_logger.info.assert_any_call(
+            f"Cleaning existing active model directory: {self.active_model_dir}"
+        )
+
 
     @patch("llamasearch.setup.logger")
     @patch("llamasearch.setup.download_file_with_retry")

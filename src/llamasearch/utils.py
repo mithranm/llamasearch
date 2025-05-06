@@ -121,7 +121,7 @@ def setup_logging(
             ]
             for lib_name in noisy_libs:
                 logging.getLogger(lib_name).setLevel(logging.WARNING)
-            root_logger._noisy_libs_silenced = True # Mark as done
+            setattr(root_logger, '_noisy_libs_silenced', True) # Mark as done
 
     except Exception as e:
         # Fallback logging if setup fails
