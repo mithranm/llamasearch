@@ -24,6 +24,7 @@ jobs:
       run: |
         flake8 .
     
-    - name: Test with pytest
+    - name: Test with pytest (only core tests, ui doesn't work on CI)
       run: |
-        pytest
+        pytest tests/core
+        
