@@ -104,6 +104,10 @@ def main():
     try:
         # Dynamically import the database module
         database = importlib.import_module(db_module_name)
+
+        # Access 'trustedSources' before passing the module to functions
+        temp = database.trustedSources
+        
     except ModuleNotFoundError:
         print(f"Error: Could not find module '{db_module_name}'. Make sure the .py file is in the same directory.")
         return

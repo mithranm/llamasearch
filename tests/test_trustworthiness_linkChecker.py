@@ -2,19 +2,17 @@ import sys
 from pathlib import Path
 import pytest
 import importlib
+from pathlib import Path
 from llamasearch.trustworthiness.linkChecker import (
     extract_domain,
     resolve_md_file_path,
     validate_file_exists,
     check_links_domain,
     check_links_end,
-    create_ratio
+    create_ratio,
+    main
 )
 from llamasearch.trustworthiness import linkChecker
-
-# Add the parent directory of llamasearch to sys.path
-#  sys.path.append(str(Path(__file__).resolve().parents[1]))
-
 
 @pytest.fixture
 def sample_url1():
@@ -116,13 +114,48 @@ def test_check_links_domain(tmp_path):
     assert count == 2
     assert total == 3
 
+def test_check_links_domain_with_blank_lines(tmp_path):
+    test_file = tmp_path / "test_links_with_blanks.md"
+    test_file.write_text(
+        "https://www.nasa.gov\n"  # trusted
+        "\n"                      # blank line, triggers continue statement
+        "https://untrusted.com\n" # untrusted domain
+        "\n"                      # another blank
+        "https://audio-video.gnu.org/video/abc"  # trusted
+    )
+
+    count, total = check_links_domain(test_file, DummyDatabase())
+    
+    # Should count 2 trusted domains out of 3 non-blank total
+    assert count == 2
+    assert total == 3
+
 def test_check_links_end(tmp_path):
     test_file = tmp_path / "test_links.md"
-    test_file.write_text("https://example.edu\nhttps://agency.gov\nhttps://university.int\nhttps://notrust.com\n")
+    test_file.write_text(
+        "https://example.edu\n"
+        "https://agency.gov\n"
+        "https://university.int\nhttps://notrust.com\n")
     
     count, total = check_links_end(test_file)
     assert count == 3
     assert total == 4
+
+def test_check_links_end_with_blank_lines(tmp_path):
+    test_file = tmp_path / "test_links_with_blanks.md"
+    test_file.write_text(
+        "https://example.edu\n"    # trusted
+        "\n"                       # blank line
+        "https://agency.gov\n"     # trusted
+        "\n"                       # blank line
+        "https://university.int\n" # trusted
+        "https://notrust.com\n"    # untrusted
+    )
+
+    count, total = check_links_end(test_file)
+    assert count == 3  # .edu, .gov, .int
+    assert total == 4  # 6 lines, 2 of which are blank → 4 processed
+
 
 def test_create_ratio_normal():
     assert create_ratio(2, 4) == 50.0
@@ -147,6 +180,7 @@ def test_main_success(monkeypatch, capsys, md_file, trusted_module):
 
 
 def test_main_missing_args(monkeypatch, capsys):
+    # Simulates command line argument with missing statements
     monkeypatch.setattr(sys, "argv", ["linkChecker.py"])
     linkChecker.main()
     captured = capsys.readouterr()
@@ -154,6 +188,7 @@ def test_main_missing_args(monkeypatch, capsys):
 
 
 def test_main_invalid_module(monkeypatch, capsys, md_file):
+    # Simulates a command line argument to catch the statement
     monkeypatch.setattr(sys, "argv", ["linkChecker.py", str(md_file), "nonexistentModule"])
     linkChecker.main()
     captured = capsys.readouterr()
@@ -173,12 +208,27 @@ def test_main_file_does_not_exist(tmp_path, monkeypatch, capsys):
     captured = capsys.readouterr()
     assert f"Error: Markdown file '{fake_md_path}' does not exist or is not a file." in captured.out
 
-"""def main():
-    if test_resolve_md_file_path_relative() is True:
-        return "Result True"
-    else:
-        return "Wrong"
+def test_main_attribute_error(tmp_path, monkeypatch, capsys):
+    # Create a dummy markdown file
+    md_file = tmp_path / "test_links.md"
+    md_file.write_text("https://example.com\n")
 
-if __name__ == "__main__":
+    # Create a dummy Python module WITHOUT 'trustedSources'
+    module_file = tmp_path / "dummy_module.py"
+    module_file.write_text("x = 1")
+
+    # Add tmp_path to sys.path so the module is importable
+    sys.path.insert(0, str(tmp_path))
+
+    # Simulate command-line arguments
+    monkeypatch.setattr(sys, 'argv', ["linkChecker.py", str(md_file.name), "dummy_module"])
+
+    # Call main
     main()
-"""
+
+    # Capture printed output
+    captured = capsys.readouterr()
+    assert "does not contain 'trustedSources'" in captured.out
+
+    # Cleanup
+    sys.path.pop(0)

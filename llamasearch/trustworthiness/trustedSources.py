@@ -1,4 +1,4 @@
-# for example
+# database of the domains of trusted sources
 trustedSources = [
     "gnu",
     "nasa",
