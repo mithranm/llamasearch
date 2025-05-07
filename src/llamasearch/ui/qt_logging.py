@@ -7,13 +7,16 @@ from PySide6.QtCore import QObject, Signal
 
 class QtLogSignalEmitter(QObject):
     """Contains a signal to emit log messages."""
+
     # Signal emits: level_name (str), message (str)
     log_message = Signal(str, str)
+
 
 class QtLogHandler(logging.Handler):
     """
     A logging handler that emits Qt signals for each log record.
     """
+
     def __init__(self, signal_emitter: QtLogSignalEmitter, level=logging.NOTSET):
         super().__init__(level=level)
         self.signal_emitter = signal_emitter
@@ -28,7 +31,8 @@ class QtLogHandler(logging.Handler):
             # Emit the signal - Qt handles cross-thread delivery if connected correctly
             self.signal_emitter.log_message.emit(record.levelname, msg)
         except Exception:
-            self.handleError(record) # Default error handling
+            self.handleError(record)  # Default error handling
+
 
 # Global instance of the emitter
 # IMPORTANT: This emitter should be created *before* any loggers that use QtLogHandler

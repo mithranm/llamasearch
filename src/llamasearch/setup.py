@@ -22,11 +22,9 @@ from huggingface_hub.utils._hf_folder import HfFolder
 from llamasearch.core.embedder import \
     DEFAULT_MODEL_NAME as DEFAULT_EMBEDDER_MODEL
 from llamasearch.core.embedder import EnhancedEmbedder
-from llamasearch.core.onnx_model import \
-    _ONNX_ORIGINAL_BASE_FILES_  # Import the correct list
-from llamasearch.core.onnx_model import (MODEL_ONNX_BASENAME,
-                                         ONNX_MODEL_REPO_ID, ONNX_SUBFOLDER,
-                                         GenericONNXLLM, load_onnx_llm)
+from llamasearch.core.onnx_model import (  # Import the correct list
+    _ONNX_ORIGINAL_BASE_FILES_, MODEL_ONNX_BASENAME, ONNX_MODEL_REPO_ID,
+    ONNX_SUBFOLDER, GenericONNXLLM, load_onnx_llm)
 from llamasearch.data_manager import data_manager
 from llamasearch.exceptions import ModelNotFoundError, SetupError
 from llamasearch.utils import setup_logging
@@ -51,7 +49,7 @@ def download_file_with_retry(
 ) -> str:
     """Attempts to download a file with retries on failure."""
     assert isinstance(cache_dir, Path)
-    last_error : Optional[Exception] = None
+    last_error: Optional[Exception] = None
     for attempt in range(max_retries + 1):
         try:
             logger.debug(
@@ -69,7 +67,9 @@ def download_file_with_retry(
                 **kwargs,
             )
             if not file_path_str:
-                 raise FileNotFoundError(f"hf_hub_download returned invalid path: {file_path_str}")
+                raise FileNotFoundError(
+                    f"hf_hub_download returned invalid path: {file_path_str}"
+                )
 
             fpath = Path(file_path_str)
             if not fpath.is_file():
@@ -83,7 +83,7 @@ def download_file_with_retry(
                 f"File {filename} not in repo {repo_id} (attempt {attempt + 1})."
             )
             last_error = e
-            raise # Reraise immediately, no retry for 404
+            raise  # Reraise immediately, no retry for 404
         except (ConnectionError, TimeoutError, HfHubHTTPError, FileNotFoundError) as e:
             logger.warning(f"DL attempt {attempt + 1} for {filename} failed: {e}")
             last_error = e
@@ -127,7 +127,9 @@ def check_or_download_embedder(models_dir: Path, force: bool = False) -> None:
                     f"Embedder '{model_name}' (PyTorch) not found/incomplete locally. Proceeding to download/verify..."
                 )
             except Exception as local_check_err:
-                 logger.warning(f"Local check for embedder failed ({local_check_err}), proceeding to download/verify...")
+                logger.warning(
+                    f"Local check for embedder failed ({local_check_err}), proceeding to download/verify..."
+                )
 
         logger.info(f"Downloading/Verifying embedder {model_name} from Hub...")
         snapshot_download(
@@ -198,8 +200,10 @@ def check_or_download_onnx_llm(models_dir: Path, force: bool = False) -> None:
             shutil.copyfile(cached_path_str, target_path)
         logger.info(f"Root config/tokenizer files processed into {active_model_dir}")
     except EntryNotFoundError as e:
-         logger.error(f"A required configuration file is missing from the repository: {e}")
-         raise SetupError(f"Required config file missing from repo: {e.filename}") from e
+        logger.error(
+            f"A required configuration file is missing from the repository: {e}"
+        )
+        raise SetupError(f"Required config file missing from repo: {e.filename}") from e
     except Exception as e:
         raise SetupError(f"Failed to process root files from {repo_id}: {e}") from e
 
@@ -224,9 +228,13 @@ def check_or_download_onnx_llm(models_dir: Path, force: bool = False) -> None:
         )
         raise SetupError(f"Required ONNX file missing: {onnx_model_rel_path}")
     except (SetupError, IOError, OSError) as e:
-        raise SetupError(f"Error getting/copying ONNX file {onnx_model_rel_path}: {e}") from e
+        raise SetupError(
+            f"Error getting/copying ONNX file {onnx_model_rel_path}: {e}"
+        ) from e
     except Exception as e:
-        raise SetupError(f"Unexpected error processing ONNX file {onnx_model_rel_path}: {e}") from e
+        raise SetupError(
+            f"Unexpected error processing ONNX file {onnx_model_rel_path}: {e}"
+        ) from e
 
     # 3. Download the common ONNX Data File (to cache) and copy
     onnx_data_rel_path = f"{ONNX_SUBFOLDER}/{MODEL_ONNX_BASENAME}.onnx_data"
@@ -277,8 +285,12 @@ def verify_setup():
         # Pass default batch size, let embedder handle config
         embedder = EnhancedEmbedder(batch_size=0)
         dim = embedder.get_embedding_dimension()
-        if not (dim and isinstance(dim, int) and dim > 0 and embedder.model is not None):
-             raise SetupError(f"Embedder invalid state (Model:{embedder.model is not None}, Dim:{dim}). Check logs.")
+        if not (
+            dim and isinstance(dim, int) and dim > 0 and embedder.model is not None
+        ):
+            raise SetupError(
+                f"Embedder invalid state (Model:{embedder.model is not None}, Dim:{dim}). Check logs."
+            )
         logger.info(f"Embedder OK (CPU, Dim: {dim}).")
     except ModelNotFoundError as e:
         logger.error(f"FAIL: Embedder model not found. {e}")
@@ -307,7 +319,9 @@ def verify_setup():
                 f"ONNX LLM OK ({llm.model_info.model_id} loaded from active_model on CPU)."
             )
         else:
-            raise SetupError("ONNX LLM loader returned None or unexpected type during verification.")
+            raise SetupError(
+                "ONNX LLM loader returned None or unexpected type during verification."
+            )
     except ModelNotFoundError as e:
         logger.error(f"FAIL: ONNX LLM files missing or incomplete in active_model. {e}")
         all_verified = False
@@ -362,19 +376,19 @@ def main():
             if HfFolder.get_token():
                 logger.info("HF token found.")
             else:
-                logger.warning("HF token not found. Downloads might fail for gated models (not applicable to default models).")
+                logger.warning(
+                    "HF token not found. Downloads might fail for gated models (not applicable to default models)."
+                )
         except Exception as token_err:
             logger.warning(f"Could not check HF token: {token_err}")
 
         # Download/Verify components
         check_or_download_embedder(models_dir, args.force)
-        check_or_download_onnx_llm(models_dir, args.force) # No suffix needed
+        check_or_download_onnx_llm(models_dir, args.force)  # No suffix needed
 
         # Final Verification (CPU)
-        verify_setup() # No suffix needed
-        logger.info(
-            "--- LlamaSearch Model Setup Completed Successfully (FP32) ---"
-        )
+        verify_setup()  # No suffix needed
+        logger.info("--- LlamaSearch Model Setup Completed Successfully (FP32) ---")
         sys.exit(0)
 
     except SetupError as e:

@@ -171,7 +171,7 @@ class GenericONNXLLM(LLM):
             "temperature": temperature,
             "top_p": top_p,
             "repetition_penalty": repeat_penalty,
-            "do_sample": temperature > 0, # Sample if temperature > 0
+            "do_sample": temperature > 0,  # Sample if temperature > 0
             **(
                 {"pad_token_id": tokenizer_eos_token_id}
                 if tokenizer_eos_token_id is not None
@@ -187,9 +187,9 @@ class GenericONNXLLM(LLM):
             messages = [{"role": "user", "content": prompt}]
             # Ensure tokenizer is callable
             if not callable(self._tokenizer.apply_chat_template):
-                 raise TypeError("Tokenizer's apply_chat_template is not callable.")
+                raise TypeError("Tokenizer's apply_chat_template is not callable.")
             if not callable(self._tokenizer):
-                 raise TypeError("Tokenizer is not callable for input tokenization.")
+                raise TypeError("Tokenizer is not callable for input tokenization.")
 
             formatted_prompt_str = cast(
                 str,
@@ -204,15 +204,16 @@ class GenericONNXLLM(LLM):
             logger.debug("Tokenizing formatted prompt...")
             # Pass explicitly to CPU
             inputs = self._tokenizer(formatted_prompt_str, return_tensors="pt")
-            
+
             # Check if inputs has 'to' method before calling
             if hasattr(inputs, "to") and callable(inputs.to):
                 inputs = inputs.to(self.device)
             else:
                 # This case can happen if tokenizer returns something unexpected (e.g. not BatchEncoding)
                 # Or if the returned object doesn't have a 'to' method (e.g. already on CPU, or a simple dict)
-                logger.debug(f"Tokenizer output (type: {type(inputs)}) does not have 'to' method or is not callable, assuming CPU or correct device.")
-
+                logger.debug(
+                    f"Tokenizer output (type: {type(inputs)}) does not have 'to' method or is not callable, assuming CPU or correct device."
+                )
 
             if (
                 not isinstance(inputs, BatchEncoding)
@@ -226,7 +227,9 @@ class GenericONNXLLM(LLM):
                     "error": "Tokenizer output type/structure error"
                 }
 
-            logger.debug(f"Tokenization successful. Input keys: {list(inputs.keys())}") # Use list() for safety
+            logger.debug(
+                f"Tokenization successful. Input keys: {list(inputs.keys())}"
+            )  # Use list() for safety
             input_ids = inputs.input_ids
             attention_mask = inputs.attention_mask
 
@@ -270,11 +273,10 @@ class GenericONNXLLM(LLM):
             else:
                 generated_ids = output_ids_tensor[0, actual_input_len:]
 
-            if self._tokenizer is None: # Should not happen given initial check
+            if self._tokenizer is None:  # Should not happen given initial check
                 raise RuntimeError("Tokenizer became unavailable before decoding.")
             if not callable(self._tokenizer.decode):
                 raise TypeError("Tokenizer's decode method is not callable.")
-
 
             result_full_text = self._tokenizer.decode(
                 generated_ids, skip_special_tokens=True

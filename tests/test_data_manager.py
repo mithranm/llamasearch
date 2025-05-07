@@ -28,20 +28,20 @@ class TestDataManager(unittest.TestCase):
         # Use a deep copy of the original defaults for patching
         current_original_defaults = ORIGINAL_DEFAULT_SETTINGS_BACKUP.copy()
         dm_module.DEFAULT_SETTINGS = {
-            key: str(self.temp_dir / Path(path).name) # Ensure paths are relative to temp_dir
+            key: str(
+                self.temp_dir / Path(path).name
+            )  # Ensure paths are relative to temp_dir
             for key, path in current_original_defaults.items()
         }
         # Initialize a fresh DataManager (it will use our patched DEFAULT_SETTINGS)
         # Pass base_dir to ensure it uses the temp dir
         self.dm = DataManager(base_dir=self.temp_dir)
 
-
     def tearDown(self):
         """Remove the temporary directory and restore original DEFAULT_SETTINGS."""
         self.temp_dir_obj.cleanup()
         # Restore original DEFAULT_SETTINGS to avoid interference between test files/runs
         dm_module.DEFAULT_SETTINGS = ORIGINAL_DEFAULT_SETTINGS_BACKUP.copy()
-
 
     def test_ensure_directories(self):
         """Test ensure_directories creates missing directories from settings."""
@@ -54,6 +54,7 @@ class TestDataManager(unittest.TestCase):
         if models_path.exists():
             # Use shutil from pathlib for rmtree
             import shutil
+
             shutil.rmtree(models_path)
         self.assertFalse(models_path.exists())
 
@@ -70,7 +71,11 @@ class TestDataManager(unittest.TestCase):
         """Test getting the dictionary of data paths."""
         paths = self.dm.get_data_paths()
         self.assertEqual(paths["base"], str(self.temp_dir))
-        for key in dm_module.DEFAULT_SETTINGS.keys(): # Iterate over the patched DEFAULT_SETTINGS
+        for (
+            key
+        ) in (
+            dm_module.DEFAULT_SETTINGS.keys()
+        ):  # Iterate over the patched DEFAULT_SETTINGS
             self.assertEqual(paths[key], self.dm.settings[key])
             self.assertIsInstance(paths[key], str)
 
@@ -82,7 +87,9 @@ class TestDataManager(unittest.TestCase):
         # In‐memory update
         self.assertEqual(self.dm.settings["crawl_data"], new_crawl_path_str)
         # Directory was created
-        self.assertTrue(Path(new_crawl_path_str).exists() and Path(new_crawl_path_str).is_dir())
+        self.assertTrue(
+            Path(new_crawl_path_str).exists() and Path(new_crawl_path_str).is_dir()
+        )
         # Settings file was written
         settings_file = self.temp_dir / SETTINGS_FILENAME
         self.assertTrue(settings_file.exists())
@@ -110,10 +117,9 @@ class TestDataManager(unittest.TestCase):
 
         # Ensure timestamp moves forward
         time.sleep(0.01)
-        start_ts_obj = time.localtime() # Get struct_time
+        start_ts_obj = time.localtime()  # Get struct_time
         # Format specifically to match the SUT's strftime format
         start_ts_str = time.strftime("%Y%m%d_%H%M%S", start_ts_obj)
-
 
         archive_str_path = self.dm.export_data(keys)
         archive_path = Path(archive_str_path)
@@ -122,10 +128,14 @@ class TestDataManager(unittest.TestCase):
         self.assertTrue(archive_path.name.startswith("llamasearch_export_"))
         self.assertTrue(archive_path.name.endswith(".tar.gz"))
         # Compare the timestamp part more carefully
-        archive_ts_str = archive_path.name.replace("llamasearch_export_", "").replace(".tar.gz", "")
+        archive_ts_str = archive_path.name.replace("llamasearch_export_", "").replace(
+            ".tar.gz", ""
+        )
         self.assertGreaterEqual(archive_ts_str, start_ts_str)
 
-        self.assertEqual(archive_path.parent, self.temp_dir) # Export should be in base_dir
+        self.assertEqual(
+            archive_path.parent, self.temp_dir
+        )  # Export should be in base_dir
         self.assertTrue(archive_path.exists())
 
         # Inspect contents
@@ -135,8 +145,7 @@ class TestDataManager(unittest.TestCase):
             expected_arc_dirs = [Path(self.dm.settings[k]).name for k in keys]
             # Expected file paths inside the tar
             expected_arc_files = [
-                f"{Path(self.dm.settings[k]).name}/{dummy_files[k]}"
-                for k in keys
+                f"{Path(self.dm.settings[k]).name}/{dummy_files[k]}" for k in keys
             ]
             for d_arc in expected_arc_dirs:
                 self.assertIn(d_arc, members)
@@ -151,7 +160,10 @@ class TestDataManager(unittest.TestCase):
     def test_export_data_invalid_keys(self):
         """Test exporting with only bad keys raises ValueError."""
         # Corrected regex to match the actual error message
-        with self.assertRaisesRegex(ValueError, "No valid, existing directories found for export based on provided keys."):
+        with self.assertRaisesRegex(
+            ValueError,
+            "No valid, existing directories found for export based on provided keys.",
+        ):
             self.dm.export_data(["bad1", "bad2"])
 
     def test_export_data_missing_source_dir(self):
@@ -162,13 +174,17 @@ class TestDataManager(unittest.TestCase):
         if missing_dir_path.exists():
             # Use shutil from pathlib for rmtree
             import shutil
+
             shutil.rmtree(missing_dir_path)
         self.assertFalse(missing_dir_path.exists())
 
         # Expect ValueError as no valid paths will be found
-        with self.assertRaisesRegex(ValueError, "No valid, existing directories found for export based on provided keys."):
+        with self.assertRaisesRegex(
+            ValueError,
+            "No valid, existing directories found for export based on provided keys.",
+        ):
             self.dm.export_data(["logs"])
 
 
 if __name__ == "__main__":
-    unittest.main(argv=['first-arg-is-ignored'], exit=False)
+    unittest.main(argv=["first-arg-is-ignored"], exit=False)

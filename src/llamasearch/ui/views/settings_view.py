@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (QCheckBox, QFormLayout, QGroupBox, QHBoxLayout,
 
 logger = logging.getLogger(__name__)
 
+
 class SettingsView(QWidget):
     def __init__(self, app):
         super().__init__()
@@ -48,7 +49,9 @@ class SettingsView(QWidget):
         self.main_layout.addWidget(self.status_label)
 
     @Slot(str, str)
-    def show_status_message(self, message: str, level: str = "success", duration: int = 3500):
+    def show_status_message(
+        self, message: str, level: str = "success", duration: int = 3500
+    ):
         """
         Display a status message at the bottom of the settings view.
         Assumes it's called in the GUI thread via a signal connection.
@@ -59,9 +62,9 @@ class SettingsView(QWidget):
             "error": "red",
             "warning": "orange",
             "success": "green",
-            "info": "#333", # Darker color for info
+            "info": "#333",  # Darker color for info
         }
-        color = color_map.get(level, "green") # Default to success color
+        color = color_map.get(level, "green")  # Default to success color
         style = f"color: {color}; font-weight: bold;"
         self.status_label.setStyleSheet(style)
 
@@ -94,7 +97,7 @@ class SettingsView(QWidget):
         setup_button.setToolTip("Show setup instructions (requires restart)")
         # Use attribute access for connect
         setup_button.clicked.connect(self._run_model_setup)
-        model_layout.addRow(setup_button) # Add button without label
+        model_layout.addRow(setup_button)  # Add button without label
 
         # --- Search & Generation Parameters Group ---
         group_params = QGroupBox("Search & Generation Parameters")
@@ -102,14 +105,18 @@ class SettingsView(QWidget):
 
         # Max Results Spinner
         self.results_spinner = QSpinBox()
-        self.results_spinner.setRange(1, 20) # Set reasonable range
-        self.results_spinner.setToolTip("Maximum number of retrieved document chunks used for context.")
+        self.results_spinner.setRange(1, 20)  # Set reasonable range
+        self.results_spinner.setToolTip(
+            "Maximum number of retrieved document chunks used for context."
+        )
         params_layout.addRow("Max Retrieved Chunks:", self.results_spinner)
 
         # Debug Checkbox
         self.debug_checkbox = QCheckBox("Enable Debug Logging")
-        self.debug_checkbox.setToolTip("Show detailed logs in the Logs tab and console.")
-        params_layout.addRow("", self.debug_checkbox) # Add checkbox without label
+        self.debug_checkbox.setToolTip(
+            "Show detailed logs in the Logs tab and console."
+        )
+        params_layout.addRow("", self.debug_checkbox)  # Add checkbox without label
 
         # Apply Button
         self.apply_button = QPushButton("Apply General Settings")
@@ -119,7 +126,7 @@ class SettingsView(QWidget):
         # Add groups and button to the main tab layout
         layout.addWidget(group_model)
         layout.addWidget(group_params)
-        layout.addStretch() # Push elements upwards
+        layout.addStretch()  # Push elements upwards
         layout.addWidget(self.apply_button)
 
         # Set the layout for the tab widget
@@ -130,9 +137,9 @@ class SettingsView(QWidget):
         """Creates the 'System' settings tab content."""
         # Use QScrollArea for potentially long path lists
         tab = QScrollArea()
-        tab.setWidgetResizable(True) # Allow inner widget to resize
+        tab.setWidgetResizable(True)  # Allow inner widget to resize
 
-        content_widget = QWidget() # Widget to hold the actual content
+        content_widget = QWidget()  # Widget to hold the actual content
         layout = QVBoxLayout(content_widget)
 
         # --- Data Storage Paths Group ---
@@ -149,10 +156,12 @@ class SettingsView(QWidget):
         for key, default_path_str in paths.items():
             # Create label with current path
             path_label = QLabel(str(default_path_str))
-            path_label.setWordWrap(True) # Allow text wrapping
+            path_label.setWordWrap(True)  # Allow text wrapping
             # Allow users to select/copy the path text
-            path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            self.path_labels[key] = path_label # Store label reference
+            path_label.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+            self.path_labels[key] = path_label  # Store label reference
 
             # Create 'Open' button for the directory
             button = QPushButton("Open")
@@ -166,15 +175,15 @@ class SettingsView(QWidget):
 
             # Horizontal layout for label + button
             row_layout = QHBoxLayout()
-            row_layout.addWidget(path_label) # Add label first
-            row_layout.addWidget(button) # Add button next to label
+            row_layout.addWidget(path_label)  # Add label first
+            row_layout.addWidget(button)  # Add button next to label
 
             # Add row to the form layout
             paths_layout.addRow(f"<b>{key.replace('_', ' ').title()}:</b>", row_layout)
 
         # Add the paths group to the main layout
         layout.addWidget(paths_group)
-        layout.addStretch() # Push group upwards
+        layout.addStretch()  # Push group upwards
 
         # Set the layout for the content widget
         content_widget.setLayout(layout)
@@ -197,19 +206,21 @@ class SettingsView(QWidget):
                 )
                 logger.error(f"Failed QDesktopServices.openUrl for path: {path_str}")
         else:
-            self.show_status_message(f"Error: Directory not found: {path_str}", level="error")
+            self.show_status_message(
+                f"Error: Directory not found: {path_str}", level="error"
+            )
             logger.warning(f"Directory not found for opening: {path_str}")
 
     @Slot()
     def _run_model_setup(self):
         """Shows an informational message about running the setup script."""
         QMessageBox.information(
-            self, # Parent widget
+            self,  # Parent widget
             "Model Setup",
             "To download or update models, please run:\n\n"
             "<code>llamasearch-setup</code>\n\n"
             "in your terminal.\n\nA restart of LlamaSearch might be required after setup.",
-            QMessageBox.StandardButton.Ok, # Only show OK button
+            QMessageBox.StandardButton.Ok,  # Only show OK button
         )
 
     @Slot()
@@ -255,18 +266,25 @@ class SettingsView(QWidget):
             row_layout_widget = label_widget.parentWidget()
             button = None
             if row_layout_widget:
-                 # Find the QPushButton within that layout/widget
-                 button = row_layout_widget.findChild(QPushButton)
+                # Find the QPushButton within that layout/widget
+                button = row_layout_widget.findChild(QPushButton)
 
             if button:
                 # Disconnect old lambda and connect new one to ensure path is up-to-date
                 try:
                     # Disconnect all slots connected to clicked signal
                     button.clicked.disconnect()
-                except (TypeError, RuntimeError): # Handles case where no slots are connected
+                except (
+                    TypeError,
+                    RuntimeError,
+                ):  # Handles case where no slots are connected
                     pass
                 # Reconnect with the potentially updated path
                 # Ensure path_text is captured correctly for this specific button
-                button.clicked.connect(lambda checked=False, p=path_text: self._open_directory(p))
+                button.clicked.connect(
+                    lambda checked=False, p=path_text: self._open_directory(p)
+                )
             else:
-                 logger.warning(f"Could not find button associated with path label for key: {key}")
+                logger.warning(
+                    f"Could not find button associated with path label for key: {key}"
+                )

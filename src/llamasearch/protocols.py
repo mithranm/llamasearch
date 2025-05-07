@@ -26,6 +26,7 @@ class ModelInfo(Protocol):
         """The maximum context length the model supports."""
         ...
 
+
 @runtime_checkable
 class LLM(Protocol):
     """Protocol defining the interface for a Language Model."""
@@ -42,7 +43,7 @@ class LLM(Protocol):
         temperature: float = 0.7,
         top_p: float = 0.9,
         repeat_penalty: float = 1.0,
-        **kwargs: Any # Allow flexible keyword arguments
+        **kwargs: Any,  # Allow flexible keyword arguments
     ) -> Tuple[str, Any]:
         """
         Generates text based on a prompt.

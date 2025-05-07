@@ -15,8 +15,7 @@ import numpy as np
 import torch
 from huggingface_hub import snapshot_download
 from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
-from pydantic import (BaseModel, Field,
-                      field_validator)
+from pydantic import BaseModel, Field, field_validator
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 
@@ -24,7 +23,7 @@ from tqdm import tqdm
 try:
     from transformers.configuration_utils import PretrainedConfig
 except ImportError:
-    PretrainedConfig = None # type: ignore
+    PretrainedConfig = None  # type: ignore
 
 from llamasearch.data_manager import data_manager
 from llamasearch.exceptions import ModelNotFoundError
@@ -33,7 +32,7 @@ from llamasearch.utils import setup_logging
 logger = setup_logging(__name__, use_qt_handler=True)
 
 DEFAULT_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-DEFAULT_CPU_BATCH_SIZE = 16 
+DEFAULT_CPU_BATCH_SIZE = 16
 
 DEVICE_TYPE = "cpu"
 InputType = Literal["query", "document"]
@@ -44,11 +43,13 @@ class EmbedderConfig(BaseModel):
     device: str = Field(default=DEVICE_TYPE, description="Device (always 'cpu')")
     max_length: int = Field(default=512, gt=0, description="Max sequence length")
     batch_size: int = Field(
-        default=DEFAULT_CPU_BATCH_SIZE, gt=0, description="Batch size for encoding (CPU optimized)"
+        default=DEFAULT_CPU_BATCH_SIZE,
+        gt=0,
+        description="Batch size for encoding (CPU optimized)",
     )
     truncate_dim: Optional[int] = Field(
         default=None,
-        gt=0, 
+        gt=0,
         description="Optional dimension to truncate embeddings to (e.g., 512).",
     )
 
@@ -78,17 +79,15 @@ class EnhancedEmbedder:
             "device": DEVICE_TYPE,
             "max_length": max_length if max_length > 0 else 512,
             "batch_size": batch_size if batch_size > 0 else DEFAULT_CPU_BATCH_SIZE,
-            "truncate_dim": truncate_dim if truncate_dim is not None and truncate_dim > 0 else None,
+            "truncate_dim": (
+                truncate_dim if truncate_dim is not None and truncate_dim > 0 else None
+            ),
         }
 
         if batch_size > 0:
-            logger.info(
-                f"Using user-provided batch size: {batch_size}"
-            )
+            logger.info(f"Using user-provided batch size: {batch_size}")
         else:
-            logger.info(
-                f"Using default CPU batch size: {DEFAULT_CPU_BATCH_SIZE}"
-            )
+            logger.info(f"Using default CPU batch size: {DEFAULT_CPU_BATCH_SIZE}")
 
         if truncate_dim is not None:
             if truncate_dim > 0:
@@ -108,7 +107,9 @@ class EnhancedEmbedder:
             paths = data_manager.get_data_paths()
             models_dir_str = paths.get("models")
             if not models_dir_str:
-                 raise ValueError("Models directory path not found in data manager settings.")
+                raise ValueError(
+                    "Models directory path not found in data manager settings."
+                )
             self.models_dir = Path(models_dir_str)
             logger.info(f"Embedder using models directory: {self.models_dir}")
         except Exception as e:
@@ -158,7 +159,7 @@ class EnhancedEmbedder:
             raise ModelNotFoundError(f"Error accessing embedder model cache: {e}")
 
         try:
-            physical_cores = os.cpu_count() or 2 
+            physical_cores = os.cpu_count() or 2
             num_threads = max(1, physical_cores // 2)
             current_threads = torch.get_num_threads()
             if current_threads != num_threads:
@@ -210,16 +211,15 @@ class EnhancedEmbedder:
     ) -> np.ndarray:
         if self.model is None:
             raise RuntimeError("Cannot embed strings, model is not loaded.")
-        
+
         # Handle empty input correctly
         if not strings:
             emb_dim = self.get_embedding_dimension()
             # Return an empty 2D array with the correct second dimension
             return np.empty((0, emb_dim if emb_dim else 0), dtype=np.float32)
 
-
         model_max_len = self.config.max_length
-        max_input_chars = model_max_len * 6 
+        max_input_chars = model_max_len * 6
         truncated_strings = []
         num_truncated = 0
         for s in strings:
@@ -260,13 +260,12 @@ class EnhancedEmbedder:
                     logger.info("Shutdown during embedding loop.")
                     break
                 batch = input_texts[i : i + self.config.batch_size]
-                if not batch: # Should not happen if input_texts is not empty
+                if not batch:  # Should not happen if input_texts is not empty
                     continue
 
                 current_batch_encode_kwargs = base_encode_kwargs.copy()
                 # Override batch_size for the current actual batch if it's smaller
                 current_batch_encode_kwargs["batch_size"] = len(batch)
-
 
                 batch_embeddings = self.model.encode(
                     batch, **current_batch_encode_kwargs
@@ -295,13 +294,19 @@ class EnhancedEmbedder:
         except Exception as e:
             progress_bar.close()
             if not (self._shutdown_event and self._shutdown_event.is_set()):
-                if isinstance(e, ValueError) and "Prompt name" in str(e) and "not found" in str(e):
+                if (
+                    isinstance(e, ValueError)
+                    and "Prompt name" in str(e)
+                    and "not found" in str(e)
+                ):
                     logger.error(
-                         f"Model '{self.config.model_name}' likely does not support prompt_name parameter. Error: {e}", exc_info=False
+                        f"Model '{self.config.model_name}' likely does not support prompt_name parameter. Error: {e}",
+                        exc_info=False,
                     )
                 else:
                     logger.error(
-                        f"Error during CPU encode (type: {input_type}): {e}", exc_info=True
+                        f"Error during CPU encode (type: {input_type}): {e}",
+                        exc_info=True,
                     )
             emb_dim = self.get_embedding_dimension()
             return np.empty((0, emb_dim if emb_dim else 0), dtype=np.float32)
@@ -326,10 +331,12 @@ class EnhancedEmbedder:
     def _try_gc(self):
         gc.collect()
         try:
-            if torch.backends.mps.is_available(): # Should always be False as we force CPU
+            if (
+                torch.backends.mps.is_available()
+            ):  # Should always be False as we force CPU
                 torch.mps.empty_cache()
         except AttributeError:
-            pass # mps not available
+            pass  # mps not available
 
     def embed_string(
         self, text: str, input_type: InputType = "document"
@@ -369,15 +376,20 @@ class EnhancedEmbedder:
                 return None
         except Exception as e:
             if not (self._shutdown_event and self._shutdown_event.is_set()):
-                if isinstance(e, ValueError) and "Prompt name" in str(e) and "not found" in str(e):
-                     logger.error(
-                         f"Model '{self.config.model_name}' likely does not support prompt_name parameter. Error: {e}", exc_info=False
-                     )
+                if (
+                    isinstance(e, ValueError)
+                    and "Prompt name" in str(e)
+                    and "not found" in str(e)
+                ):
+                    logger.error(
+                        f"Model '{self.config.model_name}' likely does not support prompt_name parameter. Error: {e}",
+                        exc_info=False,
+                    )
                 else:
-                     logger.error(
-                         f"Error embedding single string ({input_type}) on CPU: {e}",
-                         exc_info=True,
-                     )
+                    logger.error(
+                        f"Error embedding single string ({input_type}) on CPU: {e}",
+                        exc_info=True,
+                    )
             return None
 
     def get_embedding_dimension(self) -> Optional[int]:
@@ -394,39 +406,65 @@ class EnhancedEmbedder:
             if callable(get_dim_method):
                 dimension = get_dim_method()
                 if isinstance(dimension, int) and dimension > 0:
-                    logger.debug(f"Using model's default dimension via method: {dimension}")
+                    logger.debug(
+                        f"Using model's default dimension via method: {dimension}"
+                    )
                     return dimension
                 else:
                     logger.warning(
                         f"Method 'get_sentence_embedding_dimension' returned non-positive or non-integer: {dimension}"
                     )
 
-            model_config: Any = getattr(self.model, 'config', None)
+            model_config: Any = getattr(self.model, "config", None)
             if model_config is not None:
-                 if isinstance(model_config, dict):
-                     dimension = model_config.get('hidden_size') or model_config.get('d_model')
-                     if isinstance(dimension, int) and dimension > 0:
-                          logger.debug(f"Using dimension from model config dict: {dimension}")
-                          return dimension
-                 elif PretrainedConfig is not None and isinstance(model_config, PretrainedConfig):
-                     if hasattr(model_config, 'hidden_size') and isinstance(getattr(model_config, 'hidden_size', None), int) and model_config.hidden_size > 0:
-                         dimension = model_config.hidden_size
-                         logger.debug(f"Using dimension from PretrainedConfig attribute 'hidden_size': {dimension}")
-                         return dimension
-                     elif hasattr(model_config, 'd_model') and isinstance(getattr(model_config, 'd_model', None), int) and model_config.d_model > 0:
-                         dimension = model_config.d_model
-                         logger.debug(f"Using dimension from PretrainedConfig attribute 'd_model': {dimension}")
-                         return dimension
-                 else:
-                     logger.debug(f"Model config found (type: {type(model_config)}), but dimension attribute not found or invalid.")
+                if isinstance(model_config, dict):
+                    dimension = model_config.get("hidden_size") or model_config.get(
+                        "d_model"
+                    )
+                    if isinstance(dimension, int) and dimension > 0:
+                        logger.debug(
+                            f"Using dimension from model config dict: {dimension}"
+                        )
+                        return dimension
+                elif PretrainedConfig is not None and isinstance(
+                    model_config, PretrainedConfig
+                ):
+                    if (
+                        hasattr(model_config, "hidden_size")
+                        and isinstance(getattr(model_config, "hidden_size", None), int)
+                        and model_config.hidden_size > 0
+                    ):
+                        dimension = model_config.hidden_size
+                        logger.debug(
+                            f"Using dimension from PretrainedConfig attribute 'hidden_size': {dimension}"
+                        )
+                        return dimension
+                    elif (
+                        hasattr(model_config, "d_model")
+                        and isinstance(getattr(model_config, "d_model", None), int)
+                        and model_config.d_model > 0
+                    ):
+                        dimension = model_config.d_model
+                        logger.debug(
+                            f"Using dimension from PretrainedConfig attribute 'd_model': {dimension}"
+                        )
+                        return dimension
+                else:
+                    logger.debug(
+                        f"Model config found (type: {type(model_config)}), but dimension attribute not found or invalid."
+                    )
 
-            direct_dim = getattr(self.model, '_embedding_size', None) or \
-                         getattr(self.model, 'embedding_dim', None) or \
-                         getattr(self.model, 'dim', None) or \
-                         getattr(self.model, 'output_embedding_dimension', None)
+            direct_dim = (
+                getattr(self.model, "_embedding_size", None)
+                or getattr(self.model, "embedding_dim", None)
+                or getattr(self.model, "dim", None)
+                or getattr(self.model, "output_embedding_dimension", None)
+            )
             if isinstance(direct_dim, int) and direct_dim > 0:
-                 logger.debug(f"Using dimension from direct model attribute: {direct_dim}")
-                 return direct_dim
+                logger.debug(
+                    f"Using dimension from direct model attribute: {direct_dim}"
+                )
+                return direct_dim
 
             logger.warning(
                 f"Could not determine embedding dimension for model {self.config.model_name}."
@@ -436,7 +474,6 @@ class EnhancedEmbedder:
         except Exception as e:
             logger.error(f"Error getting embedding dimension: {e}", exc_info=True)
             return None
-
 
     def close(self):
         logger.info("Closing Embedder and releasing CPU resources...")

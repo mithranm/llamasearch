@@ -8,18 +8,12 @@ import os
 import re
 import threading
 import time
-from urllib.parse import urljoin
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
-from urllib.parse import unquote, urlparse, urlunparse
+from urllib.parse import unquote, urljoin, urlparse, urlunparse
 
-from crawl4ai import (
-    AsyncWebCrawler,
-    BrowserConfig,
-    CacheMode,
-    CrawlerRunConfig,
-    CrawlResult,
-)
+from crawl4ai import (AsyncWebCrawler, BrowserConfig, CacheMode,
+                      CrawlerRunConfig, CrawlResult)
 from crawl4ai.async_crawler_strategy import AsyncPlaywrightCrawlerStrategy
 from crawl4ai.models import CrawlResultContainer
 
@@ -62,7 +56,7 @@ def sanitize_string(s: str, max_length: int = 40) -> str:
     s = re.sub(r'[/:\\?*"<>|=]+', "_", s)
     s = re.sub(r"\s+", "_", s)
     s = re.sub(r"_+", "_", s)
-    s = s.strip("_") # Strip leading/trailing underscores
+    s = s.strip("_")  # Strip leading/trailing underscores
     if len(s) > max_length:
         s = s[:max_length]
     return s if s else "default"
@@ -493,13 +487,22 @@ class Crawl4AICrawler:
                         reason = (
                             "success=False"
                             if not getattr(result, "success", True)
-                            else "no markdown"
-                            if getattr(result, "markdown", None) is None
-                            else "markdown not string"
-                            if not isinstance(getattr(result, "markdown", ""), str)
-                            else "markdown too short"
-                            if len(getattr(result, "markdown", "").strip()) <= 10
-                            else "unknown reason"
+                            else (
+                                "no markdown"
+                                if getattr(result, "markdown", None) is None
+                                else (
+                                    "markdown not string"
+                                    if not isinstance(
+                                        getattr(result, "markdown", ""), str
+                                    )
+                                    else (
+                                        "markdown too short"
+                                        if len(getattr(result, "markdown", "").strip())
+                                        <= 10
+                                        else "unknown reason"
+                                    )
+                                )
+                            )
                         )
                         if not (self._shutdown_event and self._shutdown_event.is_set()):
                             logger.warning(
@@ -580,9 +583,9 @@ class Crawl4AICrawler:
                 r"/(cart|checkout|order|wishlist)($|/|\?|#)",
                 r"/(tag|tags|category|categories|author|authors)/",
                 r"\?replytocom=",
-                r"#", # Fragment identifier itself means not a new page
+                r"#",  # Fragment identifier itself means not a new page
                 r"^(mailto|tel|javascript|ftp|irc):",
-                r"/(feed|rss|atom|xmlrpc)(\.php)?($|/|\?|#)", # Feeds
+                r"/(feed|rss|atom|xmlrpc)(\.php)?($|/|\?|#)",  # Feeds
                 r"/(wp-content|wp-admin|wp-includes|wp-json)/",
                 r"/(_next|_nuxt|_svelte)/",
                 r"/(cgi-bin|plesk-stat|webmail)/",
@@ -591,19 +594,37 @@ class Crawl4AICrawler:
 
             # Special handling for /api/ - only ignore if it's likely a data endpoint, not documentation
             if "/api/" in url_lower:
-                is_api_doc_page = any(
-                    kw in url_lower
-                    for kw in ["doc", "reference", "guide", "manual", "example", "spec", "v1", "v2", "v3"]
-                ) or url_lower.endswith((".html", ".htm", "/")) or re.search(r"/api/.*?/(get|post|put|delete|patch|resource)", url_lower)
+                is_api_doc_page = (
+                    any(
+                        kw in url_lower
+                        for kw in [
+                            "doc",
+                            "reference",
+                            "guide",
+                            "manual",
+                            "example",
+                            "spec",
+                            "v1",
+                            "v2",
+                            "v3",
+                        ]
+                    )
+                    or url_lower.endswith((".html", ".htm", "/"))
+                    or re.search(
+                        r"/api/.*?/(get|post|put|delete|patch|resource)", url_lower
+                    )
+                )
 
                 if not is_api_doc_page:
                     if self.verbose_logging:
-                        logger.debug(f"Ignoring URL due to /api/ pattern match (not doc): {url}")
-                    return False # Moved return False out of verbose_logging check
+                        logger.debug(
+                            f"Ignoring URL due to /api/ pattern match (not doc): {url}"
+                        )
+                    return False  # Moved return False out of verbose_logging check
 
             if any(re.search(p, url_lower) for p in ignore_patterns):
                 if self.verbose_logging:
-                     logger.debug(f"Ignoring URL due to general pattern match: {url}")
+                    logger.debug(f"Ignoring URL due to general pattern match: {url}")
                 return False
 
             ignore_extensions = (
@@ -630,7 +651,9 @@ class Crawl4AICrawler:
                 for rn in root_netlocs
             ):
                 if self.verbose_logging:
-                    logger.debug(f"Ignoring URL due to domain mismatch ({current_netloc} vs {root_netlocs}): {url}")
+                    logger.debug(
+                        f"Ignoring URL due to domain mismatch ({current_netloc} vs {root_netlocs}): {url}"
+                    )
                 return False
             return True
         except Exception as e:

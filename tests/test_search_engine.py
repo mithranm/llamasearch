@@ -1,26 +1,23 @@
 # tests/test_search_engine.py
-import unittest
-from unittest.mock import MagicMock, patch, PropertyMock
-import tempfile
-from pathlib import Path
-import threading
-import logging
 import json
-import numpy as np
+import logging
+import tempfile
+import threading
+import unittest
+from pathlib import Path
+from unittest.mock import MagicMock, PropertyMock, patch
 
+import numpy as np
+from chromadb import Collection as ChromaCollectionType  # For spec
+from chromadb.api import ClientAPI as ChromaClientAPI  # For spec
+from chromadb.api.types import Embeddable, Embeddings
 from sentence_transformers import SentenceTransformer
 
-from llamasearch.core.search_engine import (
-    LLMSearch,
-    SentenceTransformerEmbeddingFunction,
-)
-from llamasearch.core.onnx_model import GenericONNXLLM, GenericONNXModelInfo
 from llamasearch.core.bm25 import WhooshBM25Retriever
+from llamasearch.core.onnx_model import GenericONNXLLM, GenericONNXModelInfo
+from llamasearch.core.search_engine import (
+    LLMSearch, SentenceTransformerEmbeddingFunction)
 from llamasearch.exceptions import ModelNotFoundError, SetupError
-from chromadb.api import ClientAPI as ChromaClientAPI  # For spec
-from chromadb import Collection as ChromaCollectionType  # For spec
-from chromadb.api.types import Embeddable, Embeddings
-
 
 MOCK_DATAMANAGER_PATH_FOR_SOURCE_MIXIN = "llamasearch.core.source_manager.data_manager"
 MOCK_SEARCH_ENGINE_SETUP_LOGGING_TARGET = "llamasearch.core.search_engine.setup_logging"
@@ -168,6 +165,7 @@ class TestSearchEngineModule(unittest.TestCase):
             self.mock_llm_instance.unload.assert_called_once()
         # self.mock_ee_instance_in_se.close.assert_not_called() # Instance not created
         self.mock_bm25_instance.close.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

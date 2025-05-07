@@ -1,30 +1,25 @@
 # tests/test_bm25.py
-import tempfile 
+import logging
+import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import ANY, MagicMock, patch 
+from unittest.mock import ANY, MagicMock, patch
 
 from whoosh import index as whoosh_real_index  # For integration tests
-
 # Import the base Schema class for isinstance check
 from whoosh.fields import Schema as WhooshBaseSchema
-from whoosh.index import EmptyIndexError, LockError 
+from whoosh.index import EmptyIndexError, LockError
 from whoosh.qparser import QueryParser as WhooshQueryParser
 from whoosh.scoring import BM25F
 
 # Now import the module under test and other necessary components
-from llamasearch.core.bm25 import (
-    DEFAULT_WRITER_TIMEOUT,
-    BM25Schema,
-    WhooshBM25Retriever,
-)
-import logging
-
+from llamasearch.core.bm25 import (DEFAULT_WRITER_TIMEOUT, BM25Schema,
+                                   WhooshBM25Retriever)
 
 # IMPORTANT: Patch setup_logging at the very beginning,
 # before importing the module under test.
 MOCK_SETUP_LOGGING_TARGET = "llamasearch.utils.setup_logging"
-mock_logger_instance = MagicMock(spec=logging.Logger) # Use spec=logging.Logger
+mock_logger_instance = MagicMock(spec=logging.Logger)  # Use spec=logging.Logger
 # global_logger_patcher = patch(
 #     MOCK_SETUP_LOGGING_TARGET, return_value=mock_logger_instance
 # )
@@ -38,11 +33,13 @@ mock_logger_instance = MagicMock(spec=logging.Logger) # Use spec=logging.Logger
 
 
 class TestWhooshBM25Retriever(unittest.TestCase):
-    
+
     @classmethod
     def setUpClass(cls):
         # Start patch for all tests in this class
-        cls.logger_patcher = patch(MOCK_SETUP_LOGGING_TARGET, return_value=mock_logger_instance)
+        cls.logger_patcher = patch(
+            MOCK_SETUP_LOGGING_TARGET, return_value=mock_logger_instance
+        )
         cls.logger_patcher.start()
 
     @classmethod
@@ -54,7 +51,6 @@ class TestWhooshBM25Retriever(unittest.TestCase):
         mock_logger_instance.reset_mock()
         self.temp_dir_obj = tempfile.TemporaryDirectory()
         self.test_dir = Path(self.temp_dir_obj.name)
-
 
     def tearDown(self):
         self.temp_dir_obj.cleanup()
@@ -68,7 +64,7 @@ class TestWhooshBM25Retriever(unittest.TestCase):
             # If a mock_index is provided, use it. Ensure it has a schema.
             if mock_index:
                 retriever.ix = mock_index
-                if not hasattr(mock_index, 'schema') or mock_index.schema is None:
+                if not hasattr(mock_index, "schema") or mock_index.schema is None:
                     # Assign a schema if the provided mock doesn't have one
                     # This is important because QueryParser needs ix.schema
                     mock_index.schema = BM25Schema()
@@ -88,10 +84,10 @@ class TestWhooshBM25Retriever(unittest.TestCase):
     @patch("llamasearch.core.bm25.whoosh_index.open_dir")
     @patch("llamasearch.core.bm25.whoosh_index.exists_in")
     @patch("llamasearch.core.bm25.QueryParser", spec=WhooshQueryParser)
-    @patch("llamasearch.core.bm25.logger") 
+    @patch("llamasearch.core.bm25.logger")
     def test_init_creates_new_index(
         self,
-        mock_bm25_logger, 
+        mock_bm25_logger,
         mock_query_parser_cls,
         mock_exists_in,
         mock_open_dir,
@@ -116,7 +112,7 @@ class TestWhooshBM25Retriever(unittest.TestCase):
         mock_query_parser_cls.assert_called_once_with(
             "content", schema=mock_index_instance.schema
         )
-        self.assertIs(mock_index_instance.schema, created_schema_instance) 
+        self.assertIs(mock_index_instance.schema, created_schema_instance)
 
         mock_open_dir.assert_not_called()
         self.assertIsNotNone(retriever.ix)
@@ -140,7 +136,7 @@ class TestWhooshBM25Retriever(unittest.TestCase):
     ):
         mock_exists_in.return_value = True
         mock_index_instance = MagicMock(spec=whoosh_real_index.FileIndex)
-        opened_schema_instance = BM25Schema() 
+        opened_schema_instance = BM25Schema()
         mock_index_instance.schema = opened_schema_instance
         mock_open_dir.return_value = mock_index_instance
 
@@ -154,7 +150,7 @@ class TestWhooshBM25Retriever(unittest.TestCase):
             str(self.test_dir / "whoosh_bm25_index"), schema=retriever.schema
         )
         mock_query_parser_cls.assert_called_once_with(
-            "content", schema=mock_index_instance.schema 
+            "content", schema=mock_index_instance.schema
         )
         self.assertIs(mock_index_instance.schema, opened_schema_instance)
 
@@ -197,7 +193,9 @@ class TestWhooshBM25Retriever(unittest.TestCase):
         mock_rmtree.assert_called_once_with(index_path)
         self.assertTrue(index_path.exists())
         mock_create_in.assert_called_once_with(str(index_path), retriever.schema)
-        mock_query_parser_cls.assert_called_once_with("content", schema=mock_index_instance_recreated.schema)
+        mock_query_parser_cls.assert_called_once_with(
+            "content", schema=mock_index_instance_recreated.schema
+        )
 
         self.assertIsNotNone(retriever.ix)
         mock_bm25_logger.warning.assert_any_call(
@@ -237,11 +235,13 @@ class TestWhooshBM25Retriever(unittest.TestCase):
         mock_rmtree.assert_called_once_with(index_path)
         self.assertTrue(index_path.exists())
         mock_create_in.assert_called_once_with(str(index_path), retriever.schema)
-        mock_query_parser_cls.assert_called_once_with("content", schema=mock_index_instance_recreated.schema)
+        mock_query_parser_cls.assert_called_once_with(
+            "content", schema=mock_index_instance_recreated.schema
+        )
 
         self.assertIsNotNone(retriever.ix)
         mock_bm25_logger.error.assert_any_call(
-            f"Error opening existing Whoosh index {index_path}, attempting recreation: {open_error}", 
+            f"Error opening existing Whoosh index {index_path}, attempting recreation: {open_error}",
             exc_info=True,
         )
         mock_bm25_logger.info.assert_any_call(
@@ -273,10 +273,10 @@ class TestWhooshBM25Retriever(unittest.TestCase):
         index_path = self.test_dir / "whoosh_bm25_index"
         mock_rmtree.assert_called_once_with(index_path)
         mock_bm25_logger.critical.assert_any_call(
-            f"FATAL: Could not recreate Whoosh index after open failure: {recreate_error}", 
+            f"FATAL: Could not recreate Whoosh index after open failure: {recreate_error}",
             exc_info=True,
         )
-        expected_runtime_error = RuntimeError('Failed to open or recreate Whoosh index')
+        expected_runtime_error = RuntimeError("Failed to open or recreate Whoosh index")
         # The final logged error uses the string representation of the raised RuntimeError
         mock_bm25_logger.error.assert_any_call(
             f"Failed to open or create Whoosh index at {self.test_dir / 'whoosh_bm25_index'}: {expected_runtime_error}",
@@ -297,7 +297,7 @@ class TestWhooshBM25Retriever(unittest.TestCase):
             WhooshBM25Retriever(storage_dir=self.test_dir)
 
         mock_bm25_logger.error.assert_any_call(
-            f"Failed to open or create Whoosh index at {self.test_dir / 'whoosh_bm25_index'}: {initial_create_error}", 
+            f"Failed to open or create Whoosh index at {self.test_dir / 'whoosh_bm25_index'}: {initial_create_error}",
             exc_info=True,
         )
 
@@ -324,12 +324,14 @@ class TestWhooshBM25Retriever(unittest.TestCase):
             WhooshBM25Retriever(storage_dir=self.test_dir)
 
         mock_bm25_logger.error.assert_any_call(
-            f"Error opening existing Whoosh index {self.test_dir / 'whoosh_bm25_index'}, attempting recreation: {open_error}", 
+            f"Error opening existing Whoosh index {self.test_dir / 'whoosh_bm25_index'}, attempting recreation: {open_error}",
             exc_info=True,
         )
-        # The rmtree_error (OSError) causes a RuntimeError ("Failed to open or recreate...") to be raised, 
+        # The rmtree_error (OSError) causes a RuntimeError ("Failed to open or recreate...") to be raised,
         # which is then caught by the outermost except block.
-        expected_logged_exception = RuntimeError("Failed to open or recreate Whoosh index")
+        expected_logged_exception = RuntimeError(
+            "Failed to open or recreate Whoosh index"
+        )
         mock_bm25_logger.error.assert_any_call(
             f"Failed to open or create Whoosh index at {self.test_dir / 'whoosh_bm25_index'}: {expected_logged_exception}",
             exc_info=True,
@@ -339,7 +341,7 @@ class TestWhooshBM25Retriever(unittest.TestCase):
     # --- Test add_document ---
     @patch("llamasearch.core.bm25.logger")
     def test_add_document_success(self, mock_bm25_logger):
-        mock_writer = MagicMock() 
+        mock_writer = MagicMock()
         mock_index = MagicMock(spec=whoosh_real_index.FileIndex)
         mock_index.writer.return_value = mock_writer
 
@@ -390,7 +392,7 @@ class TestWhooshBM25Retriever(unittest.TestCase):
         result = retriever.add_document("some text", "doc1")
         self.assertFalse(result)
         mock_bm25_logger.error.assert_called_once_with(
-            f"Failed to acquire lock for adding document chunk_id 'doc1': {lock_err}" 
+            f"Failed to acquire lock for adding document chunk_id 'doc1': {lock_err}"
         )
 
     @patch("llamasearch.core.bm25.logger")
@@ -410,7 +412,7 @@ class TestWhooshBM25Retriever(unittest.TestCase):
         mock_index.writer.assert_called_once_with(timeout=DEFAULT_WRITER_TIMEOUT)
         mock_writer.update_document.assert_called_once()
         mock_bm25_logger.error.assert_called_once_with(
-            f"Failed to add document chunk_id 'doc1' to Whoosh index: {update_error}", 
+            f"Failed to add document chunk_id 'doc1' to Whoosh index: {update_error}",
             exc_info=True,
         )
         mock_writer.__exit__.assert_called_once()
@@ -448,9 +450,7 @@ class TestWhooshBM25Retriever(unittest.TestCase):
         result = retriever.remove_document("doc_not_exists")
 
         self.assertTrue(result)
-        mock_writer.delete_by_term.assert_called_once_with(
-            "chunk_id", "doc_not_exists"
-        )
+        mock_writer.delete_by_term.assert_called_once_with("chunk_id", "doc_not_exists")
         mock_writer.__enter__.assert_called_once()
         mock_writer.__exit__.assert_called_once()
         mock_bm25_logger.debug.assert_any_call(
@@ -471,7 +471,7 @@ class TestWhooshBM25Retriever(unittest.TestCase):
     def test_remove_document_empty_id(self, mock_bm25_logger):
         retriever = self._get_initialized_retriever()
         result = retriever.remove_document("")
-        self.assertFalse(result) 
+        self.assertFalse(result)
         mock_bm25_logger.warning.assert_called_once_with(
             "Skipping remove_document: Empty doc_id provided."
         )
@@ -485,7 +485,7 @@ class TestWhooshBM25Retriever(unittest.TestCase):
         result = retriever.remove_document("doc1")
         self.assertFalse(result)
         mock_bm25_logger.error.assert_called_once_with(
-            f"Failed to acquire lock for removing document chunk_id 'doc1': {lock_err}" 
+            f"Failed to acquire lock for removing document chunk_id 'doc1': {lock_err}"
         )
 
     @patch("llamasearch.core.bm25.logger")
@@ -494,7 +494,6 @@ class TestWhooshBM25Retriever(unittest.TestCase):
         delete_error = Exception("Test delete error")
         mock_writer.delete_by_term.side_effect = delete_error
         mock_writer.__exit__.side_effect = lambda exc_type, exc_val, exc_tb: False
-
 
         mock_index = MagicMock(spec=whoosh_real_index.FileIndex)
         mock_index.writer.return_value = mock_writer
@@ -505,7 +504,7 @@ class TestWhooshBM25Retriever(unittest.TestCase):
         self.assertFalse(result)
         mock_writer.delete_by_term.assert_called_once()
         mock_bm25_logger.error.assert_called_once_with(
-            f"Failed to remove document chunk_id 'doc1' from Whoosh index: {delete_error}", 
+            f"Failed to remove document chunk_id 'doc1' from Whoosh index: {delete_error}",
             exc_info=True,
         )
         mock_writer.__exit__.assert_called_once()
@@ -514,21 +513,21 @@ class TestWhooshBM25Retriever(unittest.TestCase):
     @patch("llamasearch.core.bm25.logger")
     def test_query_success(self, mock_bm25_logger):
         mock_hit1 = MagicMock()
-        mock_hit1.get.return_value = "id1" 
+        mock_hit1.get.return_value = "id1"
         mock_hit1.score = 0.9
         mock_hit2 = MagicMock()
-        mock_hit2.get.return_value = "id2" 
+        mock_hit2.get.return_value = "id2"
         mock_hit2.score = 0.8
 
         mock_searcher_instance = MagicMock()
         mock_searcher_instance.search.return_value = [mock_hit1, mock_hit2]
 
-        mock_searcher_cm = MagicMock() 
-        mock_searcher_cm.__enter__.return_value = mock_searcher_instance 
-        mock_searcher_cm.__exit__.return_value = None 
+        mock_searcher_cm = MagicMock()
+        mock_searcher_cm.__enter__.return_value = mock_searcher_instance
+        mock_searcher_cm.__exit__.return_value = None
 
         mock_index = MagicMock(spec=whoosh_real_index.FileIndex)
-        mock_index.searcher.return_value = mock_searcher_cm 
+        mock_index.searcher.return_value = mock_searcher_cm
 
         mock_query_obj = MagicMock()
         mock_parser = MagicMock(spec=WhooshQueryParser)
@@ -577,7 +576,7 @@ class TestWhooshBM25Retriever(unittest.TestCase):
     @patch("llamasearch.core.bm25.logger")
     def test_query_no_results_found(self, mock_bm25_logger):
         mock_searcher_instance = MagicMock()
-        mock_searcher_instance.search.return_value = [] 
+        mock_searcher_instance.search.return_value = []
         mock_searcher_cm = MagicMock()
         mock_searcher_cm.__enter__.return_value = mock_searcher_instance
         mock_searcher_cm.__exit__.return_value = None
@@ -591,20 +590,23 @@ class TestWhooshBM25Retriever(unittest.TestCase):
         self.assertEqual(results, expected_empty)
         mock_bm25_logger.debug.assert_any_call("Whoosh BM25 query returned 0 results.")
 
-
     @patch("llamasearch.core.bm25.logger")
     def test_query_hit_missing_fields(self, mock_bm25_logger):
         mock_hit_valid = MagicMock()
-        mock_hit_valid.get.side_effect = lambda key: "id1" if key == "chunk_id" else None
+        mock_hit_valid.get.side_effect = lambda key: (
+            "id1" if key == "chunk_id" else None
+        )
         mock_hit_valid.score = 0.9
 
         mock_hit_no_id = MagicMock()
-        mock_hit_no_id.get.side_effect = lambda key: None 
+        mock_hit_no_id.get.side_effect = lambda key: None
         mock_hit_no_id.score = 0.8
 
         mock_hit_no_score = MagicMock()
-        mock_hit_no_score.get.side_effect = lambda key: "id2" if key == "chunk_id" else None
-        mock_hit_no_score.score = None 
+        mock_hit_no_score.get.side_effect = lambda key: (
+            "id2" if key == "chunk_id" else None
+        )
+        mock_hit_no_score.score = None
 
         mock_results = [mock_hit_valid, mock_hit_no_id, mock_hit_no_score]
         mock_searcher_instance = MagicMock()
@@ -622,7 +624,7 @@ class TestWhooshBM25Retriever(unittest.TestCase):
 
         expected_results = {
             "query": query_text,
-            "ids": ["id1"], 
+            "ids": ["id1"],
             "scores": [0.9],
             "documents": [None],
         }
@@ -638,7 +640,6 @@ class TestWhooshBM25Retriever(unittest.TestCase):
             f"Whoosh hit missing 'chunk_id' or 'score': {mock_hit_no_score!r}"
         )
 
-
     @patch("llamasearch.core.bm25.logger")
     def test_query_generic_exception(self, mock_bm25_logger):
         mock_parser = MagicMock(spec=WhooshQueryParser)
@@ -650,7 +651,7 @@ class TestWhooshBM25Retriever(unittest.TestCase):
         expected_empty = {"query": query_text, "ids": [], "scores": [], "documents": []}
         self.assertEqual(results, expected_empty)
         mock_bm25_logger.error.assert_called_once_with(
-            f"Whoosh query failed: {parse_error}", exc_info=True 
+            f"Whoosh query failed: {parse_error}", exc_info=True
         )
 
     # --- Test get_doc_count ---
@@ -674,7 +675,7 @@ class TestWhooshBM25Retriever(unittest.TestCase):
         retriever = self._get_initialized_retriever(mock_index=mock_index)
         self.assertEqual(retriever.get_doc_count(), 0)
         mock_bm25_logger.error.assert_called_once_with(
-            f"Failed to get Whoosh doc count: {doc_count_error}" 
+            f"Failed to get Whoosh doc count: {doc_count_error}"
         )
 
     # --- Test save ---
@@ -701,14 +702,15 @@ class TestWhooshBM25Retriever(unittest.TestCase):
     def test_close_index_not_initialized(self, mock_bm25_logger):
         retriever = self._get_initialized_retriever()
         retriever.ix = None
-        retriever.parser = None 
+        retriever.parser = None
         retriever.close()
         mock_bm25_logger.info.assert_any_call("Closing Whoosh index...")
-        mock_bm25_logger.info.assert_any_call("Whoosh index was already None or closed.")
+        mock_bm25_logger.info.assert_any_call(
+            "Whoosh index was already None or closed."
+        )
         mock_bm25_logger.error.assert_not_called()
         self.assertIsNone(retriever.ix)
         self.assertIsNone(retriever.parser)
-
 
     @patch("llamasearch.core.bm25.logger")
     def test_close_exception(self, mock_bm25_logger):
@@ -719,19 +721,18 @@ class TestWhooshBM25Retriever(unittest.TestCase):
         retriever.close()
         mock_index.close.assert_called_once()
         mock_bm25_logger.error.assert_called_once_with(
-            f"Error closing Whoosh index: {close_error}" 
+            f"Error closing Whoosh index: {close_error}"
         )
         self.assertIsNone(retriever.ix)
         self.assertIsNone(retriever.parser)
         mock_bm25_logger.info.assert_any_call("Whoosh index resources released/nulled.")
 
-
     # --- Integration Test ---
     def test_integration_add_query_remove_real_index(self):
         retriever = WhooshBM25Retriever(storage_dir=self.test_dir)
         self.assertIsNotNone(retriever.ix)
-        self.assertIsInstance(retriever.ix.schema, WhooshBaseSchema) # type: ignore
-        self.assertEqual(set(retriever.ix.schema.names()), {"chunk_id", "content"}) # type: ignore
+        self.assertIsInstance(retriever.ix.schema, WhooshBaseSchema)  # type: ignore
+        self.assertEqual(set(retriever.ix.schema.names()), {"chunk_id", "content"})  # type: ignore
 
         self.assertEqual(retriever.get_doc_count(), 0)
         self.assertTrue(retriever.add_document("The quick brown fox", "doc1"))

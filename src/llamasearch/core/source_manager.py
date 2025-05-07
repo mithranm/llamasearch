@@ -545,7 +545,7 @@ class _SourceManagementMixin:
             # Fetch all metadata in batches to avoid memory issues with huge indexes
             total_docs = self.chroma_collection.count()
             logger.debug(f"Fetching metadata for {total_docs} total chunks...")
-            batch_size = 5000 # Adjust batch size as needed
+            batch_size = 5000  # Adjust batch size as needed
             all_metadatas: List[Metadata] = []
 
             for offset in range(0, total_docs, batch_size):
@@ -553,24 +553,24 @@ class _SourceManagementMixin:
                     logger.warning("Metadata fetch cancelled due to shutdown.")
                     return []
 
-                logger.debug(f"Fetching metadata batch: offset={offset}, limit={batch_size}")
+                logger.debug(
+                    f"Fetching metadata batch: offset={offset}, limit={batch_size}"
+                )
                 results: GetResult = self.chroma_collection.get(
-                    limit=batch_size,
-                    offset=offset,
-                    include=["metadatas"]
+                    limit=batch_size, offset=offset, include=["metadatas"]
                 )
                 if results and results["metadatas"]:
                     all_metadatas.extend(results["metadatas"])
                 else:
                     # Should not happen if offset < total_docs, but handle defensively
                     logger.warning(f"No metadata returned for offset {offset}.")
-                    break # Stop if no more data
+                    break  # Stop if no more data
 
             logger.debug(f"Total unique metadata items fetched: {len(all_metadatas)}")
 
             # --- Aggregate Source Info --- Now iterate through the fetched metadata
             for metadata_item in all_metadatas:
-                if not metadata_item: # Skip if metadata is None or empty
+                if not metadata_item:  # Skip if metadata is None or empty
                     continue
 
                 current_source_path = metadata_item.get("source_path")
@@ -583,7 +583,10 @@ class _SourceManagementMixin:
                 source_path_obj = None
 
                 # --- Determine Primary Identifier using Reverse Lookup --- START
-                if isinstance(current_source_path, str) and current_source_path != "N/A":
+                if (
+                    isinstance(current_source_path, str)
+                    and current_source_path != "N/A"
+                ):
                     source_path_obj = Path(current_source_path)
                     # Check if it looks like a file within our managed crawl directory
                     if (
@@ -601,11 +604,13 @@ class _SourceManagementMixin:
                             if looked_up_url:
                                 primary_key = looked_up_url.strip()
                                 is_url_source = True
-                                logger.log(logging.NOTSET, # Use lower level to avoid spam
-                                        f"Identified URL source via lookup: {primary_key} from {current_source_path}")
+                                logger.log(
+                                    logging.NOTSET,  # Use lower level to avoid spam
+                                    f"Identified URL source via lookup: {primary_key} from {current_source_path}",
+                                )
                             else:
                                 logger.warning(
-                                     f"Crawled file format detected ({current_source_path}) but no URL in lookup for hash {file_hash_stem}. Falling back to path."
+                                    f"Crawled file format detected ({current_source_path}) but no URL in lookup for hash {file_hash_stem}. Falling back to path."
                                 )
                         except ValueError:
                             # Stem wasn't hex, treat as normal file path below
@@ -621,13 +626,17 @@ class _SourceManagementMixin:
                     # Fallback: Use original_url from metadata if present and path wasn't usable
                     current_original_url = metadata_item.get("original_url")
                     if isinstance(current_original_url, str) and current_original_url:
-                         primary_key = current_original_url.strip()
-                         is_url_source = True
-                         logger.warning(f"Used original_url metadata fallback for {primary_key} as path was missing/invalid.")
+                        primary_key = current_original_url.strip()
+                        is_url_source = True
+                        logger.warning(
+                            f"Used original_url metadata fallback for {primary_key} as path was missing/invalid."
+                        )
                     else:
-                        logger.warning(f"Missing usable identifier (path or URL) in metadata: {metadata_item}")
+                        logger.warning(
+                            f"Missing usable identifier (path or URL) in metadata: {metadata_item}"
+                        )
                         missing_identifier_count += 1
-                        continue # Skip this chunk
+                        continue  # Skip this chunk
 
                 # --- Aggregate Info --- (Simplified)
                 if primary_key not in source_info:
@@ -635,8 +644,14 @@ class _SourceManagementMixin:
                     source_info[primary_key] = {
                         "identifier": primary_key,
                         "original_url": primary_key if is_url_source else None,
-                        "source_path": current_source_path if not is_url_source else "N/A", # Store path only if it's the primary ID
-                        "filename": current_filename if isinstance(current_filename, str) else "N/A",
+                        "source_path": (
+                            current_source_path if not is_url_source else "N/A"
+                        ),  # Store path only if it's the primary ID
+                        "filename": (
+                            current_filename
+                            if isinstance(current_filename, str)
+                            else "N/A"
+                        ),
                         "chunk_count": 0,
                         "mtime": None,
                         "is_url_source": is_url_source,
@@ -646,7 +661,7 @@ class _SourceManagementMixin:
                         source_info[primary_key]["mtime"] = float(current_mtime)
                     # If it's a URL source, store the corresponding path if we have it
                     if is_url_source and isinstance(current_source_path, str):
-                         source_info[primary_key]["source_path"] = current_source_path
+                        source_info[primary_key]["source_path"] = current_source_path
 
                 # --- Update Existing Entry --- START
                 # Always increment chunk count
@@ -661,28 +676,35 @@ class _SourceManagementMixin:
                 # If this chunk provides a missing piece of info (URL or path)
                 if is_url_source:
                     # If we have a path for this chunk but it wasn't stored yet
-                    if (isinstance(current_source_path, str)
-                        and source_info[primary_key].get("source_path") == "N/A"): # If URL source, path might be missing
-                         source_info[primary_key]["source_path"] = current_source_path
-                         # Update filename if it was N/A and path gives us one
-                         if source_info[primary_key].get("filename") == "N/A" and source_path_obj:
-                             source_info[primary_key]["filename"] = source_path_obj.name
-                else: # If it's a path source
+                    if (
+                        isinstance(current_source_path, str)
+                        and source_info[primary_key].get("source_path") == "N/A"
+                    ):  # If URL source, path might be missing
+                        source_info[primary_key]["source_path"] = current_source_path
+                        # Update filename if it was N/A and path gives us one
+                        if (
+                            source_info[primary_key].get("filename") == "N/A"
+                            and source_path_obj
+                        ):
+                            source_info[primary_key]["filename"] = source_path_obj.name
+                else:  # If it's a path source
                     # Check if this chunk *happened* to have original_url metadata (e.g., from old index)
                     # We prioritize the path lookup, but store the URL if found for completeness
                     current_original_url = metadata_item.get("original_url")
-                    if (isinstance(current_original_url, str)
-                        and source_info[primary_key].get("original_url") is None):
+                    if (
+                        isinstance(current_original_url, str)
+                        and source_info[primary_key].get("original_url") is None
+                    ):
                         source_info[primary_key]["original_url"] = current_original_url
 
                 # Ensure filename is updated if initially N/A
                 if source_info[primary_key].get("filename") == "N/A":
-                     path_val = source_info[primary_key].get("source_path")
-                     if path_val and path_val != "N/A":
-                          try:
-                              source_info[primary_key]["filename"] = Path(path_val).name
-                          except Exception:
-                              pass
+                    path_val = source_info[primary_key].get("source_path")
+                    if path_val and path_val != "N/A":
+                        try:
+                            source_info[primary_key]["filename"] = Path(path_val).name
+                        except Exception:
+                            pass
                 # --- Update Existing Entry --- END
 
             logger.debug(
@@ -885,20 +907,25 @@ class _SourceManagementMixin:
                     file_deleted_successfully = True
 
             # 6. Remove from reverse lookup cache and save (if applicable)
-            if file_hash_key_from_meta and file_hash_key_from_meta in self._reverse_lookup:
+            if (
+                file_hash_key_from_meta
+                and file_hash_key_from_meta in self._reverse_lookup
+            ):
                 try:
                     del self._reverse_lookup[file_hash_key_from_meta]
                     logger.info(
                         f"Removed '{file_hash_key_from_meta}' (URL: {original_url_from_meta or 'unknown'}) from reverse lookup cache."
                     )
-                    self._save_reverse_lookup() # Persist the change
-                    removal_occurred = True # Mark removal occurred if lookup entry was removed
+                    self._save_reverse_lookup()  # Persist the change
+                    removal_occurred = (
+                        True  # Mark removal occurred if lookup entry was removed
+                    )
                 except KeyError:
                     logger.warning(
                         f"Key '{file_hash_key_from_meta}' already missing from reverse lookup."
                     )
                 except Exception as lookup_err:
-                     logger.error(
+                    logger.error(
                         f"Error removing key '{file_hash_key_from_meta}' from reverse lookup: {lookup_err}",
                         exc_info=self.debug,
                     )

@@ -1,5 +1,4 @@
 # src/llamasearch/data_manager.py
-#!/usr/bin/env python3
 """
 data_manager.py - Dynamic configuration and export utilities for LlamaSearch.
 
@@ -23,10 +22,11 @@ DEFAULT_SETTINGS = {
     "crawl_data": str(_DEFAULT_BASE_DIR / "crawl_data"),
     "index": str(_DEFAULT_BASE_DIR / "index"),
     "models": str(_DEFAULT_BASE_DIR / "models"),
-    "logs": str(_DEFAULT_BASE_DIR / "logs")
+    "logs": str(_DEFAULT_BASE_DIR / "logs"),
 }
 
 SETTINGS_FILENAME = "settings.json"
+
 
 class DataManager:
     def __init__(self, base_dir: Optional[Path] = None):
@@ -39,8 +39,10 @@ class DataManager:
         # Ensure base dir uses the fixed default if not provided for testing
         if not base_dir:
             for key in DEFAULT_SETTINGS:
-                 # Ensure default paths are relative to the actual default base dir
-                 self.settings[key] = str(_DEFAULT_BASE_DIR / Path(DEFAULT_SETTINGS[key]).name)
+                # Ensure default paths are relative to the actual default base dir
+                self.settings[key] = str(
+                    _DEFAULT_BASE_DIR / Path(DEFAULT_SETTINGS[key]).name
+                )
 
         self._load_settings()
         self.ensure_directories()
@@ -57,10 +59,11 @@ class DataManager:
             except Exception as e:
                 print(f"Warning: could not load settings file: {e}")
         else:
-             # If settings file doesn't exist, ensure settings dict reflects the default base
-             for key in DEFAULT_SETTINGS:
-                 self.settings[key] = str(self.base_dir / Path(DEFAULT_SETTINGS[key]).name)
-
+            # If settings file doesn't exist, ensure settings dict reflects the default base
+            for key in DEFAULT_SETTINGS:
+                self.settings[key] = str(
+                    self.base_dir / Path(DEFAULT_SETTINGS[key]).name
+                )
 
     def save_settings(self):
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -73,26 +76,27 @@ class DataManager:
     def ensure_directories(self):
         # Ensure the base directory itself exists first
         self.base_dir.mkdir(parents=True, exist_ok=True)
-        for key in DEFAULT_SETTINGS.keys(): # Iterate through known keys
+        for key in DEFAULT_SETTINGS.keys():  # Iterate through known keys
             dir_path_str = self.settings.get(key)
             if dir_path_str:
-                 dir_path = Path(dir_path_str)
-                 if not dir_path.exists():
-                     dir_path.mkdir(parents=True, exist_ok=True)
+                dir_path = Path(dir_path_str)
+                if not dir_path.exists():
+                    dir_path.mkdir(parents=True, exist_ok=True)
             else:
-                 # If somehow a default key is missing from settings, log warning
-                 print(f"Warning: Path for default setting key '{key}' is missing.")
-
+                # If somehow a default key is missing from settings, log warning
+                print(f"Warning: Path for default setting key '{key}' is missing.")
 
     def get_data_paths(self) -> dict:
         """Return the current data paths for all key directories."""
         # Ensure paths returned are consistent with the DataManager's base directory
         return {
             "base": str(self.base_dir),
-            "crawl_data": self.settings.get("crawl_data", str(self.base_dir / "crawl_data")),
+            "crawl_data": self.settings.get(
+                "crawl_data", str(self.base_dir / "crawl_data")
+            ),
             "index": self.settings.get("index", str(self.base_dir / "index")),
             "models": self.settings.get("models", str(self.base_dir / "models")),
-            "logs": self.settings.get("logs", str(self.base_dir / "logs"))
+            "logs": self.settings.get("logs", str(self.base_dir / "logs")),
         }
 
     def set_data_path(self, key: str, path: str):
@@ -101,11 +105,11 @@ class DataManager:
         This change is saved immediately.
         """
         if key in DEFAULT_SETTINGS:
-            new_path = Path(path).resolve() # Store absolute path
+            new_path = Path(path).resolve()  # Store absolute path
             self.settings[key] = str(new_path)
             # Ensure the newly set directory exists
             if not new_path.exists():
-                 new_path.mkdir(parents=True, exist_ok=True)
+                new_path.mkdir(parents=True, exist_ok=True)
             self.save_settings()
         else:
             raise ValueError(f"Unknown data path key: {key}")
@@ -123,13 +127,17 @@ class DataManager:
             path_str = self.settings.get(key, "")
             if path_str:
                 p = Path(path_str)
-                if p.exists() and p.is_dir(): # Check existence before adding
-                     export_paths.append(p)
+                if p.exists() and p.is_dir():  # Check existence before adding
+                    export_paths.append(p)
                 else:
-                     print(f"Warning: Directory for key '{key}' ({path_str}) does not exist. Skipping export.")
+                    print(
+                        f"Warning: Directory for key '{key}' ({path_str}) does not exist. Skipping export."
+                    )
 
         if not export_paths:
-            raise ValueError("No valid, existing directories found for export based on provided keys.")
+            raise ValueError(
+                "No valid, existing directories found for export based on provided keys."
+            )
 
         if not output_file:
             timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -150,8 +158,9 @@ class DataManager:
             print(f"Data exported successfully to: {output_file}")
             return output_file
         except Exception as e:
-             print(f"Error during data export: {e}")
-             raise # Re-raise the exception
+            print(f"Error during data export: {e}")
+            raise  # Re-raise the exception
+
 
 # Singleton instance for convenience
 data_manager = DataManager()

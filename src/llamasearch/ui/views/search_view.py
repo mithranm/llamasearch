@@ -91,7 +91,7 @@ class SearchAndIndexView(QWidget):
         self.urls_text.setPlaceholderText(
             "Enter root URLs (https://example.com), one per line..."
         )
-        self.urls_text.setFixedHeight(60) # Keep URLs box relatively small
+        self.urls_text.setFixedHeight(60)  # Keep URLs box relatively small
         crawl_group_layout.addWidget(self.urls_text)
 
         crawl_params_layout = QHBoxLayout()
@@ -199,7 +199,7 @@ class SearchAndIndexView(QWidget):
             self.keyword_input,
             self.index_file_btn,
             self.index_dir_btn,
-            self.data_table, # Disable the whole table during actions
+            self.data_table,  # Disable the whole table during actions
         ]
         for widget in widgets_to_toggle:
             widget.setDisabled(disable)
@@ -213,14 +213,14 @@ class SearchAndIndexView(QWidget):
         """Enables or disables 'Remove' buttons within the data table."""
         if not hasattr(self, "data_table"):
             return
-        action_col_index = 4 # Assuming actions are in the 5th column (index 4)
+        action_col_index = 4  # Assuming actions are in the 5th column (index 4)
         for row in range(self.data_table.rowCount()):
             cell_widget = self.data_table.cellWidget(row, action_col_index)
             if isinstance(cell_widget, QWidget):
                 # Find the button within the cell widget's layout more robustly
                 buttons = cell_widget.findChildren(QPushButton)
                 for button in buttons:
-                    if button.text() == "Remove": # Check button text if needed
+                    if button.text() == "Remove":  # Check button text if needed
                         button.setEnabled(enabled)
 
     # --- Slots for Backend Signals ---
@@ -234,9 +234,9 @@ class SearchAndIndexView(QWidget):
             "error": "red",
             "warning": "orange",
             "success": "green",
-            "info": "#555", # Default info color
+            "info": "#555",  # Default info color
         }
-        color = color_map.get(level, "#555") # Default to info color
+        color = color_map.get(level, "#555")  # Default to info color
         style = f"font-style: italic; color: {color};"
         QTimer.singleShot(0, lambda: self.status_label.setStyleSheet(style))
 
@@ -271,7 +271,11 @@ class SearchAndIndexView(QWidget):
         logger.debug(f"Slot _on_manual_index_complete triggered. Success: {success}")
         self._set_status(result_message, level="success" if success else "error")
         # Refresh only if chunks were actually added (indicated in message)
-        if success and "added" in result_message.lower() and "0 chunks" not in result_message.lower():
+        if (
+            success
+            and "added" in result_message.lower()
+            and "0 chunks" not in result_message.lower()
+        ):
             self.update_data_display()
         # Re-enabling is handled by the `actions_should_reenable` signal
 
@@ -298,8 +302,8 @@ class SearchAndIndexView(QWidget):
             return
 
         self._set_status(f"Searching '{query[:30]}...'")
-        self._disable_actions(True) # Disable UI immediately
-        self.search_results.setHtml("<i>Submitting search...</i>") # Provide feedback
+        self._disable_actions(True)  # Disable UI immediately
+        self.search_results.setHtml("<i>Submitting search...</i>")  # Provide feedback
         self.backend.submit_search(query)
 
     @Slot()
@@ -317,17 +321,22 @@ class SearchAndIndexView(QWidget):
         keywords_str = self.keyword_input.text().strip()
 
         if not target_urls:
-            QMessageBox.warning(self, "Input Error", "Please enter at least one target URL.")
+            QMessageBox.warning(
+                self, "Input Error", "Please enter at least one target URL."
+            )
             return
 
         invalid_urls = [
-            url for url in target_urls if not (url.startswith("http://") or url.startswith("https://"))
+            url
+            for url in target_urls
+            if not (url.startswith("http://") or url.startswith("https://"))
         ]
         if invalid_urls:
             QMessageBox.warning(
                 self,
                 "Input Error",
-                "Invalid URL format (must start with http:// or https://):\n- " + "\n- ".join(invalid_urls),
+                "Invalid URL format (must start with http:// or https://):\n- "
+                + "\n- ".join(invalid_urls),
             )
             return
 
@@ -335,7 +344,9 @@ class SearchAndIndexView(QWidget):
         if keywords_str:
             try:
                 # Use shlex to handle potential quotes in keywords if needed
-                keywords = [kw.strip() for kw in shlex.split(keywords_str) if kw.strip()]
+                keywords = [
+                    kw.strip() for kw in shlex.split(keywords_str) if kw.strip()
+                ]
             except ValueError as e:
                 QMessageBox.warning(self, "Input Error", f"Error parsing keywords: {e}")
                 return
@@ -343,8 +354,10 @@ class SearchAndIndexView(QWidget):
         logger.info(
             f"Starting crawl and index: URLs={target_urls}, Depth={crawl_depth}, Target Pages={target_links}, Keywords={keywords}"
         )
-        self._set_status(f"Starting crawl: {len(target_urls)} URLs, Depth={crawl_depth}...")
-        self._disable_actions(True) # Disable UI
+        self._set_status(
+            f"Starting crawl: {len(target_urls)} URLs, Depth={crawl_depth}..."
+        )
+        self._disable_actions(True)  # Disable UI
         self.backend.submit_crawl_and_index(
             root_urls=target_urls,
             target_links=target_links,
@@ -377,12 +390,16 @@ class SearchAndIndexView(QWidget):
         if self._actions_disabled:
             return
         start_dir = self._get_start_dir()
-        file_filter = "Supported Files (*.md *.markdown *.txt *.html *.htm);;All Files (*)"
+        file_filter = (
+            "Supported Files (*.md *.markdown *.txt *.html *.htm);;All Files (*)"
+        )
         # Use self as parent for the dialog
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select File to Index", start_dir, file_filter)
-        if file_path: # Check if a file was selected
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select File to Index", start_dir, file_filter
+        )
+        if file_path:  # Check if a file was selected
             self._set_status(f"Indexing file '{Path(file_path).name}'...")
-            self._disable_actions(True) # Disable UI
+            self._disable_actions(True)  # Disable UI
             self.backend.submit_manual_index(file_path)
 
     @Slot()
@@ -392,10 +409,12 @@ class SearchAndIndexView(QWidget):
             return
         start_dir = self._get_start_dir()
         # Use self as parent for the dialog
-        dir_path = QFileDialog.getExistingDirectory(self, "Select Directory to Index", start_dir)
-        if dir_path: # Check if a directory was selected
+        dir_path = QFileDialog.getExistingDirectory(
+            self, "Select Directory to Index", start_dir
+        )
+        if dir_path:  # Check if a directory was selected
             self._set_status(f"Indexing directory '{Path(dir_path).name}'...")
-            self._disable_actions(True) # Disable UI
+            self._disable_actions(True)  # Disable UI
             self.backend.submit_manual_index(dir_path)
 
     @Slot()
@@ -405,34 +424,42 @@ class SearchAndIndexView(QWidget):
             return
 
         if not isinstance(source_identifier, str) or not source_identifier:
-            logger.error(f"Invalid source identifier received for removal: {source_identifier}")
-            self._set_status("Error: Invalid source identifier for removal.", level="error")
+            logger.error(
+                f"Invalid source identifier received for removal: {source_identifier}"
+            )
+            self._set_status(
+                "Error: Invalid source identifier for removal.", level="error"
+            )
             return
 
         # Create user-friendly display name for confirmation dialog
         display_name = source_identifier
-        is_url = source_identifier.startswith("http://") or source_identifier.startswith("https://")
+        is_url = source_identifier.startswith(
+            "http://"
+        ) or source_identifier.startswith("https://")
         try:
             # Try to get filename for local paths
             if not is_url:
                 display_name = Path(source_identifier).name
             # Truncate long names/URLs for display
-            display_name = (display_name[:70] + "...") if len(display_name) > 70 else display_name
+            display_name = (
+                (display_name[:70] + "...") if len(display_name) > 70 else display_name
+            )
         except Exception:
             # Ignore errors in generating display name, use original identifier
             pass
 
         reply = QMessageBox.question(
-            self, # Parent widget
+            self,  # Parent widget
             "Confirm Removal",
             f"Remove all indexed content for:\n\n'{display_name}'?\n\n(This cannot be undone)",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, # Buttons
-            QMessageBox.StandardButton.No, # Default button
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,  # Buttons
+            QMessageBox.StandardButton.No,  # Default button
         )
 
         if reply == QMessageBox.StandardButton.Yes:
             self._set_status(f"Removing source '{display_name}'...")
-            self._disable_actions(True) # Disable UI
+            self._disable_actions(True)  # Disable UI
             # Pass the actual identifier (URL or full path) to the backend
             self.backend.submit_removal(source_identifier)
         else:
@@ -443,13 +470,13 @@ class SearchAndIndexView(QWidget):
     def update_data_display(self):
         """Updates the table with indexed sources, prioritizing URL display."""
         logger.debug("Updating data display table...")
-        self.data_table.setDisabled(True) # Disable during update
+        self.data_table.setDisabled(True)  # Disable during update
         try:
             # Fetch data synchronously from backend
             items = self.backend.get_indexed_sources()
-            self.data_table.setRowCount(0) # Clear existing rows
+            self.data_table.setRowCount(0)  # Clear existing rows
             self.data_table.setRowCount(len(items))
-            action_col_index = 4 # Column index for the "Actions"
+            action_col_index = 4  # Column index for the "Actions"
 
             for row_index, item_data in enumerate(items):
                 # --- Extract data and determine primary display/action ID ---
@@ -462,15 +489,17 @@ class SearchAndIndexView(QWidget):
                 if mtime_val is not None:
                     try:
                         # Format time, handle potential invalid timestamp
-                        mtime_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime_val))
+                        mtime_str = time.strftime(
+                            "%Y-%m-%d %H:%M", time.localtime(mtime_val)
+                        )
                     except (OSError, ValueError):
-                         mtime_str = "(Invalid Date)"
+                        mtime_str = "(Invalid Date)"
 
                 # Use the flag from backend aggregation logic
                 is_url_source = item_data.get("is_url_source", False)
 
                 display_source_text = "N/A"
-                source_identifier_for_action = None # The ID passed to remove_item
+                source_identifier_for_action = None  # The ID passed to remove_item
                 tooltip_base = f"Filename: {filename}\nChunks: {chunk_count}\nModified: {mtime_str}"
 
                 if is_url_source and isinstance(original_url, str) and original_url:
@@ -481,22 +510,28 @@ class SearchAndIndexView(QWidget):
                     display_source_text = source_path
                     source_identifier_for_action = source_path
                     tooltip_text = f"Path: {source_path}\n{tooltip_base}"
-                else: # Fallback if both missing or invalid
-                    display_source_text = item_data.get("identifier", "(Unknown Source)")
-                    source_identifier_for_action = display_source_text # Use best guess for action ID
+                else:  # Fallback if both missing or invalid
+                    display_source_text = item_data.get(
+                        "identifier", "(Unknown Source)"
+                    )
+                    source_identifier_for_action = (
+                        display_source_text  # Use best guess for action ID
+                    )
                     tooltip_text = f"Identifier: {display_source_text}\n{tooltip_base}"
                 # --- End identifier logic ---
 
                 # --- Create Table Items ---
                 # Source URL / Path Item
                 source_item = QTableWidgetItem(display_source_text)
-                source_item.setFlags(source_item.flags() & ~Qt.ItemFlag.ItemIsEditable) # Read-only
-                source_item.setToolTip(tooltip_text) # Set detailed tooltip
+                source_item.setFlags(
+                    source_item.flags() & ~Qt.ItemFlag.ItemIsEditable
+                )  # Read-only
+                source_item.setToolTip(tooltip_text)  # Set detailed tooltip
 
                 # Filename Item
                 name_item = QTableWidgetItem(filename)
                 name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                name_item.setToolTip(f"Filename: {filename}") # Simple tooltip
+                name_item.setToolTip(f"Filename: {filename}")  # Simple tooltip
 
                 # Chunk Count Item
                 chunk_item = QTableWidgetItem(str(chunk_count))
@@ -527,7 +562,9 @@ class SearchAndIndexView(QWidget):
                     # Use lambda to capture the correct identifier for THIS row's button
                     # The `sid=source_identifier_for_action` part is crucial
                     remove_btn.clicked.connect(
-                        lambda checked=False, sid=source_identifier_for_action: self.remove_item(sid)
+                        lambda checked=False, sid=source_identifier_for_action: self.remove_item(
+                            sid
+                        )
                     )
                 else:
                     # Disable button if no valid identifier found for action
@@ -539,9 +576,11 @@ class SearchAndIndexView(QWidget):
                 button_layout = QHBoxLayout(button_container_widget)
                 button_layout.addWidget(remove_btn)
                 button_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                button_layout.setContentsMargins(0, 0, 0, 0) # Remove margins
+                button_layout.setContentsMargins(0, 0, 0, 0)  # Remove margins
                 button_container_widget.setLayout(button_layout)
-                self.data_table.setCellWidget(row_index, action_col_index, button_container_widget)
+                self.data_table.setCellWidget(
+                    row_index, action_col_index, button_container_widget
+                )
 
             logger.debug(f"Updated indexed sources table with {len(items)} items.")
         except Exception as e:

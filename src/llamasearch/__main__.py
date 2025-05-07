@@ -9,15 +9,18 @@ import logging.handlers
 import signal
 import sys
 from pathlib import Path
-# from typing import Optional # No longer needed
 
 from llamasearch.data_manager import data_manager
 from llamasearch.exceptions import ModelNotFoundError, SetupError
 from llamasearch.utils import setup_logging
 
+# from typing import Optional # No longer needed
+
+
 logger = setup_logging()
 
 shutdown_requested = False
+
 
 def handle_signal(sig, frame):
     """Gracefully handle SIGINT and SIGTERM for the GUI."""
@@ -35,12 +38,15 @@ def handle_signal(sig, frame):
                 logger.info("Requesting Qt Application quit.")
                 QTimer.singleShot(0, app_instance.quit)
         except ImportError:
-            logger.warning("GUI not available (PySide6 not imported) for signal handling.")
+            logger.warning(
+                "GUI not available (PySide6 not imported) for signal handling."
+            )
         except Exception as e:
             logger.warning(f"Error requesting Qt Application quit: {e}")
     else:
         logger.warning("Shutdown already requested. Force exiting...")
         sys.exit(1)
+
 
 def main():
     signal.signal(signal.SIGINT, handle_signal)
@@ -60,25 +66,25 @@ def main():
     root_logger = logging.getLogger("llamasearch")
     # Set root logger level. setup_logging now ensures it's at least DEBUG.
     # We adjust the effective level for handlers here.
-    if root_logger.level > log_level : # only set if more verbose is requested
+    if root_logger.level > log_level:  # only set if more verbose is requested
         root_logger.setLevel(log_level)
-
 
     for handler in root_logger.handlers:
         if isinstance(
             handler, (logging.FileHandler, logging.handlers.RotatingFileHandler)
         ):
-            handler.setLevel(logging.DEBUG) # File handler always logs DEBUG and up
-        elif isinstance(handler, logging.StreamHandler): # Console handler
+            handler.setLevel(logging.DEBUG)  # File handler always logs DEBUG and up
+        elif isinstance(handler, logging.StreamHandler):  # Console handler
             handler.setLevel(log_level)
-        else: # Other handlers like QtLogHandler
+        else:  # Other handlers like QtLogHandler
             handler.setLevel(log_level)
-        try: # Ensure QtLogHandler also respects the debug flag
+        try:  # Ensure QtLogHandler also respects the debug flag
             from llamasearch.ui.qt_logging import QtLogHandler
+
             if QtLogHandler and isinstance(handler, QtLogHandler):
                 handler.setLevel(log_level)
         except ImportError:
-            pass # Qt not available
+            pass  # Qt not available
 
     logger.info("LlamaSearch GUI starting...")
     if args.debug:
@@ -119,9 +125,7 @@ def main():
     except ImportError as e:
         if "PySide6" in str(e):
             logger.error("GUI Error: PySide6 (Qt bindings) not installed.")
-            logger.error(
-                "To use the GUI, please install LlamaSearch with GUI extras:"
-            )
+            logger.error("To use the GUI, please install LlamaSearch with GUI extras:")
             logger.error('  pip install "llamasearch[gui]"')
             sys.exit(1)
         else:
@@ -133,6 +137,7 @@ def main():
     except Exception as e:
         logger.error(f"Failed to start GUI: {e}", exc_info=args.debug)
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
