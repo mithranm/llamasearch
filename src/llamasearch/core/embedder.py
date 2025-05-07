@@ -21,28 +21,25 @@ from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 
 # Try importing transformers config for type checking, but don't fail if not installed
-from transformers.configuration_utils import PretrainedConfig
+try:
+    from transformers.configuration_utils import PretrainedConfig
+except ImportError:
+    PretrainedConfig = None # type: ignore
 
 from llamasearch.data_manager import data_manager
 from llamasearch.exceptions import ModelNotFoundError
-# Hardware import removed
 from llamasearch.utils import setup_logging
 
 logger = setup_logging(__name__, use_qt_handler=True)
 
-# --- Default Model (can be overridden) ---
 DEFAULT_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-# --- End Default ---
-DEFAULT_CPU_BATCH_SIZE = 16 # Default batch size if hardware detection fails or is removed
+DEFAULT_CPU_BATCH_SIZE = 16 
 
-DEVICE_TYPE = "cpu"  # Hardcode to CPU
+DEVICE_TYPE = "cpu"
 InputType = Literal["query", "document"]
-# MXBAI_QUERY_PROMPT_NAME = "query"  # Standard prompt name for mxbai queries
 
 
 class EmbedderConfig(BaseModel):
-    """Configuration for the CPU-only embedder."""
-
     model_name: str = Field(default=DEFAULT_MODEL_NAME)
     device: str = Field(default=DEVICE_TYPE, description="Device (always 'cpu')")
     max_length: int = Field(default=512, gt=0, description="Max sequence length")
@@ -51,11 +48,10 @@ class EmbedderConfig(BaseModel):
     )
     truncate_dim: Optional[int] = Field(
         default=None,
-        gt=0,  # Must be positive if set
+        gt=0, 
         description="Optional dimension to truncate embeddings to (e.g., 512).",
     )
 
-    # <<< Updated Pydantic V2 Validator >>>
     @field_validator("truncate_dim")
     @classmethod
     def check_truncate_dim(cls, v: Optional[int]) -> Optional[int]:
@@ -63,14 +59,9 @@ class EmbedderConfig(BaseModel):
             raise ValueError("truncate_dim must be a positive integer if set")
         return v
 
-    # Removed from_hardware method, using default batch size
-
 
 class EnhancedEmbedder:
-    """Embedder optimized for CPU."""
-
     def embed_documents(self, docs: list, show_progress: bool = True):
-        """Alias for embed_strings with input_type='document'."""
         return self.embed_strings(
             docs, input_type="document", show_progress=show_progress
         )
@@ -82,7 +73,6 @@ class EnhancedEmbedder:
         batch_size: int = 0,
         truncate_dim: Optional[int] = None,
     ):
-        # Use EmbedderConfig defaults directly
         config_data: Dict[str, Any] = {
             "model_name": model_name,
             "device": DEVICE_TYPE,
@@ -109,7 +99,7 @@ class EnhancedEmbedder:
                 logger.warning(
                     f"Ignoring invalid truncate_dim value: {truncate_dim}. Using model default."
                 )
-                config_data["truncate_dim"] = None # Ensure it's None if invalid
+                config_data["truncate_dim"] = None
 
         self.config = EmbedderConfig(**config_data)
         logger.info(f"Final Embedder Config (CPU-Only): {self.config.model_dump()}")
@@ -138,17 +128,15 @@ class EnhancedEmbedder:
         logger.debug("Shutdown event set for embedder.")
 
     def _load_model(self):
-        """Load the embedding model onto the CPU, with optional truncation."""
         logger.debug("Embedder: Entered _load_model()")
         model_name = self.config.model_name
-        target_device = self.config.device  # Always "cpu"
+        target_device = self.config.device
         logger.info(f"Preparing to load embedder model: {model_name} onto CPU")
 
         try:
             logger.debug(
                 f"Checking for model '{model_name}' in cache: {self.models_dir}"
             )
-            # Use specific ignore patterns for setup if needed, but loading requires all files generally
             snapshot_download(
                 repo_id=model_name,
                 cache_dir=self.models_dir,
@@ -170,8 +158,7 @@ class EnhancedEmbedder:
             raise ModelNotFoundError(f"Error accessing embedder model cache: {e}")
 
         try:
-            # Set CPU threads based on available cores (simple approach)
-            physical_cores = os.cpu_count() or 2 # Fallback to 2 cores
+            physical_cores = os.cpu_count() or 2 
             num_threads = max(1, physical_cores // 2)
             current_threads = torch.get_num_threads()
             if current_threads != num_threads:
@@ -213,8 +200,6 @@ class EnhancedEmbedder:
             ) from e
 
     def _should_use_prompt_name(self, input_type: InputType) -> bool:
-        """Check if prompt_name should be used based on model name and input type."""
-        # mxbai-specific logic removed; always return False
         return False
 
     def embed_strings(
@@ -223,14 +208,18 @@ class EnhancedEmbedder:
         input_type: InputType = "document",
         show_progress: bool = True,
     ) -> np.ndarray:
-        """Generate embeddings on CPU."""
         if self.model is None:
             raise RuntimeError("Cannot embed strings, model is not loaded.")
+        
+        # Handle empty input correctly
         if not strings:
-            return np.array([], dtype=np.float32)
+            emb_dim = self.get_embedding_dimension()
+            # Return an empty 2D array with the correct second dimension
+            return np.empty((0, emb_dim if emb_dim else 0), dtype=np.float32)
+
 
         model_max_len = self.config.max_length
-        max_input_chars = model_max_len * 6 # Rough estimate
+        max_input_chars = model_max_len * 6 
         truncated_strings = []
         num_truncated = 0
         for s in strings:
@@ -258,14 +247,11 @@ class EnhancedEmbedder:
             disable=not show_progress,
         )
 
-        # Prepare base encode kwargs
         base_encode_kwargs: Dict[str, Any] = {
             "batch_size": self.config.batch_size,
             "show_progress_bar": False,
             "convert_to_numpy": True,
         }
-
-        # mxbai prompt_name logic removed
 
         try:
             for i in range(0, len(input_texts), self.config.batch_size):
@@ -274,12 +260,13 @@ class EnhancedEmbedder:
                     logger.info("Shutdown during embedding loop.")
                     break
                 batch = input_texts[i : i + self.config.batch_size]
-                if not batch:
+                if not batch: # Should not happen if input_texts is not empty
                     continue
 
-                # Use a copy of base kwargs for the batch
                 current_batch_encode_kwargs = base_encode_kwargs.copy()
+                # Override batch_size for the current actual batch if it's smaller
                 current_batch_encode_kwargs["batch_size"] = len(batch)
+
 
                 batch_embeddings = self.model.encode(
                     batch, **current_batch_encode_kwargs
@@ -308,7 +295,6 @@ class EnhancedEmbedder:
         except Exception as e:
             progress_bar.close()
             if not (self._shutdown_event and self._shutdown_event.is_set()):
-                # Check if the error is the specific ValueError we fixed
                 if isinstance(e, ValueError) and "Prompt name" in str(e) and "not found" in str(e):
                     logger.error(
                          f"Model '{self.config.model_name}' likely does not support prompt_name parameter. Error: {e}", exc_info=False
@@ -340,15 +326,14 @@ class EnhancedEmbedder:
     def _try_gc(self):
         gc.collect()
         try:
-            if torch.backends.mps.is_available():
+            if torch.backends.mps.is_available(): # Should always be False as we force CPU
                 torch.mps.empty_cache()
         except AttributeError:
-            pass
+            pass # mps not available
 
     def embed_string(
         self, text: str, input_type: InputType = "document"
     ) -> Optional[np.ndarray]:
-        """Embed a single string on CPU."""
         if self.model is None:
             logger.error("Cannot embed string, model not loaded.")
             return None
@@ -365,32 +350,25 @@ class EnhancedEmbedder:
             text = text[:max_input_chars]
             logger.debug("Truncated single string for embedding.")
 
-        # Prepare encode kwargs
         encode_kwargs: Dict[str, Any] = {
             "show_progress_bar": False,
             "convert_to_numpy": True,
         }
 
-        # mxbai prompt_name logic removed
-
         try:
             input_text = text
             embedding = self.model.encode(input_text, **encode_kwargs)
             if embedding is not None:
-                # The result might be a single vector (1D) or a batch of one (2D)
                 if embedding.ndim == 1:
-                    embedding = embedding.reshape(1, -1) # Ensure 2D for consistency if needed later
-                # Ensure correct dtype
+                    embedding = embedding.reshape(1, -1)
                 if embedding.dtype != np.float32:
                     embedding = embedding.astype(np.float32)
-                # Return the first (and only) embedding vector
-                return embedding[0] if embedding.shape[0] == 1 else embedding # Keep 2D if somehow batch > 1
+                return embedding[0] if embedding.shape[0] == 1 else embedding
             else:
                 logger.warning(f"Model returned None embedding for: '{text[:50]}...'")
                 return None
         except Exception as e:
             if not (self._shutdown_event and self._shutdown_event.is_set()):
-                # Check if the error is the specific ValueError we fixed
                 if isinstance(e, ValueError) and "Prompt name" in str(e) and "not found" in str(e):
                      logger.error(
                          f"Model '{self.config.model_name}' likely does not support prompt_name parameter. Error: {e}", exc_info=False
@@ -403,7 +381,6 @@ class EnhancedEmbedder:
             return None
 
     def get_embedding_dimension(self) -> Optional[int]:
-        """Returns the embedding dimension (considers truncation)."""
         if self.model is None:
             logger.warning("Cannot get embedding dimension, no model loaded.")
             return None
@@ -411,7 +388,6 @@ class EnhancedEmbedder:
             logger.debug(f"Using configured truncate_dim: {self.config.truncate_dim}")
             return self.config.truncate_dim
         try:
-            # Primary method (SentenceTransformer standard)
             get_dim_method = getattr(
                 self.model, "get_sentence_embedding_dimension", None
             )
@@ -425,16 +401,13 @@ class EnhancedEmbedder:
                         f"Method 'get_sentence_embedding_dimension' returned non-positive or non-integer: {dimension}"
                     )
 
-            # Fallback: Check for a config object attribute (common in transformers)
-            model_config: Any = getattr(self.model, 'config', None) # Use Any type hint for flexibility
+            model_config: Any = getattr(self.model, 'config', None)
             if model_config is not None:
-                 # Check if it's a dictionary
                  if isinstance(model_config, dict):
                      dimension = model_config.get('hidden_size') or model_config.get('d_model')
                      if isinstance(dimension, int) and dimension > 0:
                           logger.debug(f"Using dimension from model config dict: {dimension}")
                           return dimension
-                 # Check if it's a transformers PretrainedConfig object (or similar)
                  elif PretrainedConfig is not None and isinstance(model_config, PretrainedConfig):
                      if hasattr(model_config, 'hidden_size') and isinstance(getattr(model_config, 'hidden_size', None), int) and model_config.hidden_size > 0:
                          dimension = model_config.hidden_size
@@ -444,22 +417,16 @@ class EnhancedEmbedder:
                          dimension = model_config.d_model
                          logger.debug(f"Using dimension from PretrainedConfig attribute 'd_model': {dimension}")
                          return dimension
-                 # Add other potential config object attribute checks here if needed
                  else:
                      logger.debug(f"Model config found (type: {type(model_config)}), but dimension attribute not found or invalid.")
 
-
-            # --- ADDED: Last resort fallback for models that store dim directly ---
-            # Some simple models might store the dimension directly on the main object
             direct_dim = getattr(self.model, '_embedding_size', None) or \
                          getattr(self.model, 'embedding_dim', None) or \
                          getattr(self.model, 'dim', None) or \
-                         getattr(self.model, 'output_embedding_dimension', None) # Add more common names
+                         getattr(self.model, 'output_embedding_dimension', None)
             if isinstance(direct_dim, int) and direct_dim > 0:
                  logger.debug(f"Using dimension from direct model attribute: {direct_dim}")
                  return direct_dim
-            # --- END ADDED FALLBACK ---
-
 
             logger.warning(
                 f"Could not determine embedding dimension for model {self.config.model_name}."
@@ -472,7 +439,6 @@ class EnhancedEmbedder:
 
 
     def close(self):
-        """Release resources and free memory."""
         logger.info("Closing Embedder and releasing CPU resources...")
         if self._shutdown_event and not self._shutdown_event.is_set():
             self._shutdown_event.set()

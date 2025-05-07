@@ -1,7 +1,7 @@
 # src/llamasearch/data_manager.py
 #!/usr/bin/env python3
 """
-data_manager.py – Dynamic configuration and export utilities for LlamaSearch.
+data_manager.py - Dynamic configuration and export utilities for LlamaSearch.
 
 This module stores paths for crawl data, index, models, and logs in a settings
 dictionary that is loaded from (and saved to) a JSON file in the base directory.

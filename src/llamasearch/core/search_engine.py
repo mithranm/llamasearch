@@ -1,6 +1,4 @@
 # src/llamasearch/core/search_engine.py
-# src/llamasearch/core/search_engine.py (CPU-Only, Syntax Fixes)
-
 import gc
 import threading
 from pathlib import Path
@@ -10,8 +8,7 @@ import chromadb
 from chromadb.api import ClientAPI
 from chromadb.api.types import Embeddable, EmbeddingFunction, Embeddings
 from chromadb.config import Settings as ChromaSettings
-from sentence_transformers import \
-    SentenceTransformer  # Import needed for isinstance check
+from sentence_transformers import SentenceTransformer
 
 from ..exceptions import ModelNotFoundError, SetupError
 from ..protocols import LLM
@@ -32,30 +29,27 @@ BM25_SUBDIR = "bm25_data"
 ChromaMetadataValue = Union[str, int, float, bool]
 ChromaMetadataDict = Dict[str, ChromaMetadataValue]
 
-# --- ChromaDB Embedding Function Wrapper ---
 class SentenceTransformerEmbeddingFunction(EmbeddingFunction[Embeddable]):
-    """Wrapper to adapt SentenceTransformer for ChromaDB's EmbeddingFunction interface."""
     def __init__(self, model: SentenceTransformer):
         self._model = model
 
-    def __call__(self, input: Embeddable) -> Embeddings:
-        # Runtime check: SentenceTransformer only handles text documents (List[str])
-        if not isinstance(input, list) or not all(isinstance(doc, str) for doc in input):
+    def __call__(self, input_data: Embeddable) -> Embeddings: 
+        if not isinstance(input_data, list) or not all(isinstance(doc, str) for doc in input_data):
             raise TypeError(
                 "Input must be a list of strings (Documents) for SentenceTransformerEmbeddingFunction."
             )
-        # Use cast to inform the type checker after the runtime check
-        embeddings_np = self._model.encode(cast(List[str], input), convert_to_numpy=True)
+        # Ensure model is callable for encode
+        if not callable(getattr(self._model, 'encode', None)):
+            raise TypeError("Provided model for SentenceTransformerEmbeddingFunction does not have a callable 'encode' method.")
+        
+        embeddings_np = self._model.encode(cast(List[str], input_data), convert_to_numpy=True)
         return embeddings_np.tolist()
 
 class LLMSearch(_SourceManagementMixin, _QueryProcessingMixin):
-    """Orchestrates CPU-only embedding, indexing, and querying."""
     def __init__(
         self,
         storage_dir: Path,
         shutdown_event: Optional[threading.Event] = None,
-        # llm_onnx_quant removed - no longer used
-        # llm_provider_opts removed - CPU only
         verbose: bool = True,
         max_results: int = 3,
         embedder_model: Optional[str] = None,
@@ -82,7 +76,7 @@ class LLMSearch(_SourceManagementMixin, _QueryProcessingMixin):
         self.bm25: Optional[WhooshBM25Retriever] = None
         self._reverse_lookup: Dict[str, str] = {}
         self.context_length: int = 0
-        self.llm_device_type: str = "cpu" # Hardcoded CPU
+        self.llm_device_type: str = "cpu"
 
         self.min_chunk_size_filter = max(0, min_chunk_size_filter)
         self.max_chunk_size = max(1, max_chunk_size)
@@ -93,10 +87,7 @@ class LLMSearch(_SourceManagementMixin, _QueryProcessingMixin):
 
         try:
             self._load_reverse_lookup()
-
-            # 2. Initialize LLM (CPU-Only ONNX)
             logger.info("Initializing Generic ONNX LLM (CPU-Only)...")
-            # Call load_onnx_llm without the removed parameters
             self.model = load_onnx_llm()
             if not self.model:
                 raise RuntimeError("load_onnx_llm returned None.")
@@ -104,7 +95,6 @@ class LLMSearch(_SourceManagementMixin, _QueryProcessingMixin):
             self.context_length = model_info.context_length
             logger.info(f"LLM OK: {model_info.model_id} on CPU. Context: {self.context_length}")
 
-            # 3. Initialize Embedder (CPU-only)
             embed_model_name = embedder_model or DEFAULT_EMBEDDER_NAME
             logger.info(f"Initializing Embedder '{embed_model_name}' (CPU-only)...")
             self.embedder = EnhancedEmbedder(model_name=embed_model_name, batch_size=embedder_batch_size, truncate_dim=embedder_truncate_dim)
@@ -116,29 +106,45 @@ class LLMSearch(_SourceManagementMixin, _QueryProcessingMixin):
             else:
                 logger.warning("Could not determine embedding dimension.")
 
-            # 4. Initialize ChromaDB Client and Collection (CPU Embedder)
             logger.info(f"Initializing ChromaDB Client (storage: {self.storage_dir})")
-            chroma_settings = ChromaSettings(anonymized_telemetry=False, allow_reset=True, is_persistent=True, persist_directory=str(self.storage_dir))
+            # --- Critical Change Here ---
+            # Changed allow_reset=True to allow_reset=False.
+            # `allow_reset=False` is the default and ensures data persists.
+            chroma_settings = ChromaSettings(
+                anonymized_telemetry=False, 
+                allow_reset=False, 
+                is_persistent=True, 
+                persist_directory=str(self.storage_dir)
+            )
+            # --- End Critical Change ---
             self.chroma_client = chromadb.Client(chroma_settings)
             if self.chroma_client is None:
                 raise RuntimeError("Failed init Chroma Client.")
 
             chroma_meta = {"hnsw:space": "cosine"} if embedding_dim else None
-            if self.embedder and self.embedder.model and isinstance(self.embedder.model, SentenceTransformer):
-                # Create the wrapper instance using the loaded model
-                embedding_function_wrapper = SentenceTransformerEmbeddingFunction(self.embedder.model)
-                logger.debug("Created SentenceTransformerEmbeddingFunction wrapper for ChromaDB.")
+            
+            if self.embedder and self.embedder.model:
+                if isinstance(self.embedder.model, SentenceTransformer):
+                    embedding_function_wrapper = SentenceTransformerEmbeddingFunction(self.embedder.model)
+                    logger.debug("Created SentenceTransformerEmbeddingFunction wrapper for ChromaDB.")
+                else:
+                    logger.error(
+                        f"Embedder's internal model is not a SentenceTransformer instance. Type: {type(self.embedder.model)}"
+                    )
+                    raise SetupError(
+                        "Embedder's internal model is not a valid SentenceTransformer for ChromaDB."
+                    )
             else:
-                logger.error("Embedder instance not valid for Chroma.")
-                raise SetupError("Failed to get valid embedder instance for Chroma.")
+                logger.error("Embedder or its internal SentenceTransformer model not available.")
+                raise SetupError("Failed to get valid SentenceTransformer model from embedder for ChromaDB.")
 
-            self.chroma_collection = self.chroma_client.get_or_create_collection(name=CHROMA_COLLECTION_NAME, embedding_function=embedding_function_wrapper, metadata=chroma_meta) # Use the wrapper
+
+            self.chroma_collection = self.chroma_client.get_or_create_collection(name=CHROMA_COLLECTION_NAME, embedding_function=embedding_function_wrapper, metadata=chroma_meta)
             if self.chroma_collection:
                 logger.info(f"ChromaDB OK: '{CHROMA_COLLECTION_NAME}'. Count: {self.chroma_collection.count()}")
             else:
                 raise RuntimeError("Failed get/create Chroma collection.")
 
-            # 5. Initialize BM25 Retriever
             bm25_path = self.storage_dir / BM25_SUBDIR
             logger.info(f"Initializing Whoosh BM25 Retriever (storage: {bm25_path})")
             self.bm25 = WhooshBM25Retriever(storage_dir=bm25_path)
@@ -150,14 +156,15 @@ class LLMSearch(_SourceManagementMixin, _QueryProcessingMixin):
             logger.error(f"LLMSearch init failed (setup): {e}. Run setup.")
             self.close()
             raise
-        except ImportError as e:
+        except ImportError as e: 
+            logger.error(f"LLMSearch init failed due to missing dependency: {e}", exc_info=True)
+            self.close()
             raise SetupError(f"Missing dependency: {e}") from e
         except Exception as e:
             logger.error(f"Unexpected LLMSearch init error: {e}", exc_info=True)
             self.close()
             raise RuntimeError("LLMSearch init failed.") from e
 
-    # --- Lifecycle Methods (CPU-Only) ---
     def _safe_unload_llm(self) -> None:
         if self.model is None or not hasattr(self.model, "unload"):
             return
@@ -166,11 +173,10 @@ class LLMSearch(_SourceManagementMixin, _QueryProcessingMixin):
             unload = getattr(self.model, "unload", None)
             if callable(unload):
                 unload()
-            del self.model
         except Exception as e:
             logger.error(f"Error during LLM unload: {e}", exc_info=True)
         finally:
-            self.model = None
+            self.model = None 
             gc.collect()
 
     def close(self) -> None:
@@ -195,13 +201,17 @@ class LLMSearch(_SourceManagementMixin, _QueryProcessingMixin):
                 self.bm25 = None
         if self.chroma_client:
             try:
-                pass # No explicit close needed, release refs
+                # No explicit close needed for persistent chromadb.Client.
+                # Data is persisted to disk as operations occur.
+                pass
+            except Exception as e:
+                logger.warning(f"Err during Chroma client cleanup: {e}")
             finally:
-                self.chroma_client = None
-                self.chroma_collection = None
+                self.chroma_client = None 
+                self.chroma_collection = None 
                 logger.debug("Chroma refs released.")
         logger.info("LLMSearch engine closed (CPU-Only).")
-        gc.collect()
+        gc.collect() 
 
     def __enter__(self):
         return self

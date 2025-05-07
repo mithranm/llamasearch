@@ -65,7 +65,7 @@ class LlamaSearchApp:
             )
         else:
             logger.info("LlamaSearchApp backend ready.")
-            # Refresh UI after a short delay
+            # Refresh UI after a short delay to load existing sources
             QTimer.singleShot(150, self.signals.refresh_needed.emit) # type: ignore [attr-defined]
 
         # Connect the internal signal to its handler slot
@@ -601,7 +601,7 @@ class LlamaSearchApp:
                         current_policy_loop = None
                         try:
                              current_policy_loop = policy.get_event_loop()
-                        except RuntimeError: # Can happen if no loop is set on policy
+                        except RuntimeError: # Can happen if no loop is set
                              pass
                         if current_policy_loop is loop:
                             policy.set_event_loop(None)
@@ -633,7 +633,7 @@ class LlamaSearchApp:
                     if not crawl_dir_base_path_str:
                         raise SetupError("Crawl data dir path not configured.")
                     crawl_dir_base = Path(crawl_dir_base_path_str)
-                    raw_output_dir = crawl_dir_base / "raw"
+                    raw_output_dir = crawl_dir_base.joinpath("raw")
                     processed_files_count = 0
                     logger.info(f"Starting indexing phase for crawled content in: {raw_output_dir}...")
 

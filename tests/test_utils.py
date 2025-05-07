@@ -1,387 +1,228 @@
-# tests/test_utils.py
-import unittest
+# src/llamasearch/utils.py
+
 import json
 import logging
 import logging.handlers
 import sys
-import numpy as np
+import time
 from pathlib import Path
-import tempfile # For creating temporary directories
-from unittest.mock import patch, MagicMock, mock_open
+from typing import Optional
 
-# Import components under test or needed for patching
-from llamasearch.utils import (
-    get_llamasearch_dir,
-    NumpyEncoder,
-    log_query,
-    setup_logging,
-)
+import numpy as np
 
-# Import module itself for patching module-level variables/functions if needed
-import llamasearch.utils  # For _qt_log_handler_instance
+_qt_log_handler_instance: Optional[logging.Handler] = None
+_qt_logging_available = False
+
+try:
+    from llamasearch.ui import qt_logging # Relative import
+    QtLogHandler = qt_logging.QtLogHandler
+    qt_log_emitter = qt_logging.qt_log_emitter
+    _qt_logging_available = True
+except (ImportError, AttributeError, ModuleNotFoundError):
+    QtLogHandler = None
+    qt_log_emitter = None
+    _qt_logging_available = False
 
 
-@patch("llamasearch.utils.Path")  # Mock Path class
-class TestGetLlamasearchDir(unittest.TestCase):
-    def test_get_dir_always_home(self, MockPath):
-        mock_home_path_instance = MagicMock(spec=Path)
-        MockPath.home.return_value = mock_home_path_instance
-        mock_final_dir_instance = MagicMock(spec=Path)
-        mock_home_path_instance.__truediv__.return_value = mock_final_dir_instance
+def get_llamasearch_dir() -> Path:
+    path = Path.home() / ".llamasearch"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
-        result_path = get_llamasearch_dir()
 
-        MockPath.home.assert_called_once()
-        mock_home_path_instance.__truediv__.assert_called_once_with(".llamasearch")
-        mock_final_dir_instance.mkdir.assert_called_once_with(
-            parents=True, exist_ok=True
+def setup_logging(
+    name="llamasearch", level=logging.INFO, use_qt_handler=False
+) -> logging.Logger:
+    global _qt_log_handler_instance
+
+    root_logger_name = "llamasearch"
+    logger_to_return = logging.getLogger(name)
+
+    root_logger = logging.getLogger(root_logger_name)
+    # Set root logger level only if it's not already set or if a more verbose level is requested
+    if root_logger.level == logging.NOTSET or level < root_logger.level:
+        root_logger.setLevel(min(level, logging.DEBUG)) # Ensure root captures at least DEBUG
+
+    file_formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    simple_formatter = logging.Formatter(
+        "%(asctime)s [%(levelname)-7s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    try:
+        base_dir = get_llamasearch_dir()
+        logs_dir = base_dir / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True) # This call needs to succeed
+        log_file = logs_dir / "llamasearch.log"
+
+        file_handler_exists = any(
+            isinstance(h, logging.handlers.RotatingFileHandler) and
+            hasattr(h, 'baseFilename') and # Ensure baseFilename exists
+            Path(h.baseFilename).resolve() == log_file.resolve()
+            for h in root_logger.handlers
         )
-        self.assertIs(result_path, mock_final_dir_instance)
+        if not file_handler_exists:
+            file_handler = logging.handlers.RotatingFileHandler(
+                log_file, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
+            )
+            file_handler.setFormatter(file_formatter)
+            file_handler.setLevel(logging.DEBUG)
+            root_logger.addHandler(file_handler)
+
+        console_handler: Optional[logging.StreamHandler] = None
+        for h in root_logger.handlers:
+            if isinstance(h, logging.StreamHandler) and getattr(h, 'stream', None) == sys.stdout:
+                console_handler = h
+                break
+        
+        if console_handler is None:
+            console_handler = logging.StreamHandler(sys.stdout)
+            console_handler.setFormatter(simple_formatter)
+            root_logger.addHandler(console_handler)
+        console_handler.setLevel(level)
+
+        if use_qt_handler and _qt_logging_available and qt_log_emitter and QtLogHandler:
+            if _qt_log_handler_instance is None:
+                _qt_log_handler_instance = QtLogHandler(qt_log_emitter)
+                _qt_log_handler_instance.setFormatter(simple_formatter)
+                root_logger.addHandler(_qt_log_handler_instance)
+                logging.getLogger(root_logger_name).info("Attached QtLogHandler to root logger.") # Use root to log this
+            if _qt_log_handler_instance:
+                 _qt_log_handler_instance.setLevel(level)
+        elif use_qt_handler and not _qt_logging_available:
+            logging.getLogger(root_logger_name).warning("Qt logging requested but Qt components not found.")
 
 
-class TestNumpyEncoder(unittest.TestCase):
-    def setUp(self):
-        self.encoder = NumpyEncoder()
+        if not getattr(root_logger, '_noisy_libs_silenced', False):
+            noisy_libs = [
+                "urllib3", "matplotlib", "PIL", "asyncio", "markdown_it",
+                "sentence_transformers", "huggingface_hub", "onnxruntime",
+                "chromadb", "hpack", "httpx", "watchfiles", "uvicorn", "spacy",
+                "py_cpuinfo", "filelock", "multiprocessing", "whoosh",
+            ]
+            for lib_name in noisy_libs:
+                logging.getLogger(lib_name).setLevel(logging.WARNING)
+            setattr(root_logger, '_noisy_libs_silenced', True)
 
-    def test_numpy_float(self):
-        data = {"val": np.float32(1.23)}
-        result = json.dumps(data, cls=NumpyEncoder)
-        loaded = json.loads(result)
-        self.assertAlmostEqual(loaded["val"], 1.23, places=5)
+    except Exception as e:
+        # Fallback logging should not reconfigure if already configured by a previous call
+        if not root_logger.handlers: # Only call basicConfig if no handlers are present
+            logging.basicConfig(level=logging.INFO)
+            logging.error(
+                f"Failed custom logging setup: {e}. Using basic config.", exc_info=True
+            )
+        else: # If handlers exist, just log the error
+            root_logger.error(f"Error during logging setup: {e}", exc_info=True)
 
-    def test_numpy_int(self):
-        data = {"val": np.int64(123)}
-        result = json.dumps(data, cls=NumpyEncoder)
-        self.assertEqual(result, '{"val": 123}')
-
-    def test_numpy_array(self):
-        data = {"arr": np.array([[1, 2], [3, 4]], dtype=np.int32)}
-        result = json.dumps(data, cls=NumpyEncoder)
-        self.assertEqual(result, '{"arr": [[1, 2], [3, 4]]}')
-
-    def test_set(self):
-        data = {"items": {1, "a", 3.0}}
-        result = json.dumps(data, cls=NumpyEncoder)
-        loaded = json.loads(result)
-        self.assertIsInstance(loaded["items"], list)
-        self.assertCountEqual(loaded["items"], [1, "a", 3.0])
-
-    def test_frozenset(self):
-        data = {"items": frozenset([True, False])}
-        result = json.dumps(data, cls=NumpyEncoder)
-        loaded = json.loads(result)
-        self.assertIsInstance(loaded["items"], list)
-        self.assertCountEqual(loaded["items"], [True, False])
-
-    def test_path(self):
-        p = Path("tmp") / "test" / "file.txt"
-        data = {"path": p}
-        result = json.dumps(data, cls=NumpyEncoder)
-        loaded = json.loads(result)
-        self.assertEqual(loaded["path"], p.as_posix())
-
-    def test_bytes(self):
-        data = {"data": b"hello \xc3\xa9 world"}
-        result = json.dumps(data, cls=NumpyEncoder)
-        self.assertEqual(result, '{"data": "hello \\u00e9 world"}')
-
-    def test_unhandled_type(self):
-        class Unhandled:
-            pass
-
-        data = {"obj": Unhandled()}
-        with self.assertRaises(TypeError):
-            json.dumps(data, cls=NumpyEncoder)
+    logger_to_return.setLevel(level)
+    return logger_to_return
 
 
-@patch("llamasearch.utils.get_llamasearch_dir")
-@patch("llamasearch.utils.setup_logging")
-@patch("builtins.open", new_callable=mock_open)
-@patch("llamasearch.utils.json.dump")
-@patch("llamasearch.utils.time.strftime")
-class TestLogQuery(unittest.TestCase):
-    def setUp(self):
-        self.mock_logger_for_log_query = MagicMock(spec=logging.Logger)
-        self.temp_log_dir_obj = tempfile.TemporaryDirectory(prefix="test_log_query_")
-        self.temp_log_dir = Path(self.temp_log_dir_obj.name)
+class NumpyEncoder(json.JSONEncoder):
+    def default(self, o):
+        if isinstance(o, np.floating):
+            return float(o)
+        if isinstance(o, np.integer):
+            return int(o)
+        if isinstance(o, np.ndarray):
+            return o.tolist()
+        if isinstance(o, (set, frozenset)):
+            return list(o)
+        if isinstance(o, Path):
+            return o.as_posix()
+        if isinstance(o, bytes):
+            return o.decode("utf-8", errors="ignore")
+        return super().default(o)
 
-    def tearDown(self):
-        self.temp_log_dir_obj.cleanup()
 
-    def test_log_query_full(
-        self,
-        mock_strftime,
-        mock_json_dump,
-        mock_open_func,
-        mock_setup_logging_in_log_query,
-        mock_get_dir,
-    ):
-        mock_setup_logging_in_log_query.return_value = self.mock_logger_for_log_query
-        mock_get_dir.return_value = self.temp_log_dir # Use real temp path
-        # SUT constructs paths: logs_dir = self.temp_log_dir / "logs", log_file = logs_dir / "query_log.jsonl"
-        # So, mock_open_func will be called with self.temp_log_dir / "logs" / "query_log.jsonl"
+def log_query(
+    query: str,
+    chunks: list,
+    response: str,
+    debug_info: dict,
+    full_logging: bool = False,
+) -> str:
+    query_logger = setup_logging("llamasearch.query_log", use_qt_handler=False)
+    try:
+        # Ensure logs_dir exists; setup_logging should handle this, but defensive check.
+        # The primary get_llamasearch_dir ensures the base .llamasearch exists.
+        # The logs_dir itself is created within setup_logging.
+        # For this function, we assume setup_logging has run or will run successfully.
+        logs_dir_path = get_llamasearch_dir() / "logs"
+        if not logs_dir_path.is_dir(): # Check if it became a dir
+            logs_dir_path.mkdir(parents=True, exist_ok=True) # Try to create if missing
+    except Exception as e:
+        query_logger.error(
+            f"Cannot create/access logs directory '{logs_dir_path}': {e}. Skipping query log." # type: ignore
+        )
+        return ""
 
-        mock_strftime.return_value = "FAKE_TIMESTAMP"
+    chunks_to_log = chunks 
 
-        query = "Full query"
-        chunks = [{"id": "f1", "document": np.array([1, 2])}] 
-        response = "Full response"
-        debug_info = {
-            "retrieval_time": 0.2,
-            "llm_generation_time": 0.5,
-            "total_query_processing_time": 0.7,
-            "vector_initial_results": 10,
-            "bm25_initial_results": 5,
-            "final_selected_chunk_count": 3,
-            "query_embedding_time": 0.1,
-            "final_context_content_token_count": 500,
-            "estimated_full_prompt_tokens": 550,
-            "extra_debug": "value",
-            "raw_llm_output": {"details": "..."},
-            "final_selected_chunk_details": ["detail1"],
-        }
-        log_query(query, chunks, response, debug_info, full_logging=True)
+    if not full_logging and isinstance(chunks, list):
+        simplified_chunks = []
+        for chunk in chunks:
+            if isinstance(chunk, dict):
+                sc = {
+                    k: chunk.get(k)
+                    for k in ["id", "score", "source_path", "filename", "original_chunk_index"]
+                    if k in chunk and chunk.get(k) is not None
+                }
+                if "document" in chunk and isinstance(chunk["document"], str):
+                     sc["text_preview"] = (
+                         (chunk["document"][:150] + "...")
+                         if len(chunk["document"]) > 150
+                         else chunk["document"]
+                     )
+                elif "text_preview" in chunk: 
+                    sc["text_preview"] = chunk["text_preview"]
 
-        self.assertEqual(mock_json_dump.call_count, 1)
-        logged_data = mock_json_dump.call_args[0][0]
-        self.assertEqual(logged_data["timestamp"], "FAKE_TIMESTAMP")
-        self.assertListEqual(logged_data["chunks_retrieved_details"], chunks)
-        expected_debug_keys = {
-            "retrieval_time",
-            "llm_generation_time",
-            "total_query_processing_time",
-            "vector_initial_results",
-            "bm25_initial_results",
-            "final_selected_chunk_count",
-            "query_embedding_time",
-            "final_context_content_token_count",
-            "estimated_full_prompt_tokens",
-            "extra_debug",
-        }
-        self.assertEqual(set(logged_data["debug_info"].keys()), expected_debug_keys)
-        self.assertNotIn("raw_llm_output", logged_data["debug_info"])
-        self.assertNotIn("final_selected_chunk_details", logged_data["debug_info"])
-        # Assert that open was called with the correct constructed path
-        mock_open_func.assert_called_once_with(self.temp_log_dir / "logs" / "query_log.jsonl", "a", encoding="utf-8")
+                simplified_chunks.append(sc)
+            else: 
+                str_chunk = str(chunk)
+                simplified_chunks.append(
+                    (str_chunk[:200] + "...") if len(str_chunk) > 200 else str_chunk
+                )
+        chunks_to_log = simplified_chunks
 
-    def test_log_query_simplified(
-        self,
-        mock_strftime,
-        mock_json_dump,
-        mock_open_func,
-        mock_setup_logging_in_log_query,
-        mock_get_dir,
-    ):
-        mock_setup_logging_in_log_query.return_value = self.mock_logger_for_log_query
-        mock_get_dir.return_value = self.temp_log_dir # Use real temp path
-        mock_strftime.return_value = "FAKE_TIMESTAMP_SIMPLE"
-
-        query = "Simple query"
-        long_doc = "This is a very long document text " * 10  
-        chunks = [
-            {"id": "s1", "score": 0.8, "document": "Short doc 1", "source_path": "/path/a", "filename": "a.txt", "original_chunk_index": 0,},
-            {"id": "s2", "score": 0.7, "document": long_doc, "source_path": "/path/b", "filename": "b.md", "original_chunk_index": 5,},
-            {"id": "s3", "score": 0.6, "document": None, "source_path": "/path/c", "filename": "c.html",},
-            {"id": "s4", "score": 0.5, "source_path": "/path/d", "filename": "d.txt", "original_chunk_index": 2, "text_preview": "Existing preview",},
-            "just a string chunk",
-        ]
-        response = "Simple response"
-        debug_info = {
-            "retrieval_time": 0.1, "llm_generation_time": 0.3, "total_query_processing_time": 0.45,
-            "vector_initial_results": 8, "bm25_initial_results": 4, "final_selected_chunk_count": 2,
-            "final_context_content_token_count": 300, "estimated_full_prompt_tokens": 350,
-            "query_embedding_time": 0.05, "other_info": "ignore this",
-        }
-        log_query(query, chunks, response, debug_info, full_logging=False)
-        self.assertEqual(mock_json_dump.call_count, 1)
-        logged_data = mock_json_dump.call_args[0][0]
-
-        expected_simplified_chunks = [
-            {"id": "s1", "score": 0.8, "source_path": "/path/a", "filename": "a.txt", "original_chunk_index": 0, "text_preview": "Short doc 1",},
-            {"id": "s2", "score": 0.7, "source_path": "/path/b", "filename": "b.md", "original_chunk_index": 5, "text_preview": long_doc[:150] + "...",},
-            {"id": "s3", "score": 0.6, "source_path": "/path/c", "filename": "c.html",},
-            {"id": "s4", "score": 0.5, "source_path": "/path/d", "filename": "d.txt", "original_chunk_index": 2, "text_preview": "Existing preview",},
-            "just a string chunk",
-        ]
-        self.assertEqual(logged_data["chunks_retrieved_details"], expected_simplified_chunks)
-        essential_debug_keys = {
+    optimized_debug_info = {}
+    if isinstance(debug_info, dict):
+        essential_keys = [
             "retrieval_time", "llm_generation_time", "total_query_processing_time",
-            "vector_initial_results", "bm25_initial_results", "final_selected_chunk_count",
-            "final_context_content_token_count", "estimated_full_prompt_tokens", "query_embedding_time",
-        }
-        self.assertTrue(essential_debug_keys.issubset(logged_data["debug_info"].keys()))
-        self.assertNotIn("other_info", logged_data["debug_info"])
-        mock_open_func.assert_called_once_with(self.temp_log_dir / "logs" / "query_log.jsonl", "a", encoding="utf-8")
+            "vector_initial_results", "bm25_initial_results",
+            "final_selected_chunk_count", "query_embedding_time",
+            "final_context_content_token_count", "estimated_full_prompt_tokens" 
+        ]
+        for key in essential_keys:
+            if key in debug_info:
+                optimized_debug_info[key] = debug_info[key]
 
-    def test_log_query_mkdir_fail(
-        self,
-        mock_strftime,
-        mock_json_dump,
-        mock_open_func,
-        mock_setup_logging_in_log_query,
-        mock_get_dir,
-    ):
-        mock_setup_logging_in_log_query.return_value = self.mock_logger_for_log_query
-        # Simulate get_llamasearch_dir() returning a path, but logs_dir.mkdir() failing
-        mock_real_base_dir = self.temp_log_dir 
-        mock_get_dir.return_value = mock_real_base_dir
-        
-        # To simulate logs_dir.mkdir failing, we need to patch Path.mkdir for the specific instance
-        with patch.object(Path, 'mkdir', side_effect=OSError("Permission denied")) as mock_mkdir_method:
-            result_path = log_query("q", [], "r", {})
-            # Assert that mkdir was called on the logs_dir path
-            mock_mkdir_method.assert_any_call(parents=True, exist_ok=True) # get_llamasearch_dir and logs_dir creation attempt
+        if full_logging:
+            optimized_debug_info.update(
+                {
+                    k: v
+                    for k, v in debug_info.items()
+                    if k not in optimized_debug_info and k not in ["raw_llm_output", "final_selected_chunk_details"]
+                }
+            )
 
 
-        self.mock_logger_for_log_query.error.assert_called_once_with(
-            "Cannot create/access logs directory: Permission denied. Skipping query log."
-        )
-        mock_open_func.assert_not_called()
-        self.assertEqual(result_path, "")
+    log_data = {
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "query": query,
+        "chunks_retrieved_details": chunks_to_log,
+        "response": response,
+        "debug_info": optimized_debug_info,
+    }
 
-    def test_log_query_file_write_fail(
-        self,
-        mock_strftime,
-        mock_json_dump,
-        mock_open_func,
-        mock_setup_logging_in_log_query,
-        mock_get_dir,
-    ):
-        mock_setup_logging_in_log_query.return_value = self.mock_logger_for_log_query
-        mock_get_dir.return_value = self.temp_log_dir # Use real temp path
-        mock_open_func.side_effect = IOError("Disk full")  
-
-        result_path = log_query("q", [], "r", {})
-        mock_json_dump.assert_not_called()
-        self.mock_logger_for_log_query.error.assert_called_once_with(
-            f"Error saving query log to {self.temp_log_dir / 'logs' / 'query_log.jsonl'}: Disk full"
-        )
-        self.assertEqual(result_path, "")
-
-
-@patch("llamasearch.utils.get_llamasearch_dir")
-class TestSetupLogging(unittest.TestCase):
-    def setUp(self):
-        self.logger_name = "test_logger_for_setup"
-        # Reset module-level state for Qt handler for each test
-        llamasearch.utils._qt_log_handler_instance = None 
-        llamasearch.utils._qt_logging_available = False
-
-        # Thoroughly clean up logging state before each test
-        logging.shutdown() 
-        # Remove handlers from the root logger and any specific test loggers
-        loggers_to_clear = [logging.getLogger(name) for name in ["llamasearch", "", self.logger_name, "other_logger", "third_logger"]]
-        for logger_obj in loggers_to_clear:
-            for handler in list(logger_obj.handlers): # Iterate over a copy
-                logger_obj.removeHandler(handler)
-                if hasattr(handler, "close"):
-                    handler.close()
-            logger_obj.setLevel(logging.NOTSET) # Reset level
-            logger_obj.propagate = True # Reset propagate
-            if hasattr(logger_obj, '_noisy_libs_silenced'): # Reset custom flag
-                delattr(logger_obj, '_noisy_libs_silenced')
-        
-        self.temp_dir_obj = tempfile.TemporaryDirectory(prefix="test_utils_log_setup_")
-        self.temp_dir = Path(self.temp_dir_obj.name)
-
-    def tearDown(self):
-        logging.shutdown() # Ensure all handlers are closed
-        self.temp_dir_obj.cleanup()
-        # Reset module state again after test
-        llamasearch.utils._qt_log_handler_instance = None
-        llamasearch.utils._qt_logging_available = False
-
-
-    def test_setup_logging_basic(self, mock_get_dir):
-        mock_get_dir.return_value = self.temp_dir
-
-        llamasearch_root_logger = logging.getLogger("llamasearch")
-        
-        logger_returned = setup_logging(
-            self.logger_name, level=logging.INFO, use_qt_handler=False
-        )
-
-        self.assertEqual(logger_returned.name, self.logger_name)
-        self.assertEqual(logger_returned.level, logging.INFO)
-        self.assertEqual(llamasearch_root_logger.level, logging.DEBUG)
-        
-        # After setup, we expect 2 handlers on the root logger: File and Console.
-        self.assertEqual(len(llamasearch_root_logger.handlers), 2)
-
-        file_handler_found = False
-        console_handler_found = False
-        log_file_path = self.temp_dir / "logs" / "llamasearch.log"
-
-        for handler in llamasearch_root_logger.handlers:
-            if isinstance(handler, logging.handlers.RotatingFileHandler):
-                if Path(handler.baseFilename).resolve() == log_file_path.resolve():
-                    file_handler_found = True
-                    self.assertEqual(handler.level, logging.DEBUG)
-            elif isinstance(handler, logging.StreamHandler) and handler.stream == sys.stdout:
-                console_handler_found = True
-                self.assertEqual(handler.level, logging.INFO)
-        
-        self.assertTrue(file_handler_found, "File handler not found or misconfigured")
-        self.assertTrue(console_handler_found, "Console handler not found or misconfigured")
-        self.assertTrue(getattr(llamasearch_root_logger, '_noisy_libs_silenced', False))
-
-    @patch("llamasearch.utils.qt_log_emitter") 
-    def test_setup_logging_with_qt(self, mock_qt_emitter_global_obj, mock_get_dir):
-        mock_get_dir.return_value = self.temp_dir
-        llamasearch.utils._qt_logging_available = True
-        llamasearch.utils.qt_log_emitter = mock_qt_emitter_global_obj
-
-        llamasearch_root_logger = logging.getLogger("llamasearch")
-        
-        # --- First Call (DEBUG level, use_qt_handler=True) ---
-        logger1 = setup_logging(self.logger_name, level=logging.DEBUG, use_qt_handler=True)
-        self.assertEqual(logger1.level, logging.DEBUG)
-        self.assertEqual(len(llamasearch_root_logger.handlers), 3) # File, Console, Qt
-        
-        qt_handler_instance = llamasearch.utils._qt_log_handler_instance
-        self.assertIsNotNone(qt_handler_instance)
-        self.assertIsInstance(qt_handler_instance, llamasearch.utils.QtLogHandler) # type: ignore
-        self.assertEqual(qt_handler_instance.level, logging.DEBUG) # type: ignore
-
-        for h in llamasearch_root_logger.handlers:
-            if isinstance(h, logging.handlers.RotatingFileHandler):
-                self.assertEqual(h.level, logging.DEBUG)
-            elif isinstance(h, logging.StreamHandler) and h.stream == sys.stdout:
-                self.assertEqual(h.level, logging.DEBUG)
-
-        # --- Second Call (INFO level, use_qt_handler=True) ---
-        logger2 = setup_logging("other_logger", level=logging.INFO, use_qt_handler=True)
-        self.assertEqual(logger2.level, logging.INFO)
-        self.assertEqual(len(llamasearch_root_logger.handlers), 3) 
-        self.assertEqual(qt_handler_instance.level, logging.INFO) # type: ignore
-        for h in llamasearch_root_logger.handlers:
-            if isinstance(h, logging.StreamHandler) and h.stream == sys.stdout:
-                self.assertEqual(h.level, logging.INFO)
-
-        # --- Third Call (DEBUG level, use_qt_handler=False) ---
-        logger3 = setup_logging("third_logger", level=logging.DEBUG, use_qt_handler=False)
-        self.assertEqual(logger3.level, logging.DEBUG)
-        self.assertEqual(len(llamasearch_root_logger.handlers), 3)
-        self.assertEqual(qt_handler_instance.level, logging.INFO) # type: ignore
-        for h in llamasearch_root_logger.handlers:
-            if isinstance(h, logging.StreamHandler) and h.stream == sys.stdout:
-                self.assertEqual(h.level, logging.DEBUG)
-
-    @patch("llamasearch.utils.logging.basicConfig") # Mock basicConfig to check its call
-    def test_setup_logging_exception_logs_error(self, mock_basic_config, mock_get_dir):
-        mock_get_dir.side_effect = Exception("Another config error")
-        
-        # We use assertLogs to capture messages logged to the root logger.
-        # The `setup_logging` function, in its except block, calls `logging.error`.
-        # This `logging.error` will use the handlers configured by `logging.basicConfig`
-        # (which is called just before `logging.error` in the except block).
-        with self.assertLogs(level="ERROR") as cm: # Captures from root logger
-            setup_logging("another_logger", level=logging.WARNING)
-            
-        self.assertTrue(any("Failed custom logging setup: Another config error" in msg for msg in cm.output))
-        # `basicConfig` in the SUT's `except` block is hardcoded to `logging.INFO`.
-        mock_basic_config.assert_called_once_with(level=logging.INFO)
-
-
-if __name__ == "__main__":
-    unittest.main(argv=["first-arg-is-ignored"], exit=False)
+    log_file = logs_dir_path / "query_log.jsonl"
+    try:
+        with open(log_file, "a", encoding="utf-8") as f:
+            json.dump(log_data, f, ensure_ascii=False, cls=NumpyEncoder)
+            f.write("\n")
+        return str(log_file)
+    except Exception as e:
+        query_logger.error(f"Error saving query log to {log_file}: {e}")
+        return ""

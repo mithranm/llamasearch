@@ -176,7 +176,7 @@ class TestGenericONNXLLMCPU(unittest.TestCase):
         self.assertEqual(self.mock_tokenizer_internal.call_args[0], ("formatted user prompt",))
         self.assertEqual(self.mock_tokenizer_internal.call_args[1], {'return_tensors': 'pt'})
 
-        self.mock_batch_encoding_instance.to.assert_called_once_with(self.cpu_device)
+        self.mock_batch_encoding_instance.to.assert_called_once_with(self.cpu_device) # type: ignore
 
 
         self.mock_model_internal.generate.assert_called_once()
