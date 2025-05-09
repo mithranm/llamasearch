@@ -1,9 +1,4 @@
 # Original tested crawler.py url: https://www.gnu.org/home.html?distro=trisquel#gnu-linux
-
-# run convert.py with the output of crawler.py
-#run linkChecker.py with the output of convert.py
-# use score.py methods
-#output final trustworthiness score
 import os
 import sys
 
@@ -20,7 +15,7 @@ from src.llamasearch.trustworthiness.authorSearch import find_author_trustworthi
 def main():
     # Run the crawler
     links = crawler.smart_crawl(
-        start_url="https://www.reddit.com/r/gaming/comments/aw6nsg/leaked_new_pokemon_designs_are_crazy_fake/",
+        start_url="https://www.sciencedirect.com/science/article/pii/S2090123221001491",
         target_links=5,
         max_depth=2
     )

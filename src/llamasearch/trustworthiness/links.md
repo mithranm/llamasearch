@@ -1,5 +1,3 @@
-https://www.reddit.com/r/gaming/comments/aw6nsg/leaked_new_pokemon_designs_are_crazy_fake/
-https://www.reddit.com/r/PokeLeaks
-https://reddit.com/t/reddit_meta/
-https://reddit.com/t/tabletop_games/
-https://www.reddit.com/r/OriginalCharacter/comments/1ilbqjy/look_at_that_a_new_pokemon_character_he_sooo_cool/
+https://www.sciencedirect.com/science/article/pii/S2090123221001491
+https://www.sciencedirect.com/science/article/pii/S2090123221001491#main-content
+https://www.sciencedirect.com/

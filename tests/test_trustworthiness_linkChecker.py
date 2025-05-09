@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 import importlib
 from pathlib import Path
-from llamasearch.trustworthiness.linkChecker import (
+from src.llamasearch.trustworthiness.linkChecker import (
     extract_domain,
     resolve_md_file_path,
     validate_file_exists,
@@ -12,7 +12,7 @@ from llamasearch.trustworthiness.linkChecker import (
     create_ratio,
     main
 )
-from llamasearch.trustworthiness import linkChecker
+from src.llamasearch.trustworthiness import linkChecker
 
 @pytest.fixture
 def sample_url1():
@@ -91,7 +91,7 @@ def test_resolve_md_file_path_relative():
     result = resolve_md_file_path("links.md")
     
     # Expected default path constructed from project structure
-    expected_path = Path(__file__).resolve().parents[1] / "temp" / "links.md"
+    expected_path = Path(__file__).resolve().parent.parent / "src" / "llamasearch" / "trustworthiness" / "links.md"
     assert result == expected_path
 
 def test_validate_file_exists_valid(tmp_path):
@@ -221,7 +221,7 @@ def test_main_attribute_error(tmp_path, monkeypatch, capsys):
     sys.path.insert(0, str(tmp_path))
 
     # Simulate command-line arguments
-    monkeypatch.setattr(sys, 'argv', ["linkChecker.py", str(md_file.name), "dummy_module"])
+    monkeypatch.setattr(sys, 'argv', ["linkChecker.py", str(md_file), "dummy_module"])
 
     # Call main
     main()

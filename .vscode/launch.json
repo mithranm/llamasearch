@@ -1,0 +1,20 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+
+        {
+            "name": "Debug Pytest Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/tests/test_trustworthiness_trustworthinessScore.py",
+            "args": [],
+            "console": "integratedTerminal",
+            "env": {
+            "PYTHONPATH": "${workspaceFolder}"
+            }
+        }
+    ]
+}
