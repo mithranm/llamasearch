@@ -19,8 +19,9 @@ def resolve_md_file_path(md_file):
     """Resolve the absolute path for the markdown file."""
     path = Path(md_file)
     if not path.is_absolute():
-        project_root = Path(__file__).resolve().parents[2]
-        path = project_root / "temp" / "links.md"
+         # Use the directory of this script as the base
+        script_dir = Path(__file__).resolve().parent
+        path = script_dir / md_file
     return path
 
 
@@ -124,6 +125,8 @@ def main():
     # Print results
     print(f"Percentage of links from trusted domains: {domain_ratio:.2f}%")
     print(f"Percentage of links with trusted TLDs (.edu/.gov/.int): {tld_ratio:.2f}%")
+
+    return domain_ratio, tld_ratio
 
 if __name__ == "__main__":
     main()

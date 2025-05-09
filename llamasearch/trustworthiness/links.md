@@ -1,0 +1,15 @@
+https://www.gnu.org/home.html?distro=trisquel#gnu-linux
+https://www.gnu.org/help
+https://www.gnu.org/home.html?distro=trisquel#More-GNU
+https://www.gnu.org/philosophy/free-software-even-more-important.html
+https://www.gnu.org/software/
+https://www.gnu.org/software/hurd/hurd.html
+https://www.gnu.org/home.html?distro=pureos#gnu-linux
+https://www.gnu.org/distros/free-distros.html
+https://www.gnu.org/home.html?distro=guix#gnu-linux
+https://www.gnu.org/audio-video/philosophy-recordings.html#rms-201404070
+https://www.gnu.org/gnu/linux-and-gnu.html
+https://www.gnu.org/pronunciation/pronunciation.html
+https://www.gnu.org/gnu/gnu-linux-faq.html
+https://www.gnu.org/home.html?distro=trisquel
+https://www.gnu.org/home.html?distro=dragora#gnu-linux
